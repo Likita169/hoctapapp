@@ -100,6 +100,66 @@
     padding:4px 2px; flex-shrink:0; line-height:1;}
   .subject-del:hover, .subject-del:active{color:var(--coral);}
 
+  /* ---------- Lớp học / Bài kiểm tra (kiểu thẻ, giống Azota) ---------- */
+  .classroom-grid{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:6px;}
+  .classroom-card{
+    background:var(--bg-elev); border:1px solid var(--line); border-radius:16px; overflow:hidden;
+    display:flex; flex-direction:column; cursor:pointer;
+  }
+  .classroom-card:active{transform:scale(0.97);}
+  .classroom-banner{
+    height:52px; padding:10px 10px 0 12px; display:flex; align-items:flex-start; justify-content:space-between;
+  }
+  .classroom-banner .cb-del{
+    background:rgba(0,0,0,0.22); border:none; color:#fff; width:24px; height:24px; border-radius:8px;
+    font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;
+  }
+  .classroom-body{padding:8px 12px 12px; display:flex; flex-direction:column; gap:8px;}
+  .classroom-name{
+    font-size:14px; font-weight:700; line-height:1.3; color:var(--white);
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  }
+  .classroom-chip-row{display:flex; align-items:center; gap:6px; flex-wrap:wrap;}
+  .classroom-chip{
+    font-size:11.5px; font-weight:600; color:var(--ink-soft); background:var(--bg); border:1px solid var(--line);
+    border-radius:999px; padding:4px 9px; display:inline-flex; align-items:center; gap:4px; cursor:pointer;
+  }
+  .classroom-chip.mono{font-family:'IBM Plex Mono',monospace; letter-spacing:0.03em; color:var(--teal);}
+  .classroom-chip:active{border-color:var(--amber); color:var(--amber);}
+
+  .test-card{
+    display:flex; align-items:center; gap:12px; background:var(--bg-elev); border:1px solid var(--line);
+    border-radius:14px; padding:12px 12px; margin-bottom:10px; cursor:pointer;
+  }
+  .test-card:active{border-color:var(--teal);}
+  .test-icon{
+    width:40px; height:40px; border-radius:11px; background:rgba(63,167,150,0.16); color:var(--teal);
+    display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0;
+  }
+  .test-info{flex:1; min-width:0;}
+  .test-title{
+    font-size:14.5px; font-weight:600; margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .test-meta{font-size:12px; color:var(--ink-faint);}
+  .test-chev{color:var(--ink-faint); font-size:16px; flex-shrink:0;}
+
+  .question-card{
+    display:flex; align-items:flex-start; gap:10px; background:var(--bg-elev); border:1px solid var(--line);
+    border-radius:14px; padding:12px; margin-bottom:10px; cursor:pointer;
+  }
+  .question-badge{
+    width:26px; height:26px; border-radius:8px; background:var(--bg); border:1px solid var(--line);
+    color:var(--ink-soft); font-size:11.5px; font-weight:700; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .question-type-tag{
+    display:inline-block; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em;
+    padding:2px 7px; border-radius:999px; margin-bottom:5px;
+  }
+  .question-type-tag.mcq{background:rgba(139,127,214,0.18); color:var(--violet);}
+  .question-type-tag.true_false{background:rgba(63,167,150,0.18); color:var(--teal);}
+  .question-type-tag.short_answer{background:rgba(232,163,61,0.18); color:var(--amber);}
+
   .empty-state{text-align:center; padding:60px 20px; color:var(--ink-faint);}
   .empty-state .glyph{font-size:38px; margin-bottom:10px;}
   .empty-state p{font-size:14px; line-height:1.6;}
