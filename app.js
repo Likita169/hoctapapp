@@ -64,6 +64,26 @@ let questionError = '';
 let questionImageProcessing = false;            // resizing/compressing the picked image, before it's attached to the question
 
 let testConfirm = null;                         // {type:'delete-test'|'delete-question', id, label} — drives the confirm modal
+
+/* ---- giao bài & xem điểm (giáo viên) ---- */
+let publishBusy = false;
+let testSubmissionsOpen = null;                 // {testId, title} whose submissions page is open
+let TEST_SUBMISSIONS = [];
+let testSubmissionsLoading = false;
+
+/* ---- làm bài kiểm tra (học sinh) ---- */
+let studentTestListClassroom = null;            // {id, name} whose test list (student view) is open
+let studentTests = [];
+let studentTestsLoading = false;
+let studentTestError = '';
+
+let studentTestDetailOpen = null;               // {id,title,maxAttempts,questions,mySubmission,resultDetail?} landing page for 1 test
+let testResultShowDetail = false;               // "Xem chi tiết" toggle on the test-detail page
+
+let takeTestOpen = null;                        // {id,title,questions} while actively taking a test
+let takeTestAnswers = {};                       // {questionId: answer}
+let takeTestBusy = false;
+let takeTestError = '';
 let reviewQueue = [];
 let reviewIdx = 0;
 let flipped = false;
@@ -1834,6 +1854,13 @@ async function logout(silent){
   testEditorOpen = null;
   questionEditorOpen = null;
   testConfirm = null;
+  testSubmissionsOpen = null;
+  TEST_SUBMISSIONS = [];
+  studentTestListClassroom = null;
+  studentTests = [];
+  studentTestDetailOpen = null;
+  takeTestOpen = null;
+  takeTestAnswers = {};
   if(!silent){ toast('Đã đăng xuất'); render(); }
 }
 
@@ -1935,8 +1962,12 @@ function copyClassCode(code){
 /* ---------------- LỚP HỌC (tab riêng, không nằm trong Cài đặt) ---------------- */
 function renderClassroomView(){
   if(AUTH.token && questionEditorOpen) return renderQuestionEditor();
+  if(AUTH.token && testSubmissionsOpen) return renderTestSubmissions();
   if(AUTH.token && testEditorOpen) return renderTestEditor();
   if(AUTH.token && testManagerClassroom) return renderTestManager();
+  if(AUTH.token && takeTestOpen) return renderTakeTest();
+  if(AUTH.token && studentTestDetailOpen) return renderStudentTestDetail();
+  if(AUTH.token && studentTestListClassroom) return renderStudentTestList();
 
   const wrap = document.createElement('div');
   wrap.style.display = 'contents';
@@ -2134,7 +2165,7 @@ function renderClassroomsSection(){
       const color = COLORS[i % COLORS.length];
       const card = document.createElement('div');
       card.className = 'classroom-card';
-      card.style.cursor = 'default';
+      card.onclick = ()=> openStudentTestList(c.id, c.name);
 
       const banner = document.createElement('div');
       banner.className = 'classroom-banner';
@@ -2142,7 +2173,7 @@ function renderClassroomsSection(){
       const leaveBtn = document.createElement('button');
       leaveBtn.className = 'cb-del';
       leaveBtn.textContent = '🗑'; leaveBtn.title = 'Rời lớp'; leaveBtn.setAttribute('aria-label','Rời lớp');
-      leaveBtn.onclick = ()=>{ classroomConfirm = {type:'leave', id:c.id, name:c.name}; render(); };
+      leaveBtn.onclick = (e)=>{ e.stopPropagation(); classroomConfirm = {type:'leave', id:c.id, name:c.name}; render(); };
       banner.appendChild(document.createElement('span'));
       banner.appendChild(leaveBtn);
       card.appendChild(banner);
@@ -2349,6 +2380,7 @@ function closeTestManager(){
   testManagerClassroom = null;
   testEditorOpen = null;
   questionEditorOpen = null;
+  testSubmissionsOpen = null;
   render();
 }
 
@@ -2658,6 +2690,54 @@ function renderTestEditor(){
   }
   main.appendChild(titleRow);
 
+  // --- publish / attempts / scores ---
+  const publishBox = document.createElement('div');
+  publishBox.className = 'toggle-row';
+  publishBox.style.flexDirection = 'column';
+  publishBox.style.alignItems = 'stretch';
+  publishBox.style.gap = '12px';
+
+  const publishRow = document.createElement('div');
+  publishRow.style.display = 'flex'; publishRow.style.alignItems = 'center'; publishRow.style.justifyContent = 'space-between';
+  publishRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">${testEditorOpen.published ? 'Đã giao bài' : 'Bản nháp'}</div>
+      <div class="tr-sub">${testEditorOpen.published ? 'Học sinh trong lớp đang thấy và làm được bài này.' : 'Chỉ mình bạn thấy — bật lên để học sinh làm bài.'}</div>
+    </div>
+    <label class="switch">
+      <input type="checkbox" ${testEditorOpen.published?'checked':''} ${publishBusy?'disabled':''}>
+      <span class="track"></span>
+    </label>
+  `;
+  publishRow.querySelector('input').onchange = (e)=> publishTest(e.target.checked, testEditorOpen.maxAttempts);
+  publishBox.appendChild(publishRow);
+
+  const attemptsRow = document.createElement('div');
+  attemptsRow.style.display = 'flex'; attemptsRow.style.gap = '8px';
+  [[1,'Chỉ 1 lần'],[null,'Không giới hạn']].forEach(([val,label])=>{
+    const b = document.createElement('button');
+    b.type='button'; b.textContent=label;
+    b.style.flex='1'; b.style.padding='9px'; b.style.borderRadius='9px'; b.style.fontSize='12.5px'; b.style.fontWeight='600';
+    const active = testEditorOpen.maxAttempts === val;
+    b.style.border = active ? '1px solid var(--teal)' : '1px solid var(--line)';
+    b.style.background = active ? 'var(--teal)' : 'var(--bg-elev)';
+    b.style.color = active ? 'var(--bg)' : 'var(--white)';
+    b.disabled = publishBusy;
+    b.onclick = ()=> publishTest(!!testEditorOpen.published, val);
+    attemptsRow.appendChild(b);
+  });
+  publishBox.appendChild(attemptsRow);
+
+  const scoresBtn = document.createElement('button');
+  scoresBtn.className = 'save-btn';
+  scoresBtn.style.background = 'var(--bg-elev)'; scoresBtn.style.color = 'var(--white)'; scoresBtn.style.border = '1px solid var(--line)';
+  scoresBtn.style.margin = '0'; scoresBtn.style.fontSize = '13px'; scoresBtn.style.padding = '11px';
+  scoresBtn.textContent = '📊 Xem điểm học sinh';
+  scoresBtn.onclick = openTestSubmissions;
+  publishBox.appendChild(scoresBtn);
+
+  main.appendChild(publishBox);
+
   const addBtn = document.createElement('button');
   addBtn.className='save-btn'; addBtn.style.marginBottom='16px';
   addBtn.textContent = '+ Thêm câu hỏi';
@@ -2913,6 +2993,433 @@ function renderTestConfirmModal(){
   card.appendChild(btnRow);
   overlay.appendChild(card);
   return overlay;
+}
+
+/* ---- giao bài & xem điểm (giáo viên) ---- */
+async function publishTest(published, maxAttempts){
+  publishBusy = true; render();
+  try{
+    const res = await authorizedRequest('/tests/publish', { testId: testEditorOpen.id, published, maxAttempts });
+    testEditorOpen.published = res.published;
+    testEditorOpen.maxAttempts = res.maxAttempts;
+    const idx = TESTS.findIndex(t=>t.id===testEditorOpen.id);
+    if(idx>=0){ TESTS[idx].published = res.published; TESTS[idx].maxAttempts = res.maxAttempts; }
+    toast(res.published ? 'Đã giao bài cho học sinh ✓' : 'Đã chuyển về bản nháp');
+  }catch(e){
+    toast('Lỗi: ' + (e.message||''));
+  }
+  publishBusy = false; render();
+}
+
+function openTestSubmissions(){
+  testSubmissionsOpen = { testId: testEditorOpen.id, title: testEditorOpen.title };
+  TEST_SUBMISSIONS = [];
+  testSubmissionsLoading = true;
+  render();
+  authorizedGet('/tests/submissions?testId=' + encodeURIComponent(testSubmissionsOpen.testId))
+    .then(res=>{ TEST_SUBMISSIONS = res.submissions || []; })
+    .catch(e=>{ toast('Lỗi: ' + (e.message||'')); })
+    .finally(()=>{ testSubmissionsLoading = false; render(); });
+}
+
+function renderTestSubmissions(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `<h1 class="display">Điểm số</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+  const backLink = document.createElement('button');
+  backLink.className = 'back-link';
+  backLink.textContent = '← ' + testSubmissionsOpen.title;
+  backLink.style.marginBottom = '14px';
+  backLink.onclick = ()=>{ testSubmissionsOpen = null; render(); };
+  main.appendChild(backLink);
+
+  if(testSubmissionsLoading){
+    const l = document.createElement('div'); l.className='tr-sub'; l.textContent='Đang tải…';
+    main.appendChild(l);
+  } else if(TEST_SUBMISSIONS.length===0){
+    const e = document.createElement('div'); e.className='tr-sub'; e.textContent='Chưa có học sinh nào nộp bài.';
+    main.appendChild(e);
+  }
+
+  TEST_SUBMISSIONS.forEach(s=>{
+    const row = document.createElement('div');
+    row.className = 'subject-row';
+    const pct = s.total>0 ? Math.round((s.score/s.total)*100) : 0;
+    row.innerHTML = `
+      <div class="subject-info">
+        <div class="subject-name">${escapeHtml(s.email)}</div>
+        <div class="subject-meta">${s.attemptCount>1 ? 'Đã làm '+s.attemptCount+' lần' : 'Đã nộp bài'}</div>
+      </div>
+      <div class="mono" style="font-size:15px; font-weight:700; color:${pct>=50?'var(--teal)':'var(--coral)'};">${s.score}/${s.total}</div>
+    `;
+    main.appendChild(row);
+  });
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
+/* ---- làm bài kiểm tra (học sinh) ---- */
+function openStudentTestList(classroomId, classroomName){
+  studentTestListClassroom = { id: classroomId, name: classroomName };
+  studentTestError = '';
+  studentTests = [];
+  studentTestsLoading = true;
+  render();
+  authorizedGet('/tests/student/list?classroomId=' + encodeURIComponent(classroomId))
+    .then(res=>{ studentTests = res.tests || []; })
+    .catch(e=>{ studentTestError = e.message || 'Lỗi tải bài kiểm tra'; })
+    .finally(()=>{ studentTestsLoading = false; render(); });
+}
+
+function closeStudentTestList(){
+  studentTestListClassroom = null;
+  studentTestDetailOpen = null;
+  takeTestOpen = null;
+  render();
+}
+
+async function openStudentTestDetail(testId){
+  try{
+    const detail = await authorizedGet('/tests/student/get?testId=' + encodeURIComponent(testId));
+    studentTestDetailOpen = detail;
+    testResultShowDetail = false;
+  }catch(e){
+    toast('Lỗi: ' + (e.message||''));
+  }
+  render();
+}
+
+async function viewPastResult(){
+  try{
+    const res = await authorizedGet('/tests/student/result?testId=' + encodeURIComponent(studentTestDetailOpen.id));
+    studentTestDetailOpen.resultDetail = res.detail;
+    testResultShowDetail = true;
+  }catch(e){
+    toast('Lỗi: ' + (e.message||''));
+  }
+  render();
+}
+
+function startTakeTest(){
+  takeTestOpen = { id: studentTestDetailOpen.id, title: studentTestDetailOpen.title, questions: studentTestDetailOpen.questions };
+  takeTestAnswers = {};
+  takeTestError = '';
+  render();
+}
+
+async function submitTest(){
+  const unanswered = takeTestOpen.questions.some(q => takeTestAnswers[q.id]===undefined || takeTestAnswers[q.id]==='');
+  if(unanswered){ takeTestError = 'Hãy trả lời hết tất cả câu hỏi trước khi nộp bài'; render(); return; }
+
+  takeTestBusy = true; takeTestError = ''; render();
+  try{
+    const answers = Object.keys(takeTestAnswers).map(qId => ({ questionId: qId, answer: takeTestAnswers[qId] }));
+    const res = await authorizedRequest('/tests/submit', { testId: takeTestOpen.id, answers });
+    studentTestDetailOpen.mySubmission = { score: res.score, total: res.total, attemptCount: res.attemptCount, submittedAt: res.submittedAt };
+    studentTestDetailOpen.canAttempt = studentTestDetailOpen.maxAttempts === null;
+    studentTestDetailOpen.resultDetail = res.detail;
+    testResultShowDetail = false;
+    const idx = studentTests.findIndex(t=>t.id===takeTestOpen.id);
+    if(idx>=0) studentTests[idx].mySubmission = studentTestDetailOpen.mySubmission;
+    takeTestOpen = null;
+    toast('Đã nộp bài ✓ Điểm: ' + res.score + '/' + res.total);
+  }catch(e){
+    takeTestError = e.message || 'Nộp bài thất bại';
+  }
+  takeTestBusy = false; render();
+}
+
+function renderStudentTestList(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `<h1 class="display">Bài kiểm tra</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+  const backLink = document.createElement('button');
+  backLink.className = 'back-link';
+  backLink.textContent = '← Lớp học';
+  backLink.style.marginBottom = '14px';
+  backLink.onclick = closeStudentTestList;
+  main.appendChild(backLink);
+
+  const subheading = document.createElement('div');
+  subheading.className = 'display';
+  subheading.style.fontSize = '19px'; subheading.style.fontWeight = '700'; subheading.style.marginBottom = '16px';
+  subheading.textContent = studentTestListClassroom.name;
+  main.appendChild(subheading);
+
+  if(studentTestError){
+    const errBox = document.createElement('div');
+    errBox.style.color='var(--coral)'; errBox.style.fontSize='12px'; errBox.style.margin='0 0 10px';
+    errBox.textContent = studentTestError;
+    main.appendChild(errBox);
+  }
+
+  if(studentTestsLoading){
+    const l = document.createElement('div'); l.className='tr-sub'; l.textContent='Đang tải…';
+    main.appendChild(l);
+  } else if(studentTests.length===0){
+    const e = document.createElement('div'); e.className='tr-sub'; e.textContent='Giáo viên chưa giao bài kiểm tra nào cho lớp này.';
+    main.appendChild(e);
+  }
+
+  studentTests.forEach(t=>{
+    const card = document.createElement('div');
+    card.className = 'test-card';
+    card.onclick = ()=> openStudentTestDetail(t.id);
+
+    const icon = document.createElement('div');
+    icon.className = 'test-icon';
+    icon.textContent = '📝';
+
+    const info = document.createElement('div');
+    info.className = 'test-info';
+    const statusHtml = t.mySubmission
+      ? `<span class="badge-pill" style="color:${(t.mySubmission.score/t.mySubmission.total)>=0.5?'var(--teal)':'var(--coral)'};">${t.mySubmission.score}/${t.mySubmission.total} điểm</span>`
+      : `<span class="badge-pill">Chưa làm</span>`;
+    info.innerHTML = `
+      <div class="test-title">${escapeHtml(t.title)}</div>
+      <div class="test-meta">${t.questionCount} câu hỏi · ${statusHtml}</div>
+    `;
+
+    const chev = document.createElement('span');
+    chev.className = 'test-chev';
+    chev.textContent = '›';
+
+    card.appendChild(icon);
+    card.appendChild(info);
+    card.appendChild(chev);
+    main.appendChild(card);
+  });
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
+function renderStudentTestDetail(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+  const t = studentTestDetailOpen;
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `<h1 class="display">Bài kiểm tra</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+  const backLink = document.createElement('button');
+  backLink.className = 'back-link';
+  backLink.textContent = '← ' + studentTestListClassroom.name;
+  backLink.style.marginBottom = '14px';
+  backLink.onclick = ()=>{ studentTestDetailOpen = null; render(); };
+  main.appendChild(backLink);
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'display';
+  titleEl.style.fontSize = '19px'; titleEl.style.fontWeight = '700'; titleEl.style.marginBottom = '4px';
+  titleEl.textContent = t.title;
+  main.appendChild(titleEl);
+
+  const metaEl = document.createElement('div');
+  metaEl.className = 'tr-sub';
+  metaEl.style.marginBottom = '20px';
+  metaEl.textContent = t.questions.length + ' câu hỏi · ' + (t.maxAttempts===1 ? 'Chỉ làm 1 lần' : 'Được làm lại nhiều lần');
+  main.appendChild(metaEl);
+
+  if(t.mySubmission){
+    const pct = t.mySubmission.total>0 ? (t.mySubmission.score/t.mySubmission.total) : 0;
+    const scoreBox = document.createElement('div');
+    scoreBox.style.textAlign = 'center';
+    scoreBox.style.padding = '20px 12px';
+    scoreBox.style.background = 'var(--bg-elev)';
+    scoreBox.style.border = '1px solid var(--line)';
+    scoreBox.style.borderRadius = '16px';
+    scoreBox.style.marginBottom = '16px';
+    scoreBox.innerHTML = `
+      <div class="display" style="font-size:38px; font-weight:700; color:${pct>=0.5?'var(--teal)':'var(--coral)'};">${t.mySubmission.score}/${t.mySubmission.total}</div>
+      <div class="tr-sub" style="margin-top:4px;">${t.mySubmission.attemptCount>1 ? 'Điểm lần gần nhất · Đã làm '+t.mySubmission.attemptCount+' lần' : 'Điểm của bạn'}</div>
+    `;
+    main.appendChild(scoreBox);
+
+    const detailBtn = document.createElement('button');
+    detailBtn.className = 'save-btn';
+    detailBtn.style.background = 'var(--bg-elev)'; detailBtn.style.color='var(--white)'; detailBtn.style.border='1px solid var(--line)';
+    detailBtn.style.marginBottom = '10px';
+    detailBtn.textContent = testResultShowDetail ? 'Ẩn chi tiết' : 'Xem chi tiết';
+    detailBtn.onclick = ()=>{
+      if(testResultShowDetail){ testResultShowDetail = false; render(); }
+      else if(t.resultDetail){ testResultShowDetail = true; render(); }
+      else { viewPastResult(); }
+    };
+    main.appendChild(detailBtn);
+
+    if(testResultShowDetail && t.resultDetail){
+      t.resultDetail.forEach((d,i)=>{
+        const card = document.createElement('div');
+        card.className = 'question-card';
+        card.style.cursor = 'default';
+        card.style.borderColor = d.isCorrect ? 'var(--teal)' : 'var(--coral)';
+
+        const badge = document.createElement('div');
+        badge.className = 'question-badge';
+        badge.textContent = d.isCorrect ? '✓' : '✕';
+        badge.style.color = d.isCorrect ? 'var(--teal)' : 'var(--coral)';
+        badge.style.borderColor = d.isCorrect ? 'var(--teal)' : 'var(--coral)';
+
+        const info = document.createElement('div');
+        info.className = 'test-info';
+        info.innerHTML = `
+          <div class="subject-name" style="font-size:14px; font-weight:500; line-height:1.4; margin-bottom:6px;">Câu ${i+1}. ${escapeHtml(d.prompt)}</div>
+          <div class="tr-sub">Bạn chọn: <b style="color:${d.isCorrect?'var(--teal)':'var(--coral)'};">${escapeHtml(d.yourAnswer ?? '(bỏ trống)')}</b></div>
+          ${!d.isCorrect ? `<div class="tr-sub">Đáp án đúng: <b style="color:var(--teal);">${escapeHtml(d.correctAnswer)}</b></div>` : ''}
+        `;
+
+        card.appendChild(badge);
+        card.appendChild(info);
+        if(d.imageData){
+          const img = document.createElement('img');
+          img.src = d.imageData;
+          img.style.width='44px'; img.style.height='44px'; img.style.objectFit='cover'; img.style.borderRadius='8px'; img.style.flexShrink='0';
+          card.appendChild(img);
+        }
+        main.appendChild(card);
+      });
+    }
+  }
+
+  if(t.canAttempt){
+    const startBtn = document.createElement('button');
+    startBtn.className = 'save-btn';
+    startBtn.textContent = t.mySubmission ? '🔄 Làm lại' : '▶ Bắt đầu làm bài';
+    startBtn.onclick = startTakeTest;
+    main.appendChild(startBtn);
+  } else if(t.mySubmission){
+    const note = document.createElement('div');
+    note.className = 'tr-sub';
+    note.style.textAlign = 'center';
+    note.textContent = 'Bài này chỉ được làm 1 lần.';
+    main.appendChild(note);
+  }
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
+function renderTakeTest(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `<h1 class="display">Làm bài</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+  const backLink = document.createElement('button');
+  backLink.className = 'back-link';
+  backLink.textContent = '← ' + takeTestOpen.title;
+  backLink.style.marginBottom = '14px';
+  backLink.disabled = takeTestBusy;
+  backLink.onclick = ()=>{ if(!takeTestBusy){ takeTestOpen = null; render(); } };
+  main.appendChild(backLink);
+
+  const typeLabel = { mcq:'Trắc nghiệm', true_false:'Đúng / Sai', short_answer:'Trả lời ngắn' };
+
+  takeTestOpen.questions.forEach((q,i)=>{
+    const card = document.createElement('div');
+    card.className = 'question-card';
+    card.style.cursor = 'default';
+    card.style.flexDirection = 'column';
+    card.style.alignItems = 'stretch';
+    card.style.gap = '10px';
+
+    const head = document.createElement('div');
+    head.innerHTML = `
+      <span class="question-type-tag ${q.type}">${typeLabel[q.type]||q.type}</span>
+      <div class="subject-name" style="font-size:14.5px; font-weight:600; line-height:1.4; margin-top:4px;">Câu ${i+1}. ${escapeHtml(q.prompt)}</div>
+    `;
+    card.appendChild(head);
+
+    if(q.imageData){
+      const img = document.createElement('img');
+      img.src = q.imageData;
+      img.style.maxWidth='100%'; img.style.maxHeight='200px'; img.style.borderRadius='10px'; img.style.display='block';
+      card.appendChild(img);
+    }
+
+    if(q.type==='mcq'){
+      q.options.forEach((opt,oi)=>{
+        const optBtn = document.createElement('button');
+        optBtn.type = 'button';
+        optBtn.textContent = String.fromCharCode(65+oi) + '. ' + opt;
+        optBtn.style.textAlign = 'left';
+        optBtn.style.padding = '11px 12px';
+        optBtn.style.borderRadius = '10px';
+        optBtn.style.fontSize = '14px';
+        optBtn.style.marginBottom = '6px';
+        const selected = takeTestAnswers[q.id] === oi;
+        optBtn.style.border = selected ? '1px solid var(--teal)' : '1px solid var(--line)';
+        optBtn.style.background = selected ? 'rgba(63,167,150,0.15)' : 'var(--bg-elev)';
+        optBtn.style.color = 'var(--white)';
+        optBtn.onclick = ()=>{ takeTestAnswers[q.id] = oi; render(); };
+        card.appendChild(optBtn);
+      });
+    } else if(q.type==='true_false'){
+      const row = document.createElement('div');
+      row.style.display='flex'; row.style.gap='8px';
+      [[true,'Đúng'],[false,'Sai']].forEach(([val,label])=>{
+        const b = document.createElement('button');
+        b.type='button'; b.textContent=label;
+        b.style.flex='1'; b.style.padding='11px'; b.style.borderRadius='10px'; b.style.fontSize='14px'; b.style.fontWeight='600';
+        const selected = takeTestAnswers[q.id] === val;
+        b.style.border = selected ? '1px solid var(--teal)' : '1px solid var(--line)';
+        b.style.background = selected ? 'var(--teal)' : 'var(--bg-elev)';
+        b.style.color = selected ? 'var(--bg)' : 'var(--white)';
+        b.onclick = ()=>{ takeTestAnswers[q.id] = val; render(); };
+        row.appendChild(b);
+      });
+      card.appendChild(row);
+    } else {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'Nhập câu trả lời';
+      input.value = takeTestAnswers[q.id] || '';
+      input.style.background='var(--bg-elev)'; input.style.border='1px solid var(--line)';
+      input.style.color='var(--white)'; input.style.borderRadius='10px'; input.style.padding='11px 12px'; input.style.fontSize='14px';
+      input.oninput = ()=>{ takeTestAnswers[q.id] = input.value; };
+      card.appendChild(input);
+    }
+
+    main.appendChild(card);
+  });
+
+  if(takeTestError){
+    const errBox = document.createElement('div');
+    errBox.style.color='var(--coral)'; errBox.style.fontSize='12px'; errBox.style.margin='0 0 12px'; errBox.style.textAlign='center';
+    errBox.textContent = takeTestError;
+    main.appendChild(errBox);
+  }
+
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'save-btn';
+  submitBtn.disabled = takeTestBusy;
+  submitBtn.textContent = takeTestBusy ? 'Đang nộp…' : 'Nộp bài';
+  submitBtn.onclick = submitTest;
+  main.appendChild(submitBtn);
+
+  wrap.appendChild(main);
+  return wrap;
 }
 
 /* ---- daily push reminder (works even when app is fully closed) ---- */
