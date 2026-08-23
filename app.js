@@ -39,11 +39,31 @@ let classroomsLoaded = false;
 let classroomsLoading = false;
 let classroomBusy = false;
 let classroomError = '';
-let expandedClassroomId = null;                // teacher: which classroom's member list is expanded
+let classroomMembersView = null;               // classroom object being viewed in "Học sinh" modal, or null
 let classroomConfirm = null;                   // {type:'delete'|'leave', id, name} — drives the confirm modal
 let renameModalOpen = false;                    // "Đổi tên hiển thị" modal
 let renameBusy = false;
 let renameError = '';
+
+/* ---- tests / quizzes (teacher creates, tied to one classroom) ---- */
+let testManagerClassroom = null;               // {id, name} of the classroom whose test list is open, or null
+let testManagerFresh = false;
+let TESTS = [];                                 // [{id,title,questionCount,createdAt,updatedAt}] for the open classroom
+let testsLoading = false;
+let testBusy = false;
+let testError = '';
+
+let testEditorOpen = null;                      // {id,title,classroomId,questions:[...]} of the test being edited, or null
+let testEditorFresh = false;
+let testTitleEditing = false;                   // inline-editing the test title
+
+let questionEditorOpen = null;                  // {mode:'add'|'edit', id?, type, prompt, imageData, data} while the editor is open
+let questionEditorFresh = false;
+let questionBusy = false;
+let questionError = '';
+let questionImageProcessing = false;            // resizing/compressing the picked image, before it's attached to the question
+
+let testConfirm = null;                         // {type:'delete-test'|'delete-question', id, label} — drives the confirm modal
 let reviewQueue = [];
 let reviewIdx = 0;
 let flipped = false;
@@ -301,6 +321,7 @@ function render(){
     else if(VIEW==='add') main.appendChild(renderAdd());
     else if(VIEW==='review') main.appendChild(renderReview());
     else if(VIEW==='manage') main.appendChild(renderManage());
+    else if(VIEW==='classroom') main.appendChild(renderClassroomView());
     else if(VIEW==='stats') main.appendChild(renderStats());
   }catch(e){
     // Never let a rendering bug in one tab take the whole app (and the
@@ -327,7 +348,9 @@ function render(){
   if(pendingSyncChoice) $app.appendChild(renderSyncChoiceModal());
   if(authModalOpen) $app.appendChild(renderAuthModal());
   if(renameModalOpen) $app.appendChild(renderRenameModal());
+  if(testConfirm) $app.appendChild(renderTestConfirmModal());
   if(classroomConfirm) $app.appendChild(renderClassroomConfirmModal());
+  if(classroomMembersView) $app.appendChild(renderClassroomMembersModal());
   if(actionSheetItems) $app.appendChild(renderActionSheet());
 
   if(VIEW!=='review'){
@@ -357,6 +380,7 @@ function renderTabbar(){
   const tabs = [
     {id:'home', icon:'◐', label:'Trang chủ'},
     {id:'manage', icon:'▤', label:'Thẻ ghi nhớ'},
+    {id:'classroom', icon:'🏫', label:'Lớp học'},
     {id:'stats', icon:'✦', label:'Thống kê'},
   ];
   tabs.forEach(t=>{
@@ -1535,15 +1559,6 @@ function renderSettings(){
   main.appendChild(labelAcc);
   main.appendChild(renderAccountSection());
 
-  if(AUTH.token){
-    ensureClassroomsLoaded();
-    const labelClass = document.createElement('div');
-    labelClass.className='section-label';
-    labelClass.textContent = 'Lớp học';
-    main.appendChild(labelClass);
-    main.appendChild(renderClassroomsSection());
-  }
-
   const labelR = document.createElement('div');
   labelR.className='section-label';
   labelR.textContent = 'Nhắc nhở';
@@ -1812,7 +1827,13 @@ async function logout(silent){
   classroomsLoaded = false;
   classroomError = '';
   expandedClassroomId = null;
+  classroomMembersView = null;
   classroomConfirm = null;
+  testManagerClassroom = null;
+  TESTS = [];
+  testEditorOpen = null;
+  questionEditorOpen = null;
+  testConfirm = null;
   if(!silent){ toast('Đã đăng xuất'); render(); }
 }
 
@@ -1911,6 +1932,53 @@ function copyClassCode(code){
   }
 }
 
+/* ---------------- LỚP HỌC (tab riêng, không nằm trong Cài đặt) ---------------- */
+function renderClassroomView(){
+  if(AUTH.token && questionEditorOpen) return renderQuestionEditor();
+  if(AUTH.token && testEditorOpen) return renderTestEditor();
+  if(AUTH.token && testManagerClassroom) return renderTestManager();
+
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `
+    <h1 class="display">Lớp học</h1>
+    <button class="gear-btn" aria-label="Cài đặt" title="Cài đặt">⚙</button>
+  `;
+  header.querySelector('.gear-btn').onclick = ()=>{ settingsPanelOpen = true; settingsPanelFresh = true; render(); };
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+
+  if(!AUTH.token){
+    const empty = document.createElement('div');
+    empty.style.textAlign = 'center';
+    empty.style.padding = '48px 12px 12px';
+    empty.innerHTML = `
+      <div style="font-size:40px; margin-bottom:14px;">🏫</div>
+      <div class="display" style="font-size:18px; font-weight:700; margin-bottom:8px;">Chưa đăng nhập</div>
+      <div class="tr-sub" style="margin-bottom:20px;">Đăng nhập để tạo hoặc vào lớp học, và soạn bài kiểm tra.</div>
+    `;
+    const loginBtn = document.createElement('button');
+    loginBtn.className = 'save-btn';
+    loginBtn.style.maxWidth = '240px';
+    loginBtn.style.marginLeft = 'auto';
+    loginBtn.style.marginRight = 'auto';
+    loginBtn.textContent = 'Đăng nhập / Đăng ký';
+    loginBtn.onclick = ()=>{ authMode='login'; authError=''; authModalOpen=true; authModalFresh=true; render(); };
+    empty.appendChild(loginBtn);
+    main.appendChild(empty);
+  } else {
+    ensureClassroomsLoaded();
+    main.appendChild(renderClassroomsSection());
+  }
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
 function renderClassroomsSection(){
   const wrap = document.createElement('div');
 
@@ -1928,7 +1996,7 @@ function renderClassroomsSection(){
     const formRow = document.createElement('div');
     formRow.style.display = 'flex';
     formRow.style.gap = '8px';
-    formRow.style.marginBottom = '14px';
+    formRow.style.marginBottom = '16px';
 
     const input = document.createElement('input');
     input.type = 'text';
@@ -1965,65 +2033,63 @@ function renderClassroomsSection(){
       wrap.appendChild(empty);
     }
 
-    CLASSROOMS.forEach(c=>{
-      const row = document.createElement('div');
-      row.className = 'subject-row';
-      row.style.flexWrap = 'wrap';
-      row.style.cursor = 'pointer';
+    const grid = document.createElement('div');
+    grid.className = 'classroom-grid';
 
-      const info = document.createElement('div');
-      info.className = 'subject-info';
-      info.innerHTML = `
-        <div class="subject-name">${escapeHtml(c.name)}</div>
-        <div class="subject-meta">${c.members.length} học sinh</div>
-      `;
-      info.onclick = ()=>{ expandedClassroomId = expandedClassroomId===c.id ? null : c.id; render(); };
+    CLASSROOMS.forEach((c,i)=>{
+      const color = COLORS[i % COLORS.length];
+      const card = document.createElement('div');
+      card.className = 'classroom-card';
+      card.onclick = ()=> openTestManager(c.id, c.name);
 
-      const codeBadge = document.createElement('button');
-      codeBadge.className = 'mono';
-      codeBadge.title = 'Chạm để sao chép mã lớp';
-      codeBadge.style.background = 'var(--bg-elev)';
-      codeBadge.style.border = '1px solid var(--line)';
-      codeBadge.style.color = 'var(--teal)';
-      codeBadge.style.borderRadius = '8px';
-      codeBadge.style.padding = '7px 10px';
-      codeBadge.style.fontSize = '13px';
-      codeBadge.style.fontWeight = '600';
-      codeBadge.style.letterSpacing = '0.04em';
-      codeBadge.textContent = c.code;
-      codeBadge.onclick = (e)=>{ e.stopPropagation(); copyClassCode(c.code); };
-
+      const banner = document.createElement('div');
+      banner.className = 'classroom-banner';
+      banner.style.background = `linear-gradient(135deg, ${color}, ${color}99)`;
       const delBtn = document.createElement('button');
-      delBtn.className = 'subject-del';
-      delBtn.title = 'Xoá lớp'; delBtn.setAttribute('aria-label','Xoá lớp');
-      delBtn.textContent = '🗑';
+      delBtn.className = 'cb-del';
+      delBtn.textContent = '🗑'; delBtn.title = 'Xoá lớp'; delBtn.setAttribute('aria-label','Xoá lớp');
       delBtn.onclick = (e)=>{ e.stopPropagation(); classroomConfirm = {type:'delete', id:c.id, name:c.name}; render(); };
+      banner.appendChild(document.createElement('span'));
+      banner.appendChild(delBtn);
+      card.appendChild(banner);
 
-      row.appendChild(info);
-      row.appendChild(codeBadge);
-      row.appendChild(delBtn);
-      wrap.appendChild(row);
+      const body = document.createElement('div');
+      body.className = 'classroom-body';
 
-      if(expandedClassroomId === c.id){
-        const memberBox = document.createElement('div');
-        memberBox.style.padding = '4px 4px 14px 4px';
-        memberBox.style.borderBottom = '1px solid var(--line)';
-        if(c.members.length === 0){
-          memberBox.innerHTML = `<div class="tr-sub">Chưa có học sinh nào vào lớp.</div>`;
-        } else {
-          memberBox.innerHTML = c.members.map(m=>
-            `<div class="tr-sub" style="padding:4px 0;">${escapeHtml(m.email)}</div>`
-          ).join('');
-        }
-        wrap.appendChild(memberBox);
-      }
+      const nameEl = document.createElement('div');
+      nameEl.className = 'classroom-name';
+      nameEl.textContent = c.name;
+      body.appendChild(nameEl);
+
+      const chipRow = document.createElement('div');
+      chipRow.className = 'classroom-chip-row';
+
+      const codeChip = document.createElement('button');
+      codeChip.className = 'classroom-chip mono';
+      codeChip.title = 'Chạm để sao chép mã lớp';
+      codeChip.textContent = c.code;
+      codeChip.onclick = (e)=>{ e.stopPropagation(); copyClassCode(c.code); };
+
+      const membersChip = document.createElement('button');
+      membersChip.className = 'classroom-chip';
+      membersChip.textContent = '👥 ' + c.members.length;
+      membersChip.onclick = (e)=>{ e.stopPropagation(); classroomMembersView = c; render(); };
+
+      chipRow.appendChild(codeChip);
+      chipRow.appendChild(membersChip);
+      body.appendChild(chipRow);
+
+      card.appendChild(body);
+      grid.appendChild(card);
     });
+
+    wrap.appendChild(grid);
   } else {
     // --- student: join-by-code form ---
     const formRow = document.createElement('div');
     formRow.style.display = 'flex';
     formRow.style.gap = '8px';
-    formRow.style.marginBottom = '14px';
+    formRow.style.marginBottom = '16px';
 
     const input = document.createElement('input');
     input.type = 'text';
@@ -2061,30 +2127,80 @@ function renderClassroomsSection(){
       wrap.appendChild(empty);
     }
 
-    CLASSROOMS.forEach(c=>{
-      const row = document.createElement('div');
-      row.className = 'subject-row';
+    const grid = document.createElement('div');
+    grid.className = 'classroom-grid';
 
-      const info = document.createElement('div');
-      info.className = 'subject-info';
-      info.innerHTML = `
-        <div class="subject-name">${escapeHtml(c.name)}</div>
-        <div class="subject-meta">Giáo viên: ${escapeHtml(c.teacherEmail||'')}</div>
-      `;
+    CLASSROOMS.forEach((c,i)=>{
+      const color = COLORS[i % COLORS.length];
+      const card = document.createElement('div');
+      card.className = 'classroom-card';
+      card.style.cursor = 'default';
 
+      const banner = document.createElement('div');
+      banner.className = 'classroom-banner';
+      banner.style.background = `linear-gradient(135deg, ${color}, ${color}99)`;
       const leaveBtn = document.createElement('button');
-      leaveBtn.className = 'subject-del';
-      leaveBtn.title = 'Rời lớp'; leaveBtn.setAttribute('aria-label','Rời lớp');
-      leaveBtn.textContent = '🗑';
+      leaveBtn.className = 'cb-del';
+      leaveBtn.textContent = '🗑'; leaveBtn.title = 'Rời lớp'; leaveBtn.setAttribute('aria-label','Rời lớp');
       leaveBtn.onclick = ()=>{ classroomConfirm = {type:'leave', id:c.id, name:c.name}; render(); };
+      banner.appendChild(document.createElement('span'));
+      banner.appendChild(leaveBtn);
+      card.appendChild(banner);
 
-      row.appendChild(info);
-      row.appendChild(leaveBtn);
-      wrap.appendChild(row);
+      const body = document.createElement('div');
+      body.className = 'classroom-body';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'classroom-name';
+      nameEl.textContent = c.name;
+      body.appendChild(nameEl);
+      const chipRow = document.createElement('div');
+      chipRow.className = 'classroom-chip-row';
+      chipRow.innerHTML = `<span class="classroom-chip" style="cursor:default;">👤 ${escapeHtml(c.teacherEmail||'')}</span>`;
+      body.appendChild(chipRow);
+      card.appendChild(body);
+      grid.appendChild(card);
     });
+
+    wrap.appendChild(grid);
   }
 
   return wrap;
+}
+
+function renderClassroomMembersModal(){
+  const c = classroomMembersView;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-backdrop';
+  overlay.onclick = (e)=>{ if(e.target===overlay){ classroomMembersView=null; render(); } };
+
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+  card.innerHTML = `<div class="modal-title display">Học sinh — ${escapeHtml(c.name)}</div>`;
+
+  if(c.members.length === 0){
+    const empty = document.createElement('div');
+    empty.className = 'tr-sub';
+    empty.textContent = 'Chưa có học sinh nào vào lớp.';
+    card.appendChild(empty);
+  } else {
+    const list = document.createElement('div');
+    list.style.maxHeight = '50vh';
+    list.style.overflowY = 'auto';
+    list.innerHTML = c.members.map(m=>
+      `<div class="tr-sub" style="padding:8px 0; border-bottom:1px solid var(--line);">${escapeHtml(m.email)}</div>`
+    ).join('');
+    card.appendChild(list);
+  }
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'save-btn';
+  closeBtn.style.marginTop = '18px';
+  closeBtn.textContent = 'Đóng';
+  closeBtn.onclick = ()=>{ classroomMembersView=null; render(); };
+  card.appendChild(closeBtn);
+
+  overlay.appendChild(card);
+  return overlay;
 }
 
 async function updateDisplayName(newName){
@@ -2202,6 +2318,598 @@ function renderClassroomConfirmModal(){
 
   btnRow.appendChild(cancelBtn);
   btnRow.appendChild(confirmBtn);
+  card.appendChild(btnRow);
+  overlay.appendChild(card);
+  return overlay;
+}
+
+/* ---- tests / quizzes (teacher creates, tied to one classroom) ---- */
+async function authorizedGet(path){
+  const res = await fetch(apiUrl(path), { headers:{'Authorization':'Bearer '+AUTH.token} });
+  if(res.status===401){ await logout(true); throw new Error('Phiên đăng nhập đã hết hạn, hãy đăng nhập lại'); }
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(data.error || ('HTTP '+res.status));
+  return data;
+}
+
+function openTestManager(classroomId, classroomName){
+  testManagerClassroom = { id: classroomId, name: classroomName };
+  testManagerFresh = true;
+  testError = '';
+  TESTS = [];
+  testsLoading = true;
+  render();
+  fetchTests(classroomId)
+    .then(list=>{ TESTS = list; })
+    .catch(e=>{ testError = e.message || 'Lỗi tải bài kiểm tra'; })
+    .finally(()=>{ testsLoading = false; render(); });
+}
+
+function closeTestManager(){
+  testManagerClassroom = null;
+  testEditorOpen = null;
+  questionEditorOpen = null;
+  render();
+}
+
+async function fetchTests(classroomId){
+  const res = await authorizedGet('/tests/list?classroomId=' + encodeURIComponent(classroomId));
+  return res.tests || [];
+}
+
+async function createTest(title){
+  title = (title||'').trim();
+  if(!title){ testError = 'Nhập tên bài kiểm tra'; render(); return; }
+  testBusy = true; testError = ''; render();
+  try{
+    const res = await authorizedRequest('/tests/create', { classroomId: testManagerClassroom.id, title });
+    TESTS = [{ id:res.id, title:res.title, questionCount:0, createdAt:res.createdAt, updatedAt:res.updatedAt }, ...TESTS];
+    toast('Đã tạo bài kiểm tra "' + title + '" ✓');
+  }catch(e){
+    testError = e.message || 'Tạo bài kiểm tra thất bại';
+  }
+  testBusy = false; render();
+}
+
+async function deleteTest(id){
+  testBusy = true; render();
+  try{
+    await authorizedRequest('/tests/delete', { testId: id });
+    TESTS = TESTS.filter(t=>t.id!==id);
+    if(testEditorOpen && testEditorOpen.id===id) testEditorOpen = null;
+    toast('Đã xoá bài kiểm tra');
+  }catch(e){
+    toast('Lỗi: ' + (e.message||''));
+  }
+  testBusy = false; render();
+}
+
+async function openTestEditor(testId){
+  try{
+    const detail = await authorizedGet('/tests/get?testId=' + encodeURIComponent(testId));
+    testEditorOpen = detail;
+    testEditorFresh = true;
+    testTitleEditing = false;
+  }catch(e){
+    toast('Lỗi: ' + (e.message||''));
+  }
+  render();
+}
+
+async function renameTestTitle(newTitle){
+  newTitle = (newTitle||'').trim();
+  if(!newTitle) return;
+  testBusy = true; render();
+  try{
+    await authorizedRequest('/tests/rename', { testId: testEditorOpen.id, title: newTitle });
+    testEditorOpen.title = newTitle;
+    const idx = TESTS.findIndex(t=>t.id===testEditorOpen.id);
+    if(idx>=0) TESTS[idx].title = newTitle;
+    testTitleEditing = false;
+  }catch(e){
+    toast('Lỗi: ' + (e.message||''));
+  }
+  testBusy = false; render();
+}
+
+function defaultDataForType(type){
+  if(type==='mcq') return { options:['','','',''], correctIndex:0 };
+  if(type==='true_false') return { correct:true };
+  return { accepted:[''] };
+}
+
+function openQuestionEditor(mode, question){
+  questionError = '';
+  if(mode==='add'){
+    questionEditorOpen = { mode:'add', type:'mcq', prompt:'', imageData:null, data: defaultDataForType('mcq') };
+  } else {
+    questionEditorOpen = {
+      mode:'edit', id: question.id, type: question.type, prompt: question.prompt,
+      imageData: question.imageData || null, data: JSON.parse(JSON.stringify(question.data))
+    };
+  }
+  questionEditorFresh = true;
+  render();
+}
+
+async function compressImageFile(file){
+  const dataUrl = await new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=> resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+  const img = await new Promise((resolve,reject)=>{
+    const el = new Image();
+    el.onload = ()=> resolve(el);
+    el.onerror = reject;
+    el.src = dataUrl;
+  });
+  const MAX_DIM = 1000;
+  let width = img.width, height = img.height;
+  if(width > MAX_DIM || height > MAX_DIM){
+    const scale = MAX_DIM / Math.max(width, height);
+    width = Math.round(width*scale);
+    height = Math.round(height*scale);
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+  const outMime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+  const outDataUrl = canvas.toDataURL(outMime, 0.8);
+  return { mime: outMime, base64: outDataUrl.split(',')[1] };
+}
+
+async function uploadQuestionImage(file){
+  questionImageProcessing = true; render();
+  try{
+    const { mime, base64 } = await compressImageFile(file);
+    if(base64.length > 1_800_000){
+      toast('Ảnh vẫn còn quá lớn sau khi nén, hãy thử ảnh khác');
+    } else {
+      questionEditorOpen.imageData = 'data:' + mime + ';base64,' + base64;
+    }
+  }catch(e){
+    toast('Lỗi xử lý ảnh: ' + (e.message||''));
+  }
+  questionImageProcessing = false; render();
+}
+
+async function saveQuestion(){
+  const q = questionEditorOpen;
+  const prompt = (q.prompt||'').trim();
+  if(!prompt){ questionError = 'Nhập nội dung câu hỏi'; render(); return; }
+  if(q.type==='mcq'){
+    const opts = q.data.options.map(o=>(o||'').trim());
+    if(opts.some(o=>!o)){ questionError = 'Điền đủ 4 phương án'; render(); return; }
+    q.data.options = opts;
+  } else if(q.type==='short_answer'){
+    const accepted = q.data.accepted.map(a=>(a||'').trim()).filter(Boolean);
+    if(accepted.length===0){ questionError = 'Nhập ít nhất 1 đáp án đúng'; render(); return; }
+    q.data.accepted = accepted;
+  }
+
+  questionBusy = true; questionError = ''; render();
+  try{
+    if(q.mode==='add'){
+      const res = await authorizedRequest('/tests/questions/add', {
+        testId: testEditorOpen.id, type:q.type, prompt, imageData:q.imageData, data:q.data
+      });
+      testEditorOpen.questions.push({ id:res.id, type:q.type, prompt, imageData:q.imageData, data:q.data, orderIndex:res.orderIndex });
+    } else {
+      await authorizedRequest('/tests/questions/update', { questionId: q.id, prompt, imageData:q.imageData, data:q.data });
+      const target = testEditorOpen.questions.find(x=>x.id===q.id);
+      if(target){ target.prompt=prompt; target.imageData=q.imageData; target.data=q.data; target.type=q.type; }
+    }
+    const idx = TESTS.findIndex(t=>t.id===testEditorOpen.id);
+    if(idx>=0) TESTS[idx].questionCount = testEditorOpen.questions.length;
+    questionEditorOpen = null;
+    toast('Đã lưu câu hỏi ✓');
+  }catch(e){
+    questionError = e.message || 'Lưu câu hỏi thất bại';
+  }
+  questionBusy = false; render();
+}
+
+async function deleteQuestion(id){
+  testBusy = true; render();
+  try{
+    await authorizedRequest('/tests/questions/delete', { questionId: id });
+    testEditorOpen.questions = testEditorOpen.questions.filter(q=>q.id!==id);
+    const idx = TESTS.findIndex(t=>t.id===testEditorOpen.id);
+    if(idx>=0) TESTS[idx].questionCount = testEditorOpen.questions.length;
+    toast('Đã xoá câu hỏi');
+  }catch(e){
+    toast('Lỗi: ' + (e.message||''));
+  }
+  testBusy = false; render();
+}
+
+function renderTestManager(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `<h1 class="display">Bài kiểm tra</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+
+  const backLink = document.createElement('button');
+  backLink.className = 'back-link';
+  backLink.textContent = '← Lớp học';
+  backLink.style.marginBottom = '14px';
+  backLink.onclick = closeTestManager;
+  main.appendChild(backLink);
+
+  const subheading = document.createElement('div');
+  subheading.className = 'display';
+  subheading.style.fontSize = '19px'; subheading.style.fontWeight = '700'; subheading.style.marginBottom = '16px';
+  subheading.textContent = testManagerClassroom.name;
+  main.appendChild(subheading);
+
+  if(testError){
+    const errBox = document.createElement('div');
+    errBox.style.color='var(--coral)'; errBox.style.fontSize='12px'; errBox.style.margin='0 0 10px';
+    errBox.textContent = testError;
+    main.appendChild(errBox);
+  }
+
+  const formRow = document.createElement('div');
+  formRow.style.display='flex'; formRow.style.gap='8px'; formRow.style.marginBottom='16px';
+  const input = document.createElement('input');
+  input.type='text'; input.placeholder='Tên bài kiểm tra, ví dụ: Kiểm tra 15 phút - Chương 1';
+  input.style.flex='1'; input.style.background='var(--bg-elev)'; input.style.border='1px solid var(--line)';
+  input.style.color='var(--white)'; input.style.borderRadius='10px'; input.style.padding='11px 12px'; input.style.fontSize='14px';
+  input.onkeydown = (e)=>{ if(e.key==='Enter') createTest(input.value); };
+  const btn = document.createElement('button');
+  btn.className='save-btn'; btn.style.width='auto'; btn.style.margin='0'; btn.style.padding='11px 16px'; btn.style.fontSize='14px';
+  btn.textContent = testBusy ? '…' : '+ Tạo';
+  btn.disabled = testBusy;
+  btn.onclick = ()=> createTest(input.value);
+  formRow.appendChild(input); formRow.appendChild(btn);
+  main.appendChild(formRow);
+
+  if(testsLoading){
+    const l = document.createElement('div'); l.className='tr-sub'; l.textContent='Đang tải…';
+    main.appendChild(l);
+  } else if(TESTS.length===0){
+    const e = document.createElement('div'); e.className='tr-sub'; e.textContent='Chưa có bài kiểm tra nào trong lớp này.';
+    main.appendChild(e);
+  }
+
+  TESTS.forEach(t=>{
+    const card = document.createElement('div');
+    card.className = 'test-card';
+    card.onclick = ()=> openTestEditor(t.id);
+
+    const icon = document.createElement('div');
+    icon.className = 'test-icon';
+    icon.textContent = '📝';
+
+    const info = document.createElement('div');
+    info.className = 'test-info';
+    info.innerHTML = `
+      <div class="test-title">${escapeHtml(t.title)}</div>
+      <div class="test-meta">${t.questionCount} câu hỏi</div>
+    `;
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'subject-del'; delBtn.textContent = '🗑'; delBtn.title = 'Xoá bài kiểm tra';
+    delBtn.onclick = (e)=>{ e.stopPropagation(); testConfirm = {type:'delete-test', id:t.id, label:t.title}; render(); };
+
+    const chev = document.createElement('span');
+    chev.className = 'test-chev';
+    chev.textContent = '›';
+
+    card.appendChild(icon);
+    card.appendChild(info);
+    card.appendChild(delBtn);
+    card.appendChild(chev);
+    main.appendChild(card);
+  });
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
+function renderTestEditor(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `<h1 class="display">Soạn bài kiểm tra</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+
+  const backLink = document.createElement('button');
+  backLink.className = 'back-link';
+  backLink.textContent = '← ' + testManagerClassroom.name;
+  backLink.style.marginBottom = '14px';
+  backLink.onclick = ()=>{ testEditorOpen=null; testTitleEditing=false; render(); };
+  main.appendChild(backLink);
+
+  const titleRow = document.createElement('div');
+  titleRow.style.display='flex'; titleRow.style.alignItems='center'; titleRow.style.gap='8px'; titleRow.style.marginBottom='18px';
+  if(testTitleEditing){
+    const tInput = document.createElement('input');
+    tInput.type='text'; tInput.value = testEditorOpen.title;
+    tInput.style.flex='1'; tInput.style.background='var(--bg-elev)'; tInput.style.border='1px solid var(--line)';
+    tInput.style.color='var(--white)'; tInput.style.borderRadius='10px'; tInput.style.padding='10px 12px'; tInput.style.fontSize='16px'; tInput.style.fontWeight='600';
+    tInput.onkeydown = (e)=>{ if(e.key==='Enter') renameTestTitle(tInput.value); };
+    const saveT = document.createElement('button');
+    saveT.className='save-btn'; saveT.style.width='auto'; saveT.style.margin='0'; saveT.style.padding='10px 14px';
+    saveT.textContent='Lưu';
+    saveT.onclick = ()=> renameTestTitle(tInput.value);
+    titleRow.appendChild(tInput); titleRow.appendChild(saveT);
+    setTimeout(()=>tInput.focus(), 0);
+  } else {
+    const h = document.createElement('div');
+    h.className='display'; h.style.fontSize='19px'; h.style.fontWeight='700'; h.style.flex='1';
+    h.textContent = testEditorOpen.title;
+    const editT = document.createElement('button');
+    editT.textContent='✎'; editT.title='Đổi tên bài kiểm tra';
+    editT.style.background='none'; editT.style.border='none'; editT.style.color='var(--ink-faint)'; editT.style.fontSize='14px'; editT.style.cursor='pointer';
+    editT.onclick = ()=>{ testTitleEditing=true; render(); };
+    titleRow.appendChild(h); titleRow.appendChild(editT);
+  }
+  main.appendChild(titleRow);
+
+  const addBtn = document.createElement('button');
+  addBtn.className='save-btn'; addBtn.style.marginBottom='16px';
+  addBtn.textContent = '+ Thêm câu hỏi';
+  addBtn.onclick = ()=> openQuestionEditor('add');
+  main.appendChild(addBtn);
+
+  if(testEditorOpen.questions.length===0){
+    const e = document.createElement('div'); e.className='tr-sub'; e.textContent='Chưa có câu hỏi nào.';
+    main.appendChild(e);
+  }
+
+  const typeLabel = { mcq:'Trắc nghiệm', true_false:'Đúng / Sai', short_answer:'Trả lời ngắn' };
+
+  testEditorOpen.questions.forEach((q,i)=>{
+    const card = document.createElement('div');
+    card.className = 'question-card';
+    card.onclick = ()=> openQuestionEditor('edit', q);
+
+    const badge = document.createElement('div');
+    badge.className = 'question-badge';
+    badge.textContent = i+1;
+
+    const info = document.createElement('div');
+    info.className = 'test-info';
+    info.innerHTML = `
+      <span class="question-type-tag ${q.type}">${typeLabel[q.type]||q.type}</span>
+      <div class="subject-name" style="font-size:14px; font-weight:500; line-height:1.4;">${escapeHtml(q.prompt)}</div>
+    `;
+
+    card.appendChild(badge);
+    card.appendChild(info);
+
+    if(q.imageData){
+      const thumb = document.createElement('img');
+      thumb.src = q.imageData;
+      thumb.style.width='44px'; thumb.style.height='44px'; thumb.style.objectFit='cover'; thumb.style.borderRadius='8px'; thumb.style.flexShrink='0';
+      card.appendChild(thumb);
+    }
+
+    const delBtn = document.createElement('button');
+    delBtn.className='subject-del'; delBtn.textContent='🗑'; delBtn.title='Xoá câu hỏi';
+    delBtn.onclick = (e)=>{ e.stopPropagation(); testConfirm = {type:'delete-question', id:q.id, label:'Câu '+(i+1)}; render(); };
+    card.appendChild(delBtn);
+
+    main.appendChild(card);
+  });
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
+function renderQuestionEditor(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+  const q = questionEditorOpen;
+
+  const header = document.createElement('header');
+  header.className='topbar';
+  header.innerHTML = `<h1 class="display">${q.mode==='add' ? 'Thêm câu hỏi' : 'Sửa câu hỏi'}</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+
+  const backLink = document.createElement('button');
+  backLink.className = 'back-link';
+  backLink.textContent = '← ' + testEditorOpen.title;
+  backLink.style.marginBottom = '14px';
+  backLink.disabled = questionBusy;
+  backLink.onclick = ()=>{ if(!questionBusy){ questionEditorOpen=null; render(); } };
+  main.appendChild(backLink);
+
+  const typeField = document.createElement('div');
+  typeField.className='field';
+  typeField.innerHTML = `<label>Loại câu hỏi</label>`;
+  const typeRow = document.createElement('div');
+  typeRow.style.display='flex'; typeRow.style.gap='6px';
+  [['mcq','Trắc nghiệm'],['true_false','Đúng/Sai'],['short_answer','Trả lời ngắn']].forEach(([val,label])=>{
+    const b = document.createElement('button');
+    b.type='button'; b.textContent=label;
+    b.style.flex='1'; b.style.padding='9px 4px'; b.style.borderRadius='9px'; b.style.fontSize='12.5px'; b.style.fontWeight='600';
+    b.style.border = q.type===val ? '1px solid var(--teal)' : '1px solid var(--line)';
+    b.style.background = q.type===val ? 'var(--teal)' : 'var(--bg-elev)';
+    b.style.color = q.type===val ? 'var(--bg)' : 'var(--white)';
+    b.onclick = ()=>{ q.type = val; q.data = defaultDataForType(val); render(); };
+    typeRow.appendChild(b);
+  });
+  typeField.appendChild(typeRow);
+  main.appendChild(typeField);
+
+  const fPrompt = document.createElement('div');
+  fPrompt.className='field';
+  fPrompt.innerHTML = `<label>Nội dung câu hỏi</label>`;
+  const promptArea = document.createElement('textarea');
+  promptArea.value = q.prompt;
+  promptArea.rows = 3;
+  promptArea.placeholder = 'Nhập câu hỏi… hỗ trợ mọi ký tự, ví dụ: α, β, ≥, ½, "trích dẫn"';
+  promptArea.oninput = ()=>{ q.prompt = promptArea.value; };
+  fPrompt.appendChild(promptArea);
+  main.appendChild(fPrompt);
+
+  const fImage = document.createElement('div');
+  fImage.className='field';
+  fImage.innerHTML = `<label>Hình ảnh (không bắt buộc)</label>`;
+  if(q.imageData){
+    const previewWrap = document.createElement('div');
+    previewWrap.style.position='relative'; previewWrap.style.display='inline-block'; previewWrap.style.marginBottom='8px';
+    const img = document.createElement('img');
+    img.src = q.imageData;
+    img.style.maxWidth='160px'; img.style.maxHeight='160px'; img.style.borderRadius='10px'; img.style.display='block';
+    const rmBtn = document.createElement('button');
+    rmBtn.textContent='✕'; rmBtn.title='Xoá ảnh';
+    rmBtn.style.position='absolute'; rmBtn.style.top='-8px'; rmBtn.style.right='-8px';
+    rmBtn.style.width='24px'; rmBtn.style.height='24px'; rmBtn.style.borderRadius='50%';
+    rmBtn.style.background='var(--coral)'; rmBtn.style.color='#3a0d13'; rmBtn.style.border='none'; rmBtn.style.fontSize='12px'; rmBtn.style.cursor='pointer';
+    rmBtn.onclick = ()=>{ q.imageData = null; render(); };
+    previewWrap.appendChild(img); previewWrap.appendChild(rmBtn);
+    fImage.appendChild(previewWrap);
+  } else {
+    const fileBtn = document.createElement('label');
+    fileBtn.className='save-btn';
+    fileBtn.style.background='var(--bg-elev)'; fileBtn.style.color='var(--white)'; fileBtn.style.border='1px solid var(--line)';
+    fileBtn.style.display='inline-block'; fileBtn.style.width='auto'; fileBtn.style.padding='10px 16px'; fileBtn.style.fontSize='13px'; fileBtn.style.cursor='pointer'; fileBtn.style.marginTop='0';
+    fileBtn.textContent = questionImageProcessing ? 'Đang xử lý ảnh…' : '📷 Chọn ảnh';
+    const fileInput = document.createElement('input');
+    fileInput.type='file'; fileInput.accept='image/*'; fileInput.style.display='none';
+    fileInput.onchange = ()=>{ if(fileInput.files[0]) uploadQuestionImage(fileInput.files[0]); };
+    fileBtn.appendChild(fileInput);
+    fImage.appendChild(fileBtn);
+  }
+  main.appendChild(fImage);
+
+  if(q.type==='mcq'){
+    const fOpts = document.createElement('div');
+    fOpts.className='field';
+    fOpts.innerHTML = `<label>4 phương án — chạm ○ để chọn đáp án đúng</label>`;
+    q.data.options.forEach((opt,i)=>{
+      const optRow = document.createElement('div');
+      optRow.style.display='flex'; optRow.style.alignItems='center'; optRow.style.gap='8px'; optRow.style.marginBottom='8px';
+      const radio = document.createElement('button');
+      radio.type='button';
+      radio.textContent = q.data.correctIndex===i ? '●' : '○';
+      radio.title = 'Đánh dấu là đáp án đúng';
+      radio.style.background='none'; radio.style.border='none'; radio.style.fontSize='18px'; radio.style.cursor='pointer'; radio.style.flexShrink='0';
+      radio.style.color = q.data.correctIndex===i ? 'var(--teal)' : 'var(--ink-faint)';
+      radio.onclick = ()=>{ q.data.correctIndex = i; render(); };
+      const input = document.createElement('input');
+      input.type='text'; input.value=opt; input.placeholder = 'Phương án ' + String.fromCharCode(65+i);
+      input.style.flex='1'; input.style.background='var(--bg-elev)'; input.style.border='1px solid var(--line)';
+      input.style.color='var(--white)'; input.style.borderRadius='9px'; input.style.padding='10px 11px'; input.style.fontSize='14px';
+      input.oninput = ()=>{ q.data.options[i] = input.value; };
+      optRow.appendChild(radio); optRow.appendChild(input);
+      fOpts.appendChild(optRow);
+    });
+    main.appendChild(fOpts);
+  } else if(q.type==='true_false'){
+    const fTF = document.createElement('div');
+    fTF.className='field';
+    fTF.innerHTML = `<label>Đáp án đúng</label>`;
+    const row = document.createElement('div');
+    row.style.display='flex'; row.style.gap='8px';
+    [[true,'Đúng'],[false,'Sai']].forEach(([val,label])=>{
+      const b = document.createElement('button');
+      b.type='button'; b.textContent=label;
+      b.style.flex='1'; b.style.padding='11px'; b.style.borderRadius='10px'; b.style.fontSize='14px'; b.style.fontWeight='600';
+      b.style.border = q.data.correct===val ? '1px solid var(--teal)' : '1px solid var(--line)';
+      b.style.background = q.data.correct===val ? 'var(--teal)' : 'var(--bg-elev)';
+      b.style.color = q.data.correct===val ? 'var(--bg)' : 'var(--white)';
+      b.onclick = ()=>{ q.data.correct = val; render(); };
+      row.appendChild(b);
+    });
+    fTF.appendChild(row);
+    main.appendChild(fTF);
+  } else {
+    const fSA = document.createElement('div');
+    fSA.className='field';
+    fSA.innerHTML = `<label>Đáp án được chấp nhận</label>`;
+    const hint = document.createElement('div');
+    hint.className='tr-sub'; hint.style.marginBottom='8px';
+    hint.textContent = 'Có thể thêm nhiều cách viết đúng (không phân biệt hoa/thường khi chấm).';
+    fSA.appendChild(hint);
+    q.data.accepted.forEach((ans,i)=>{
+      const ansRow = document.createElement('div');
+      ansRow.style.display='flex'; ansRow.style.gap='8px'; ansRow.style.marginBottom='8px';
+      const input = document.createElement('input');
+      input.type='text'; input.value=ans; input.placeholder='Đáp án đúng';
+      input.style.flex='1'; input.style.background='var(--bg-elev)'; input.style.border='1px solid var(--line)';
+      input.style.color='var(--white)'; input.style.borderRadius='9px'; input.style.padding='10px 11px'; input.style.fontSize='14px';
+      input.oninput = ()=>{ q.data.accepted[i] = input.value; };
+      ansRow.appendChild(input);
+      if(q.data.accepted.length>1){
+        const rm = document.createElement('button');
+        rm.textContent='✕'; rm.title='Xoá'; rm.style.background='none'; rm.style.border='none'; rm.style.color='var(--ink-faint)'; rm.style.fontSize='14px'; rm.style.cursor='pointer';
+        rm.onclick = ()=>{ q.data.accepted.splice(i,1); render(); };
+        ansRow.appendChild(rm);
+      }
+      fSA.appendChild(ansRow);
+    });
+    const addAns = document.createElement('button');
+    addAns.type='button'; addAns.textContent='+ Thêm cách viết khác';
+    addAns.className='back-link';
+    addAns.onclick = ()=>{ q.data.accepted.push(''); render(); };
+    fSA.appendChild(addAns);
+    main.appendChild(fSA);
+  }
+
+  if(questionError){
+    const errBox = document.createElement('div');
+    errBox.style.color='var(--coral)'; errBox.style.fontSize='12px'; errBox.style.margin='0 0 12px';
+    errBox.textContent = questionError;
+    main.appendChild(errBox);
+  }
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className='save-btn';
+  saveBtn.disabled = questionBusy || questionImageProcessing;
+  saveBtn.textContent = questionBusy ? 'Đang lưu…' : 'Lưu câu hỏi';
+  saveBtn.onclick = ()=> saveQuestion();
+  main.appendChild(saveBtn);
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
+function renderTestConfirmModal(){
+  const overlay = document.createElement('div');
+  overlay.className='modal-backdrop';
+  overlay.onclick = (e)=>{ if(e.target===overlay){ testConfirm=null; render(); } };
+  const info = testConfirm;
+  const isTest = info.type === 'delete-test';
+  const card = document.createElement('div');
+  card.className='modal-card';
+  card.innerHTML = `
+    <div class="modal-title display">Xoá ${isTest?'bài kiểm tra':'câu hỏi'} "${escapeHtml(info.label)}"?</div>
+    <p style="color:var(--ink-soft); font-size:14px; line-height:1.6; margin:0 0 4px;">
+      ${isTest ? 'Toàn bộ câu hỏi và hình ảnh trong bài kiểm tra này sẽ bị xoá vĩnh viễn.' : 'Câu hỏi và hình ảnh đính kèm (nếu có) sẽ bị xoá vĩnh viễn.'}
+    </p>
+  `;
+  const btnRow = document.createElement('div');
+  btnRow.style.display='flex'; btnRow.style.gap='10px'; btnRow.style.marginTop='22px';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className='save-btn'; cancelBtn.style.background='var(--bg-elev)'; cancelBtn.style.color='var(--white)'; cancelBtn.style.border='1px solid var(--line)';
+  cancelBtn.textContent='Huỷ';
+  cancelBtn.onclick = ()=>{ testConfirm=null; render(); };
+  const confirmBtn = document.createElement('button');
+  confirmBtn.className='save-btn'; confirmBtn.style.background='var(--coral)'; confirmBtn.style.color='#3a0d13';
+  confirmBtn.textContent='Xoá';
+  confirmBtn.onclick = async ()=>{
+    const id = info.id;
+    testConfirm = null;
+    if(isTest) await deleteTest(id); else await deleteQuestion(id);
+  };
+  btnRow.appendChild(cancelBtn); btnRow.appendChild(confirmBtn);
   card.appendChild(btnRow);
   overlay.appendChild(card);
   return overlay;
