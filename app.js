@@ -577,6 +577,23 @@ function escapeHtml(s){
   return (s||'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
+// Always prefer a real display name over an email address anywhere a person
+// is shown (teacher on a class card, student in a roster/score list...).
+// Falls back to email only if the server hasn't sent a name for that person yet.
+function personLabel(p){
+  if(!p) return '';
+  if(p.name) return p.name;
+  return p.email || '';
+}
+// Short initials for a small round avatar chip, from a name or an email.
+function initialsOf(p){
+  const label = personLabel(p);
+  if(!label) return '?';
+  const parts = label.trim().split(/\s+/).filter(Boolean);
+  if(parts.length>1) return (parts[0][0]+parts[parts.length-1][0]).toUpperCase();
+  return label.slice(0,2).toUpperCase();
+}
+
 /* ---------------- ADD ---------------- */
 function renderAdd(){
   const wrap = document.createElement('div');
@@ -2186,7 +2203,7 @@ function renderClassroomsSection(){
       const color = COLORS[i % COLORS.length];
       const card = document.createElement('div');
       card.className = 'classroom-card';
-      card.onclick = ()=> openStudentTestList(c.id, c.name);
+      card.onclick = ()=> openStudentTestList(c);
 
       const banner = document.createElement('div');
       banner.className = 'classroom-banner';
@@ -2207,7 +2224,7 @@ function renderClassroomsSection(){
       body.appendChild(nameEl);
       const chipRow = document.createElement('div');
       chipRow.className = 'classroom-chip-row';
-      chipRow.innerHTML = `<span class="classroom-chip" style="cursor:default;">👤 ${escapeHtml(c.teacherEmail||'')}</span>`;
+      chipRow.innerHTML = `<span class="classroom-chip" style="cursor:default;">👤 ${escapeHtml(personLabel({name:c.teacherName, email:c.teacherEmail}))}</span>`;
       body.appendChild(chipRow);
       card.appendChild(body);
       grid.appendChild(card);
@@ -2239,7 +2256,7 @@ function renderClassroomMembersModal(){
     list.style.maxHeight = '50vh';
     list.style.overflowY = 'auto';
     list.innerHTML = c.members.map(m=>
-      `<div class="tr-sub" style="padding:8px 0; border-bottom:1px solid var(--line);">${escapeHtml(m.email)}</div>`
+      `<div class="tr-sub" style="padding:8px 0; border-bottom:1px solid var(--line);">${escapeHtml(personLabel(m))}</div>`
     ).join('');
     card.appendChild(list);
   }
@@ -3109,7 +3126,7 @@ function renderTestSubmissions(){
     const pct = s.total>0 ? Math.round((s.score/s.total)*100) : 0;
     row.innerHTML = `
       <div class="subject-info">
-        <div class="subject-name">${escapeHtml(s.email)}</div>
+        <div class="subject-name">${escapeHtml(personLabel(s))}</div>
         <div class="subject-meta">${s.attemptCount>1 ? 'Đã làm '+s.attemptCount+' lần' : 'Đã nộp bài'}</div>
       </div>
       <div class="mono" style="font-size:15px; font-weight:700; color:${pct>=50?'var(--teal)':'var(--coral)'};">${s.score}/${s.total}</div>
@@ -3122,13 +3139,18 @@ function renderTestSubmissions(){
 }
 
 /* ---- làm bài kiểm tra (học sinh) ---- */
-function openStudentTestList(classroomId, classroomName){
-  studentTestListClassroom = { id: classroomId, name: classroomName };
+function openStudentTestList(classroom){
+  studentTestListClassroom = {
+    id: classroom.id,
+    name: classroom.name,
+    teacherName: classroom.teacherName,
+    teacherEmail: classroom.teacherEmail
+  };
   studentTestError = '';
   studentTests = [];
   studentTestsLoading = true;
   render();
-  authorizedGet('/tests/student/list?classroomId=' + encodeURIComponent(classroomId))
+  authorizedGet('/tests/student/list?classroomId=' + encodeURIComponent(classroom.id))
     .then(res=>{ studentTests = res.tests || []; })
     .catch(e=>{ studentTestError = e.message || 'Lỗi tải bài kiểm tra'; })
     .finally(()=>{ studentTestsLoading = false; render(); });
@@ -3202,6 +3224,38 @@ function scoreTier(pct){
   return { color:'var(--coral)', icon:'!', verdict:'Cần ôn lại phần này' };
 }
 
+// One test card for the student-facing list. `done` picks the visual
+// treatment (open/red "chưa thi" vs. completed/scored) so the same builder
+// serves both the "chưa hoàn thành" and "đã hoàn thành" sections below.
+function buildStudentTestCard(t, teacherLabel){
+  const card = document.createElement('div');
+  card.className = 'srs-test-card' + (t.mySubmission ? ' is-done' : '');
+  card.onclick = ()=> openStudentTestDetail(t.id);
+
+  const attemptPill = t.maxAttempts === 1
+    ? '<span class="stc-pill">🔒 Chỉ 1 lần</span>'
+    : '<span class="stc-pill">🔁 Không giới hạn</span>';
+
+  let statusHtml, scorePillHtml = '';
+  if(t.mySubmission){
+    const pct = t.mySubmission.total>0 ? (t.mySubmission.score/t.mySubmission.total) : 0;
+    const tier = scoreTier(pct);
+    statusHtml = `<span class="stc-status" style="color:${tier.color};">Trạng thái: đã thi</span>`;
+    scorePillHtml = `<span class="stc-pill" style="color:${tier.color}; border-color:${tier.color};">${tier.icon} ${t.mySubmission.score}/${t.mySubmission.total} điểm</span>`;
+  } else {
+    statusHtml = `<span class="stc-status stc-status-pending">Trạng thái: chưa thi</span>`;
+  }
+
+  card.innerHTML = `
+    <div class="stc-pillrow">${attemptPill}${scorePillHtml}</div>
+    <div class="stc-teacher"><span class="stc-avatar">${escapeHtml(initialsOf({name:teacherLabel}))}</span>${escapeHtml(teacherLabel)}</div>
+    <div class="stc-title">${escapeHtml(t.title)}</div>
+    ${statusHtml}
+    <div class="stc-meta">📄 ${t.questionCount} câu${t.mySubmission && t.mySubmission.attemptCount>1 ? ' · 🔁 Đã làm '+t.mySubmission.attemptCount+' lần' : ''}</div>
+  `;
+  return card;
+}
+
 function renderStudentTestList(){
   const wrap = document.createElement('div');
   wrap.style.display = 'contents';
@@ -3238,41 +3292,36 @@ function renderStudentTestList(){
   } else if(studentTests.length===0){
     const e = document.createElement('div'); e.className='tr-sub'; e.textContent='Giáo viên chưa giao bài kiểm tra nào cho lớp này.';
     main.appendChild(e);
-  }
+  } else {
+    const teacherLabel = personLabel({name: studentTestListClassroom.teacherName, email: studentTestListClassroom.teacherEmail});
+    const pending = studentTests.filter(t=>!t.mySubmission);
+    const done = studentTests.filter(t=>t.mySubmission);
 
-  studentTests.forEach(t=>{
-    const card = document.createElement('div');
-    card.className = 'test-card';
-    card.onclick = ()=> openStudentTestDetail(t.id);
-
-    const icon = document.createElement('div');
-    icon.className = 'test-icon';
-    icon.textContent = '📝';
-
-    const info = document.createElement('div');
-    info.className = 'test-info';
-    let statusHtml;
-    if(t.mySubmission){
-      const pct = t.mySubmission.total>0 ? (t.mySubmission.score/t.mySubmission.total) : 0;
-      const tier = scoreTier(pct);
-      statusHtml = `<span class="badge-pill" style="color:${tier.color}; border-color:${tier.color};">${tier.icon} ${t.mySubmission.score}/${t.mySubmission.total} điểm</span>`;
+    const pendingHead = document.createElement('div');
+    pendingHead.className = 'stc-section-title';
+    pendingHead.textContent = `Đề thi chưa hoàn thành (${pending.length})`;
+    main.appendChild(pendingHead);
+    if(pending.length===0){
+      const e = document.createElement('div'); e.className='tr-sub'; e.style.marginBottom='18px';
+      e.textContent = 'Bạn đã hoàn thành hết bài được giao 🎉';
+      main.appendChild(e);
     } else {
-      statusHtml = `<span class="badge-pill">○ Chưa làm</span>`;
+      pending.forEach(t=> main.appendChild(buildStudentTestCard(t, teacherLabel)));
     }
-    info.innerHTML = `
-      <div class="test-title">${escapeHtml(t.title)}</div>
-      <div class="test-meta">📄 ${t.questionCount} câu hỏi · ${statusHtml}</div>
-    `;
 
-    const chev = document.createElement('span');
-    chev.className = 'test-chev';
-    chev.textContent = '›';
-
-    card.appendChild(icon);
-    card.appendChild(info);
-    card.appendChild(chev);
-    main.appendChild(card);
-  });
+    const doneHead = document.createElement('div');
+    doneHead.className = 'stc-section-title';
+    doneHead.style.marginTop = '22px';
+    doneHead.textContent = `Đề thi đã hoàn thành (${done.length})`;
+    main.appendChild(doneHead);
+    if(done.length===0){
+      const e = document.createElement('div'); e.className='tr-sub';
+      e.textContent = 'Chưa có đề nào bạn hoàn thành.';
+      main.appendChild(e);
+    } else {
+      done.forEach(t=> main.appendChild(buildStudentTestCard(t, teacherLabel)));
+    }
+  }
 
   wrap.appendChild(main);
   return wrap;
