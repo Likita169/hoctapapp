@@ -78,7 +78,7 @@ let studentTestsLoading = false;
 let studentTestError = '';
 
 let studentTestDetailOpen = null;               // {id,title,maxAttempts,questions,mySubmission,resultDetail?} landing page for 1 test
-let testResultShowDetail = false;               // "Xem chi tiết" toggle on the test-detail page
+let testReviewOpen = false;                     // true while the dedicated "Xem lại bài làm" page is open
 
 let takeTestOpen = null;                        // {id,title,questions} while actively taking a test
 let takeTestAnswers = {};                       // {questionId: answer}
@@ -334,7 +334,7 @@ let _prevRenderSig = null; // used to decide whether to preserve scroll position
 function currentRenderSig(){
   return [
     VIEW, questionEditorOpen, testSubmissionsOpen, testEditorOpen, testManagerClassroom,
-    takeTestOpen, studentTestDetailOpen, studentTestListClassroom,
+    takeTestOpen, studentTestDetailOpen, testReviewOpen, studentTestListClassroom,
     folderPath.length, folderPath[folderPath.length-1], manageFilterSubjectId
   ];
 }
@@ -347,7 +347,7 @@ function render(){
 
   $app.innerHTML = '';
   const main = document.createElement('div');
-  main.className = samePage ? 'view-root' : 'view-root view-enter';
+  main.className = samePage ? 'view-root no-replay' : 'view-root view-enter';
 
   try{
     if(VIEW==='home') main.appendChild(renderHome());
@@ -1876,6 +1876,7 @@ async function logout(silent){
   studentTestListClassroom = null;
   studentTests = [];
   studentTestDetailOpen = null;
+  testReviewOpen = false;
   takeTestOpen = null;
   takeTestAnswers = {};
   const staleConfirm = document.getElementById('submitConfirmOverlay');
@@ -1985,6 +1986,7 @@ function renderClassroomView(){
   if(AUTH.token && testEditorOpen) return renderTestEditor();
   if(AUTH.token && testManagerClassroom) return renderTestManager();
   if(AUTH.token && takeTestOpen) return renderTakeTest();
+  if(AUTH.token && studentTestDetailOpen && testReviewOpen) return renderTestReview();
   if(AUTH.token && studentTestDetailOpen) return renderStudentTestDetail();
   if(AUTH.token && studentTestListClassroom) return renderStudentTestList();
 
@@ -3135,6 +3137,7 @@ function openStudentTestList(classroomId, classroomName){
 function closeStudentTestList(){
   studentTestListClassroom = null;
   studentTestDetailOpen = null;
+  testReviewOpen = false;
   takeTestOpen = null;
   render();
 }
@@ -3143,7 +3146,7 @@ async function openStudentTestDetail(testId){
   try{
     const detail = await authorizedGet('/tests/student/get?testId=' + encodeURIComponent(testId));
     studentTestDetailOpen = detail;
-    testResultShowDetail = false;
+    testReviewOpen = false;
   }catch(e){
     toast('Lỗi: ' + (e.message||''));
   }
@@ -3154,7 +3157,7 @@ async function viewPastResult(){
   try{
     const res = await authorizedGet('/tests/student/result?testId=' + encodeURIComponent(studentTestDetailOpen.id));
     studentTestDetailOpen.resultDetail = res.detail;
-    testResultShowDetail = true;
+    testReviewOpen = true;
   }catch(e){
     toast('Lỗi: ' + (e.message||''));
   }
@@ -3164,6 +3167,7 @@ async function viewPastResult(){
 function startTakeTest(){
   takeTestOpen = { id: studentTestDetailOpen.id, title: studentTestDetailOpen.title, questions: studentTestDetailOpen.questions };
   takeTestAnswers = {};
+  testReviewOpen = false;
   render();
 }
 
@@ -3177,7 +3181,7 @@ async function submitTest(){
     studentTestDetailOpen.mySubmission = { score: res.score, total: res.total, attemptCount: res.attemptCount, submittedAt: res.submittedAt };
     studentTestDetailOpen.canAttempt = studentTestDetailOpen.maxAttempts === null;
     studentTestDetailOpen.resultDetail = res.detail;
-    testResultShowDetail = false;
+    testReviewOpen = false;
     const idx = studentTests.findIndex(t=>t.id===takeTestOpen.id);
     if(idx>=0) studentTests[idx].mySubmission = studentTestDetailOpen.mySubmission;
     takeTestOpen = null;
@@ -3188,6 +3192,14 @@ async function submitTest(){
     toast('Lỗi: ' + (e.message || 'Nộp bài thất bại'));
     return false;
   }
+}
+
+// Shared 3-band coloring so the test list, result ring, and review page
+// all agree on what counts as "good" — teal ≥80%, amber ≥50%, coral below.
+function scoreTier(pct){
+  if(pct>=0.8) return { color:'var(--teal)', icon:'★', verdict:'Xuất sắc! 🎉' };
+  if(pct>=0.5) return { color:'var(--amber)', icon:'◐', verdict:'Khá tốt, cố thêm chút nữa' };
+  return { color:'var(--coral)', icon:'!', verdict:'Cần ôn lại phần này' };
 }
 
 function renderStudentTestList(){
@@ -3239,12 +3251,17 @@ function renderStudentTestList(){
 
     const info = document.createElement('div');
     info.className = 'test-info';
-    const statusHtml = t.mySubmission
-      ? `<span class="badge-pill" style="color:${(t.mySubmission.score/t.mySubmission.total)>=0.5?'var(--teal)':'var(--coral)'};">${t.mySubmission.score}/${t.mySubmission.total} điểm</span>`
-      : `<span class="badge-pill">Chưa làm</span>`;
+    let statusHtml;
+    if(t.mySubmission){
+      const pct = t.mySubmission.total>0 ? (t.mySubmission.score/t.mySubmission.total) : 0;
+      const tier = scoreTier(pct);
+      statusHtml = `<span class="badge-pill" style="color:${tier.color}; border-color:${tier.color};">${tier.icon} ${t.mySubmission.score}/${t.mySubmission.total} điểm</span>`;
+    } else {
+      statusHtml = `<span class="badge-pill">○ Chưa làm</span>`;
+    }
     info.innerHTML = `
       <div class="test-title">${escapeHtml(t.title)}</div>
-      <div class="test-meta">${t.questionCount} câu hỏi · ${statusHtml}</div>
+      <div class="test-meta">📄 ${t.questionCount} câu hỏi · ${statusHtml}</div>
     `;
 
     const chev = document.createElement('span');
@@ -3293,112 +3310,46 @@ function renderStudentTestDetail(){
 
   if(t.mySubmission){
     const pct = t.mySubmission.total>0 ? (t.mySubmission.score/t.mySubmission.total) : 0;
+    const pctInt = Math.round(pct*100);
+    const tier = scoreTier(pct);
+    const R = 52, C = 2*Math.PI*R;
+    const targetOffset = (C * (1-pct)).toFixed(1);
+
     const scoreBox = document.createElement('div');
-    scoreBox.style.textAlign = 'center';
-    scoreBox.style.padding = '20px 12px';
-    scoreBox.style.background = 'var(--bg-elev)';
-    scoreBox.style.border = '1px solid var(--line)';
-    scoreBox.style.borderRadius = '16px';
-    scoreBox.style.marginBottom = '16px';
+    scoreBox.className = 'score-result-card';
     scoreBox.innerHTML = `
-      <div class="display" style="font-size:38px; font-weight:700; color:${pct>=0.5?'var(--teal)':'var(--coral)'};">${t.mySubmission.score}/${t.mySubmission.total}</div>
-      <div class="tr-sub" style="margin-top:4px;">${t.mySubmission.attemptCount>1 ? 'Điểm lần gần nhất · Đã làm '+t.mySubmission.attemptCount+' lần' : 'Điểm của bạn'}</div>
+      <div class="score-ring-wrap">
+        <svg viewBox="0 0 120 120" class="score-ring">
+          <circle cx="60" cy="60" r="${R}" class="score-ring-bg"></circle>
+          <circle cx="60" cy="60" r="${R}" class="score-ring-fg" style="stroke:${tier.color}; stroke-dasharray:${C.toFixed(1)}; stroke-dashoffset:${C.toFixed(1)};"></circle>
+        </svg>
+        <div class="score-ring-center">
+          <div class="score-ring-num display">${t.mySubmission.score}/${t.mySubmission.total}</div>
+          <div class="score-ring-pct mono">${pctInt}%</div>
+        </div>
+      </div>
+      <div class="score-verdict" style="color:${tier.color};">${tier.verdict}</div>
+      <div class="tr-sub">${t.mySubmission.attemptCount>1 ? 'Điểm lần gần nhất · Đã làm '+t.mySubmission.attemptCount+' lần' : 'Điểm của bạn'}</div>
     `;
     main.appendChild(scoreBox);
+    // Animate the ring filling in from empty, one frame after mount so the
+    // browser has painted the empty state first (otherwise it would just
+    // appear already-full with no motion).
+    requestAnimationFrame(()=>{
+      requestAnimationFrame(()=>{
+        const fg = scoreBox.querySelector('.score-ring-fg');
+        if(fg) fg.style.strokeDashoffset = targetOffset;
+      });
+    });
 
     const detailBtn = document.createElement('button');
-    detailBtn.className = 'save-btn';
-    detailBtn.style.background = 'var(--bg-elev)'; detailBtn.style.color='var(--white)'; detailBtn.style.border='1px solid var(--line)';
-    detailBtn.style.marginBottom = '10px';
-    detailBtn.textContent = testResultShowDetail ? 'Ẩn chi tiết' : 'Xem chi tiết';
+    detailBtn.className = 'save-btn secondary-btn';
+    detailBtn.textContent = '📋 Xem lại bài làm';
     detailBtn.onclick = ()=>{
-      if(testResultShowDetail){ testResultShowDetail = false; render(); }
-      else if(t.resultDetail){ testResultShowDetail = true; render(); }
+      if(t.resultDetail){ testReviewOpen = true; render(); }
       else { viewPastResult(); }
     };
     main.appendChild(detailBtn);
-
-    if(testResultShowDetail && t.resultDetail){
-      t.resultDetail.forEach((d,i)=>{
-        const qcard = document.createElement('div');
-        qcard.className = 'qcard';
-
-        const promptEl = document.createElement('div');
-        promptEl.className = 'qcard-prompt';
-        promptEl.innerHTML = `Câu ${i+1}: ${escapeHtml(d.prompt)}`;
-        qcard.appendChild(promptEl);
-
-        if(d.imageData){
-          const img = document.createElement('img');
-          img.src = d.imageData;
-          img.style.maxWidth='100%'; img.style.maxHeight='200px'; img.style.borderRadius='10px'; img.style.display='block'; img.style.marginBottom='12px';
-          qcard.appendChild(img);
-        }
-
-        if(d.type === 'mcq' && Array.isArray(d.options)){
-          d.options.forEach((opt,oi)=>{
-            const isPicked = opt === d.yourAnswer;
-            const isCorrectOpt = opt === d.correctAnswer;
-            const row = document.createElement('div');
-            row.className = 'opt-row readonly' + (isCorrectOpt ? ' correct' : (isPicked ? ' wrong' : ''));
-            row.innerHTML = `<div class="opt-badge${isCorrectOpt?' correct':(isPicked?' wrong':'')}">${String.fromCharCode(65+oi)}</div><div class="opt-text">${escapeHtml(opt)}</div>`;
-            qcard.appendChild(row);
-            if(isPicked || isCorrectOpt){
-              const tags = document.createElement('div');
-              tags.className = 'opt-tags';
-              tags.innerHTML = (isPicked ? '<span class="opt-tag picked">✓ Bạn chọn</span>' : '') + (isCorrectOpt ? '<span class="opt-tag correct">✓ Đúng</span>' : '');
-              qcard.appendChild(tags);
-            }
-          });
-        } else if(d.type === 'true_false' && Array.isArray(d.items)){
-          d.items.forEach((it,ii)=>{
-            const itemBox = document.createElement('div');
-            itemBox.className = 'tf-item';
-            const itemLabel = document.createElement('div');
-            itemLabel.className = 'tf-item-label';
-            itemLabel.innerHTML = `${String.fromCharCode(97+ii)}) ${escapeHtml(it.text)}`;
-            itemBox.appendChild(itemLabel);
-            const optWrap = document.createElement('div');
-            optWrap.className = 'tf-optwrap';
-            [[true,'Đ','Đúng'],[false,'S','Sai']].forEach(([val,letter,label])=>{
-              const isPicked = it.yourAnswer === val;
-              const isCorrectOpt = it.correctAnswer === val;
-              const row = document.createElement('div');
-              row.className = 'opt-row readonly' + (isCorrectOpt ? ' correct' : (isPicked ? ' wrong' : ''));
-              row.innerHTML = `<div class="opt-badge${isCorrectOpt?' correct':(isPicked?' wrong':'')}">${letter}</div><div class="opt-text">${label}</div>`;
-              optWrap.appendChild(row);
-            });
-            itemBox.appendChild(optWrap);
-            qcard.appendChild(itemBox);
-          });
-          const ptsRow = document.createElement('div');
-          ptsRow.className = 'tr-sub';
-          ptsRow.style.marginTop = '4px'; ptsRow.style.fontWeight = '600';
-          const ptsStr = (Math.round((d.earnedPoints||0)*100)/100).toString().replace('.', ',');
-          ptsRow.textContent = `Đúng ${d.correctCount||0}/4 ý — ${ptsStr} điểm`;
-          qcard.appendChild(ptsRow);
-        } else {
-          const yourBox = document.createElement('div');
-          yourBox.innerHTML = `<div class="sa-label">Câu trả lời của bạn</div>`;
-          const yourVal = document.createElement('div');
-          yourVal.className = 'sa-box ' + (d.isCorrect ? 'correct' : 'wrong');
-          yourVal.textContent = (d.yourAnswer && d.yourAnswer.trim()) ? d.yourAnswer : '(bỏ trống)';
-          yourBox.appendChild(yourVal);
-          qcard.appendChild(yourBox);
-          if(!d.isCorrect){
-            const correctBox = document.createElement('div');
-            correctBox.innerHTML = `<div class="sa-label">Đáp án đúng</div>`;
-            const correctVal = document.createElement('div');
-            correctVal.className = 'sa-box correct';
-            correctVal.textContent = d.correctAnswer;
-            correctBox.appendChild(correctVal);
-            qcard.appendChild(correctBox);
-          }
-        }
-
-        main.appendChild(qcard);
-      });
-    }
   }
 
   if(t.canAttempt){
@@ -3419,6 +3370,144 @@ function renderStudentTestDetail(){
   return wrap;
 }
 
+function renderTestReview(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+  const t = studentTestDetailOpen;
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `<h1 class="display" style="font-size:18px;">Xem lại bài làm</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+  const backLink = document.createElement('button');
+  backLink.className = 'back-link';
+  backLink.textContent = '← Kết quả';
+  backLink.style.marginBottom = '14px';
+  backLink.onclick = ()=>{ testReviewOpen = false; render(); };
+  main.appendChild(backLink);
+
+  if(t.mySubmission){
+    const pct = t.mySubmission.total>0 ? (t.mySubmission.score/t.mySubmission.total) : 0;
+    const tier = scoreTier(pct);
+    const summary = document.createElement('div');
+    summary.className = 'review-summary-bar';
+    summary.innerHTML = `
+      <div class="test-title" style="margin:0; white-space:normal;">${escapeHtml(t.title)}</div>
+      <div class="mono" style="font-size:15px; font-weight:700; color:${tier.color}; flex-shrink:0;">${tier.icon} ${t.mySubmission.score}/${t.mySubmission.total}</div>
+    `;
+    main.appendChild(summary);
+  }
+
+  (t.resultDetail||[]).forEach((d,i)=>{
+    const qcard = document.createElement('div');
+    qcard.className = 'qcard';
+
+    let qCorrect;
+    if(d.type==='mcq') qCorrect = d.yourAnswer === d.correctAnswer;
+    else if(d.type==='true_false') qCorrect = (d.correctCount||0) === (d.items||[]).length;
+    else qCorrect = !!d.isCorrect;
+
+    const promptEl = document.createElement('div');
+    promptEl.className = 'qcard-prompt';
+    promptEl.innerHTML = `<span class="q-result-dot ${qCorrect?'correct':'wrong'}">${qCorrect?'✓':'✕'}</span>Câu ${i+1}: ${escapeHtml(d.prompt)}`;
+    qcard.appendChild(promptEl);
+
+    if(d.imageData){
+      const img = document.createElement('img');
+      img.src = d.imageData;
+      img.style.maxWidth='100%'; img.style.maxHeight='200px'; img.style.borderRadius='10px'; img.style.display='block'; img.style.marginBottom='12px';
+      qcard.appendChild(img);
+    }
+
+    if(d.type === 'mcq' && Array.isArray(d.options)){
+      d.options.forEach((opt,oi)=>{
+        const isPicked = opt === d.yourAnswer;
+        const isCorrectOpt = opt === d.correctAnswer;
+        const row = document.createElement('div');
+        row.className = 'opt-row readonly' + (isCorrectOpt ? ' correct' : (isPicked ? ' wrong' : ''));
+        let tagHtml = '';
+        if(isCorrectOpt && isPicked) tagHtml = '<span class="opt-tag correct">✓ Bạn chọn — Đúng</span>';
+        else if(isCorrectOpt) tagHtml = '<span class="opt-tag correct">✓ Đáp án đúng</span>';
+        else if(isPicked) tagHtml = '<span class="opt-tag picked">✕ Bạn đã chọn</span>';
+        row.innerHTML = `<div class="opt-badge${isCorrectOpt?' correct':(isPicked?' wrong':'')}">${String.fromCharCode(65+oi)}</div><div class="opt-text">${escapeHtml(opt)}</div>${tagHtml}`;
+        qcard.appendChild(row);
+      });
+    } else if(d.type === 'true_false' && Array.isArray(d.items)){
+      d.items.forEach((it,ii)=>{
+        const itemBox = document.createElement('div');
+        itemBox.className = 'tf-item';
+        const itemLabel = document.createElement('div');
+        itemLabel.className = 'tf-item-label';
+        itemLabel.innerHTML = `${String.fromCharCode(97+ii)}) ${escapeHtml(it.text)}`;
+        itemBox.appendChild(itemLabel);
+        const optWrap = document.createElement('div');
+        optWrap.className = 'tf-optwrap';
+        [[true,'Đ','Đúng'],[false,'S','Sai']].forEach(([val,letter,label])=>{
+          const isPicked = it.yourAnswer === val;
+          const isCorrectOpt = it.correctAnswer === val;
+          const row = document.createElement('div');
+          row.className = 'opt-row readonly' + (isCorrectOpt ? ' correct' : (isPicked ? ' wrong' : ''));
+          row.innerHTML = `<div class="opt-badge${isCorrectOpt?' correct':(isPicked?' wrong':'')}">${letter}</div><div class="opt-text">${label}</div>`;
+          optWrap.appendChild(row);
+        });
+        itemBox.appendChild(optWrap);
+        qcard.appendChild(itemBox);
+      });
+      const ptsRow = document.createElement('div');
+      ptsRow.className = 'tr-sub';
+      ptsRow.style.marginTop = '4px'; ptsRow.style.fontWeight = '600';
+      const ptsStr = (Math.round((d.earnedPoints||0)*100)/100).toString().replace('.', ',');
+      ptsRow.textContent = `Đúng ${d.correctCount||0}/4 ý — ${ptsStr} điểm`;
+      qcard.appendChild(ptsRow);
+    } else {
+      const yourBox = document.createElement('div');
+      yourBox.innerHTML = `<div class="sa-label">Câu trả lời của bạn</div>`;
+      const yourVal = document.createElement('div');
+      yourVal.className = 'sa-box ' + (d.isCorrect ? 'correct' : 'wrong');
+      yourVal.textContent = (d.yourAnswer && d.yourAnswer.trim()) ? d.yourAnswer : '(bỏ trống)';
+      yourBox.appendChild(yourVal);
+      qcard.appendChild(yourBox);
+      if(!d.isCorrect){
+        const correctBox = document.createElement('div');
+        correctBox.innerHTML = `<div class="sa-label">Đáp án đúng</div>`;
+        const correctVal = document.createElement('div');
+        correctVal.className = 'sa-box correct';
+        correctVal.textContent = d.correctAnswer;
+        correctBox.appendChild(correctVal);
+        qcard.appendChild(correctBox);
+      }
+    }
+
+    main.appendChild(qcard);
+  });
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
+function countAnsweredTestQuestions(){
+  return takeTestOpen.questions.filter(q => {
+    const a = takeTestAnswers[q.id];
+    if(q.type==='true_false') return a && Object.keys(a).length === (q.items||[]).length;
+    return a!==undefined && a!=='';
+  }).length;
+}
+
+// Called after any answer changes, post-mount, so it can safely look the
+// bar up by id — the initial paint sets it directly (see renderTakeTest).
+function updateTakeTestProgress(){
+  if(!takeTestOpen) return;
+  const fill = document.getElementById('takeTestProgressFill');
+  const label = document.getElementById('takeTestProgressLabel');
+  if(!fill || !label) return;
+  const total = takeTestOpen.questions.length;
+  const answered = countAnsweredTestQuestions();
+  fill.style.width = (total ? (answered/total*100) : 0) + '%';
+  label.textContent = `Đã trả lời ${answered}/${total} câu`;
+}
+
 function renderTakeTest(){
   const wrap = document.createElement('div');
   wrap.style.display = 'contents';
@@ -3426,7 +3515,16 @@ function renderTakeTest(){
 
   const header = document.createElement('header');
   header.className = 'topbar';
-  header.innerHTML = `<h1 class="display" style="font-size:18px;">${escapeHtml(takeTestOpen.title)}</h1>`;
+  const titleEl = document.createElement('h1');
+  titleEl.className = 'display';
+  titleEl.style.cssText = 'font-size:18px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+  titleEl.textContent = takeTestOpen.title;
+  header.appendChild(titleEl);
+  const topSubmitBtn = document.createElement('button');
+  topSubmitBtn.className = 'top-submit-btn';
+  topSubmitBtn.textContent = 'Nộp bài';
+  topSubmitBtn.onclick = showSubmitConfirm;
+  header.appendChild(topSubmitBtn);
   wrap.appendChild(header);
 
   const main = document.createElement('main');
@@ -3437,6 +3535,26 @@ function renderTakeTest(){
   backLink.style.marginBottom = '16px';
   backLink.onclick = ()=>{ takeTestOpen = null; render(); };
   main.appendChild(backLink);
+
+  const total = takeTestOpen.questions.length;
+  const progressWrap = document.createElement('div');
+  progressWrap.style.marginBottom = '20px';
+  const progressBar = document.createElement('div');
+  progressBar.className = 'test-progress-bar';
+  const progressFill = document.createElement('div');
+  progressFill.className = 'test-progress-fill';
+  progressFill.id = 'takeTestProgressFill';
+  progressBar.appendChild(progressFill);
+  const progressLabel = document.createElement('div');
+  progressLabel.className = 'tr-sub';
+  progressLabel.id = 'takeTestProgressLabel';
+  progressLabel.style.marginTop = '6px';
+  progressWrap.appendChild(progressBar);
+  progressWrap.appendChild(progressLabel);
+  main.appendChild(progressWrap);
+  const initAnswered = countAnsweredTestQuestions();
+  progressFill.style.width = (total ? (initAnswered/total*100) : 0) + '%';
+  progressLabel.textContent = `Đã trả lời ${initAnswered}/${total} câu`;
 
   takeTestOpen.questions.forEach((q,i)=>{
     const qcard = document.createElement('div');
@@ -3469,6 +3587,7 @@ function renderTakeTest(){
           });
           row.classList.add('selected');
           row.querySelector('.opt-badge').classList.add('selected');
+          updateTakeTestProgress();
         };
         qcard.appendChild(row);
       });
@@ -3495,6 +3614,7 @@ function renderTakeTest(){
             });
             row.classList.add('selected');
             row.querySelector('.opt-badge').classList.add('selected');
+            updateTakeTestProgress();
           };
           optWrap.appendChild(row);
         });
@@ -3509,18 +3629,12 @@ function renderTakeTest(){
       input.style.width = '100%'; input.style.boxSizing = 'border-box';
       input.style.background='var(--bg-elev)'; input.style.border='1.5px solid var(--line)';
       input.style.color='var(--white)'; input.style.borderRadius='12px'; input.style.padding='12px 14px'; input.style.fontSize='14px';
-      input.oninput = ()=>{ takeTestAnswers[q.id] = input.value; };
+      input.oninput = ()=>{ takeTestAnswers[q.id] = input.value; updateTakeTestProgress(); };
       qcard.appendChild(input);
     }
 
     main.appendChild(qcard);
   });
-
-  const submitBtn = document.createElement('button');
-  submitBtn.className = 'save-btn';
-  submitBtn.textContent = 'Nộp bài';
-  submitBtn.onclick = showSubmitConfirm;
-  main.appendChild(submitBtn);
 
   wrap.appendChild(main);
   return wrap;
@@ -3532,11 +3646,7 @@ function renderTakeTest(){
 function showSubmitConfirm(){
   if(document.getElementById('submitConfirmOverlay')) return;
   const total = takeTestOpen.questions.length;
-  const answeredCount = takeTestOpen.questions.filter(q => {
-    const a = takeTestAnswers[q.id];
-    if(q.type==='true_false') return a && Object.keys(a).length === (q.items||[]).length;
-    return a!==undefined && a!=='';
-  }).length;
+  const answeredCount = countAnsweredTestQuestions();
   const unanswered = total - answeredCount;
 
   const overlay = document.createElement('div');

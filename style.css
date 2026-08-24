@@ -146,9 +146,22 @@ button, .opt-row, .test-card, .question-card, .classroom-card, .subject-row, .th
 .view-root{display:flex; flex-direction:column; height:100%;}
 .view-enter{animation: viewEnter .36s var(--ease-out);}
 
+/* Every render() rebuilds its subtree from scratch, which means every row/card
+   inside it (each carrying its own rise/riseSm/popIn/cardSettle entrance
+   animation) would normally replay on every single tap — that's the
+   "toàn bộ trang vẽ lại" jitter. On an ordinary same-page re-render (not a
+   real navigation) app.js adds .no-replay so none of that replays; only
+   .view-enter (real page changes) still gets the intro motion. */
+.view-root.no-replay *{animation:none !important;}
+
 header.topbar{padding:24px 20px 14px; display:flex; align-items:baseline; justify-content:space-between;}
 header.topbar h1{font-size:22px; margin:0; font-weight:600; font-family:'Fraunces',serif; letter-spacing:-0.01em;}
 header.topbar .date{font-size:11.5px; color:var(--ink-faint); font-family:'IBM Plex Mono',monospace; letter-spacing:0.02em;}
+.top-submit-btn{
+  flex-shrink:0; margin-left:12px; background:var(--teal); color:var(--bg); border:none; border-radius:999px;
+  padding:8px 16px; font-size:13px; font-weight:700; cursor:pointer; box-shadow:var(--shadow-sm);
+}
+.top-submit-btn:active{transform:scale(0.94); box-shadow:none;}
 .gear-btn{
   background:var(--bg-elev); border:1px solid var(--line); color:var(--ink-soft);
   width:34px; height:34px; border-radius:11px; font-size:15px; cursor:pointer;
@@ -322,7 +335,7 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .qcard{margin-bottom:28px; animation: rise .4s var(--ease-out) both;}
 .qcard-prompt{font-size:15.5px; font-weight:600; line-height:1.6; margin-bottom:13px; letter-spacing:-0.005em;}
 .opt-row{
-  display:flex; align-items:center; gap:12px; border:1.5px solid var(--line); border-radius:14px;
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap; border:1.5px solid var(--line); border-radius:14px;
   padding:12px 14px; margin-bottom:9px; cursor:pointer; background:var(--bg-elev);
 }
 .opt-row:active{transform:scale(0.98);}
@@ -340,8 +353,7 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .opt-badge.selected{background:var(--teal); color:var(--bg); border-color:var(--teal); transform:scale(1.08);}
 .opt-badge.correct{background:var(--teal); color:var(--bg); border-color:var(--teal); transform:scale(1.08);}
 .opt-badge.wrong{background:var(--coral); color:#3a0d13; border-color:var(--coral);}
-.opt-text{flex:1; font-size:14px; line-height:1.4;}
-.opt-tags{display:flex; gap:6px; margin-top:6px; padding-left:40px;}
+.opt-text{flex:1; min-width:120px; font-size:14px; line-height:1.4;}
 
 /* ---------- Đúng/Sai: đề chung + 4 ý a,b,c,d ---------- */
 .tf-item{margin-bottom:16px; padding-bottom:14px; border-bottom:1px solid var(--line);}
@@ -362,13 +374,60 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 }
 .add-section-btn:active{background:rgba(71,185,165,0.12); border-color:var(--teal); transform:scale(0.98);}
 @media (hover:hover){ .add-section-btn:hover{background:rgba(71,185,165,0.08); border-color:var(--teal);} }
-.opt-tag{font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:999px;}
-.opt-tag.picked{background:rgba(255,255,255,0.09); color:var(--ink-soft);}
+/* Sits inside the same bordered .opt-row as the option text — never below
+   or outside the box — flex-shrink:0 keeps it intact and it wraps onto its
+   own line within the row (not outside it) if the option text is long. */
+.opt-tag{font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:999px; flex-shrink:0; margin-left:auto; white-space:nowrap;}
+.opt-tag.picked{background:rgba(239,91,115,0.2); color:var(--coral);}
 .opt-tag.correct{background:rgba(71,185,165,0.22); color:var(--teal);}
 .sa-box{border:1.5px solid var(--line); border-radius:12px; padding:11px 13px; font-size:14px; margin-bottom:8px;}
 .sa-box.correct{border-color:var(--teal); background:rgba(71,185,165,0.1); color:var(--teal);}
 .sa-box.wrong{border-color:var(--coral); background:rgba(239,91,115,0.1); color:var(--coral);}
 .sa-label{font-size:10.5px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint); margin-bottom:6px;}
+
+/* Small at-a-glance correct/wrong marker in front of each question's prompt
+   on the review page, so you can scan results without reading every row. */
+.q-result-dot{
+  display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px;
+  border-radius:50%; font-size:11px; font-weight:800; margin-right:8px; vertical-align:-4px; flex-shrink:0;
+}
+.q-result-dot.correct{background:rgba(71,185,165,0.22); color:var(--teal);}
+.q-result-dot.wrong{background:rgba(239,91,115,0.2); color:var(--coral);}
+
+/* Status pill on test list cards ("Chưa làm" / score) — was referenced by
+   app.js but never actually defined, so it rendered as bare text before. */
+.badge-pill{
+  display:inline-flex; align-items:center; gap:3px; font-size:11px; font-weight:700;
+  padding:2px 9px; border-radius:999px; background:var(--bg); border:1px solid var(--line); color:var(--ink-faint);
+}
+
+/* Live "Đã trả lời x/y" bar while taking a test. */
+.test-progress-bar{height:6px; border-radius:999px; background:var(--line); overflow:hidden;}
+.test-progress-fill{height:100%; border-radius:999px; background:var(--amber); width:0%; transition:width .3s var(--ease-out);}
+
+/* Compact title+score strip pinned to the top of the review page. */
+.review-summary-bar{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:13px 15px; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px; margin-bottom:18px;
+}
+
+.save-btn.secondary-btn{background:var(--bg-elev); color:var(--white); border:1.5px solid var(--line); box-shadow:none;}
+.save-btn.secondary-btn:active{box-shadow:none; border-color:var(--teal);}
+
+/* ---------- Result screen: signature circular score ring ---------- */
+.score-result-card{
+  text-align:center; padding:28px 16px 24px; background:var(--bg-elev); border:1px solid var(--line);
+  border-radius:var(--radius-lg); margin-bottom:16px; box-shadow:var(--shadow-sm);
+  animation: cardSettle .5s var(--ease-out);
+}
+.score-ring-wrap{position:relative; width:136px; height:136px; margin:0 auto 14px;}
+.score-ring{width:100%; height:100%; transform:rotate(-90deg);}
+.score-ring-bg{fill:none; stroke:var(--line); stroke-width:9;}
+.score-ring-fg{fill:none; stroke-width:9; stroke-linecap:round; transition:stroke-dashoffset 1s var(--ease-out);}
+.score-ring-center{position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;}
+.score-ring-num{font-size:27px; font-weight:700; letter-spacing:-0.01em;}
+.score-ring-pct{font-size:12px; color:var(--ink-faint); margin-top:2px;}
+.score-verdict{font-size:15px; font-weight:700; margin-bottom:3px;}
 
 .empty-state{text-align:center; padding:64px 20px; color:var(--ink-faint); animation: rise .4s var(--ease-out) both;}
 .empty-state .glyph{font-size:40px; margin-bottom:12px; opacity:0.9; display:inline-block; animation: bob 3s ease-in-out infinite;}
@@ -617,7 +676,8 @@ nav.tabbar button.active::before{
   padding:14px 16px; margin-bottom:10px; box-shadow:var(--shadow-sm); animation: riseSm .3s var(--ease-out) both;}
 .toggle-row .tr-text{flex:1; padding-right:12px;}
 .toggle-row .tr-title{font-size:14px; font-weight:600;}
-.toggle-row .tr-sub{font-size:12px; color:var(--ink-faint); margin-top:3px; line-height:1.4;}
+.tr-sub{font-size:12px; color:var(--ink-faint); line-height:1.4;}
+.toggle-row .tr-sub{margin-top:3px;}
 .switch{position:relative; width:46px; height:26px; flex-shrink:0;}
 .switch input{opacity:0; width:0; height:0;}
 .switch .track{position:absolute; inset:0; background:#3a3b4d; border-radius:20px; transition:.25s var(--ease-spring); cursor:pointer;}
