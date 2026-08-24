@@ -1,4 +1,4 @@
-const COLORS = ['#e8a33d','#3fa796','#e05263','#8b7fd6','#5aa0e0','#d691c9'];
+const COLORS = ['#eba53e','#47b9a5','#ef5b73','#9d8ef2','#5aa3e6','#dd94cf'];
 const STORE_KEY = 'srs_data_v1';
 
 // Best-guess the theme synchronously, before IndexedDB has loaded the real
@@ -82,8 +82,6 @@ let testResultShowDetail = false;               // "Xem chi tiết" toggle on th
 
 let takeTestOpen = null;                        // {id,title,questions} while actively taking a test
 let takeTestAnswers = {};                       // {questionId: answer}
-let takeTestBusy = false;
-let takeTestError = '';
 let reviewQueue = [];
 let reviewIdx = 0;
 let flipped = false;
@@ -331,10 +329,25 @@ function attachDeckLongPress(row, subject){
 
 function setView(v){ VIEW = v; render(); }
 
+let _prevRenderSig = null; // used to decide whether to preserve scroll position across a re-render
+
+function currentRenderSig(){
+  return [
+    VIEW, questionEditorOpen, testSubmissionsOpen, testEditorOpen, testManagerClassroom,
+    takeTestOpen, studentTestDetailOpen, studentTestListClassroom,
+    folderPath.length, folderPath[folderPath.length-1], manageFilterSubjectId
+  ];
+}
+
 function render(){
+  const prevMainEl = $app.querySelector('main');
+  const prevScrollTop = prevMainEl ? prevMainEl.scrollTop : 0;
+  const newSig = currentRenderSig();
+  const samePage = _prevRenderSig && _prevRenderSig.length===newSig.length && _prevRenderSig.every((v,i)=>v===newSig[i]);
+
   $app.innerHTML = '';
   const main = document.createElement('div');
-  main.style.display='flex'; main.style.flexDirection='column'; main.style.height='100%';
+  main.className = samePage ? 'view-root' : 'view-root view-enter';
 
   try{
     if(VIEW==='home') main.appendChild(renderHome());
@@ -373,7 +386,7 @@ function render(){
   if(classroomMembersView) $app.appendChild(renderClassroomMembersModal());
   if(actionSheetItems) $app.appendChild(renderActionSheet());
 
-  if(VIEW!=='review'){
+  if(VIEW!=='review' && !takeTestOpen){
     $app.appendChild(renderTabbar());
     if(VIEW==='home' || VIEW==='manage'){
       const fab = document.createElement('button');
@@ -392,6 +405,10 @@ function render(){
       $app.appendChild(fab);
     }
   }
+
+  const newMainEl = $app.querySelector('main');
+  if(newMainEl && samePage) newMainEl.scrollTop = prevScrollTop;
+  _prevRenderSig = newSig;
 }
 
 function renderTabbar(){
@@ -1861,6 +1878,8 @@ async function logout(silent){
   studentTestDetailOpen = null;
   takeTestOpen = null;
   takeTestAnswers = {};
+  const staleConfirm = document.getElementById('submitConfirmOverlay');
+  if(staleConfirm) staleConfirm.remove();
   if(!silent){ toast('Đã đăng xuất'); render(); }
 }
 
@@ -2446,14 +2465,17 @@ async function renameTestTitle(newTitle){
 
 function defaultDataForType(type){
   if(type==='mcq') return { options:['','','',''], correctIndex:0 };
-  if(type==='true_false') return { correct:true };
+  if(type==='true_false') return { items:[
+    {text:'', correct:true}, {text:'', correct:true}, {text:'', correct:true}, {text:'', correct:true}
+  ]};
   return { accepted:[''] };
 }
 
-function openQuestionEditor(mode, question){
+function openQuestionEditor(mode, question, presetType){
   questionError = '';
   if(mode==='add'){
-    questionEditorOpen = { mode:'add', type:'mcq', prompt:'', imageData:null, data: defaultDataForType('mcq') };
+    const type = presetType || 'mcq';
+    questionEditorOpen = { mode:'add', type, prompt:'', imageData:null, data: defaultDataForType(type) };
   } else {
     questionEditorOpen = {
       mode:'edit', id: question.id, type: question.type, prompt: question.prompt,
@@ -2519,6 +2541,10 @@ async function saveQuestion(){
     const accepted = q.data.accepted.map(a=>(a||'').trim()).filter(Boolean);
     if(accepted.length===0){ questionError = 'Nhập ít nhất 1 đáp án đúng'; render(); return; }
     q.data.accepted = accepted;
+  } else if(q.type==='true_false'){
+    const items = q.data.items.map(it=>({ text:(it.text||'').trim(), correct: !!it.correct }));
+    if(items.some(it=>!it.text)){ questionError = 'Điền đủ nội dung 4 ý a, b, c, d'; render(); return; }
+    q.data.items = items;
   }
 
   questionBusy = true; questionError = ''; render();
@@ -2738,51 +2764,64 @@ function renderTestEditor(){
 
   main.appendChild(publishBox);
 
-  const addBtn = document.createElement('button');
-  addBtn.className='save-btn'; addBtn.style.marginBottom='16px';
-  addBtn.textContent = '+ Thêm câu hỏi';
-  addBtn.onclick = ()=> openQuestionEditor('add');
-  main.appendChild(addBtn);
-
   if(testEditorOpen.questions.length===0){
-    const e = document.createElement('div'); e.className='tr-sub'; e.textContent='Chưa có câu hỏi nào.';
+    const e = document.createElement('div'); e.className='tr-sub'; e.style.marginBottom='6px'; e.textContent='Chưa có câu hỏi nào.';
     main.appendChild(e);
   }
 
-  const typeLabel = { mcq:'Trắc nghiệm', true_false:'Đúng / Sai', short_answer:'Trả lời ngắn' };
+  // Câu hỏi luôn được nhóm và hiển thị theo đúng thứ tự 3 phần cố định,
+  // bất kể được tạo trước/sau — giáo viên bấm nút "+" trong từng phần để
+  // thêm câu hỏi thuộc đúng phần đó.
+  const SECTIONS = [
+    ['mcq', 'Phần I. Trắc nghiệm', '+ Thêm câu trắc nghiệm'],
+    ['true_false', 'Phần II. Đúng / Sai', '+ Thêm câu đúng/sai'],
+    ['short_answer', 'Phần III. Trả lời ngắn', '+ Thêm câu trả lời ngắn']
+  ];
 
-  testEditorOpen.questions.forEach((q,i)=>{
-    const card = document.createElement('div');
-    card.className = 'question-card';
-    card.onclick = ()=> openQuestionEditor('edit', q);
+  SECTIONS.forEach(([type, sectionLabel, addLabel])=>{
+    const sectionQuestions = testEditorOpen.questions.filter(q=>q.type===type);
 
-    const badge = document.createElement('div');
-    badge.className = 'question-badge';
-    badge.textContent = i+1;
+    const sectionHead = document.createElement('div');
+    sectionHead.className = 'section-head';
+    sectionHead.innerHTML = `<div class="section-title">${sectionLabel}</div><div class="tr-sub">${sectionQuestions.length} câu</div>`;
+    main.appendChild(sectionHead);
 
-    const info = document.createElement('div');
-    info.className = 'test-info';
-    info.innerHTML = `
-      <span class="question-type-tag ${q.type}">${typeLabel[q.type]||q.type}</span>
-      <div class="subject-name" style="font-size:14px; font-weight:500; line-height:1.4;">${escapeHtml(q.prompt)}</div>
-    `;
+    sectionQuestions.forEach((q,i)=>{
+      const card = document.createElement('div');
+      card.className = 'question-card';
+      card.onclick = ()=> openQuestionEditor('edit', q);
 
-    card.appendChild(badge);
-    card.appendChild(info);
+      const badge = document.createElement('div');
+      badge.className = 'question-badge';
+      badge.textContent = i+1;
 
-    if(q.imageData){
-      const thumb = document.createElement('img');
-      thumb.src = q.imageData;
-      thumb.style.width='44px'; thumb.style.height='44px'; thumb.style.objectFit='cover'; thumb.style.borderRadius='8px'; thumb.style.flexShrink='0';
-      card.appendChild(thumb);
-    }
+      const info = document.createElement('div');
+      info.className = 'test-info';
+      info.innerHTML = `<div class="subject-name" style="font-size:14px; font-weight:500; line-height:1.4;">${escapeHtml(q.prompt)}</div>`;
 
-    const delBtn = document.createElement('button');
-    delBtn.className='subject-del'; delBtn.textContent='🗑'; delBtn.title='Xoá câu hỏi';
-    delBtn.onclick = (e)=>{ e.stopPropagation(); testConfirm = {type:'delete-question', id:q.id, label:'Câu '+(i+1)}; render(); };
-    card.appendChild(delBtn);
+      card.appendChild(badge);
+      card.appendChild(info);
 
-    main.appendChild(card);
+      if(q.imageData){
+        const thumb = document.createElement('img');
+        thumb.src = q.imageData;
+        thumb.style.width='44px'; thumb.style.height='44px'; thumb.style.objectFit='cover'; thumb.style.borderRadius='8px'; thumb.style.flexShrink='0';
+        card.appendChild(thumb);
+      }
+
+      const delBtn = document.createElement('button');
+      delBtn.className='subject-del'; delBtn.textContent='🗑'; delBtn.title='Xoá câu hỏi';
+      delBtn.onclick = (e)=>{ e.stopPropagation(); testConfirm = {type:'delete-question', id:q.id, label: sectionLabel+' — Câu '+(i+1)}; render(); };
+      card.appendChild(delBtn);
+
+      main.appendChild(card);
+    });
+
+    const addBtn = document.createElement('button');
+    addBtn.className = 'add-section-btn';
+    addBtn.textContent = addLabel;
+    addBtn.onclick = ()=> openQuestionEditor('add', null, type);
+    main.appendChild(addBtn);
   });
 
   wrap.appendChild(main);
@@ -2809,27 +2848,18 @@ function renderQuestionEditor(){
   backLink.onclick = ()=>{ if(!questionBusy){ questionEditorOpen=null; render(); } };
   main.appendChild(backLink);
 
+  const typeLabelMap = { mcq:'Trắc nghiệm', true_false:'Đúng / Sai', short_answer:'Trả lời ngắn' };
   const typeField = document.createElement('div');
   typeField.className='field';
-  typeField.innerHTML = `<label>Loại câu hỏi</label>`;
-  const typeRow = document.createElement('div');
-  typeRow.style.display='flex'; typeRow.style.gap='6px';
-  [['mcq','Trắc nghiệm'],['true_false','Đúng/Sai'],['short_answer','Trả lời ngắn']].forEach(([val,label])=>{
-    const b = document.createElement('button');
-    b.type='button'; b.textContent=label;
-    b.style.flex='1'; b.style.padding='9px 4px'; b.style.borderRadius='9px'; b.style.fontSize='12.5px'; b.style.fontWeight='600';
-    b.style.border = q.type===val ? '1px solid var(--teal)' : '1px solid var(--line)';
-    b.style.background = q.type===val ? 'var(--teal)' : 'var(--bg-elev)';
-    b.style.color = q.type===val ? 'var(--bg)' : 'var(--white)';
-    b.onclick = ()=>{ q.type = val; q.data = defaultDataForType(val); render(); };
-    typeRow.appendChild(b);
-  });
-  typeField.appendChild(typeRow);
+  typeField.innerHTML = `
+    <label>Loại câu hỏi</label>
+    <span class="question-type-tag ${q.type}" style="margin-top:2px;">${typeLabelMap[q.type]}</span>
+  `;
   main.appendChild(typeField);
 
   const fPrompt = document.createElement('div');
   fPrompt.className='field';
-  fPrompt.innerHTML = `<label>Nội dung câu hỏi</label>`;
+  fPrompt.innerHTML = `<label>${q.type==='true_false' ? 'Đề bài chung (dẫn nhập cho 4 ý a, b, c, d)' : 'Nội dung câu hỏi'}</label>`;
   const promptArea = document.createElement('textarea');
   promptArea.value = q.prompt;
   promptArea.rows = 3;
@@ -2895,20 +2925,44 @@ function renderQuestionEditor(){
   } else if(q.type==='true_false'){
     const fTF = document.createElement('div');
     fTF.className='field';
-    fTF.innerHTML = `<label>Đáp án đúng</label>`;
-    const row = document.createElement('div');
-    row.style.display='flex'; row.style.gap='8px';
-    [[true,'Đúng'],[false,'Sai']].forEach(([val,label])=>{
-      const b = document.createElement('button');
-      b.type='button'; b.textContent=label;
-      b.style.flex='1'; b.style.padding='11px'; b.style.borderRadius='10px'; b.style.fontSize='14px'; b.style.fontWeight='600';
-      b.style.border = q.data.correct===val ? '1px solid var(--teal)' : '1px solid var(--line)';
-      b.style.background = q.data.correct===val ? 'var(--teal)' : 'var(--bg-elev)';
-      b.style.color = q.data.correct===val ? 'var(--bg)' : 'var(--white)';
-      b.onclick = ()=>{ q.data.correct = val; render(); };
-      row.appendChild(b);
+    fTF.innerHTML = `<label>4 ý a, b, c, d — nhập nội dung và chọn Đúng/Sai cho từng ý</label>`;
+    const hint = document.createElement('div');
+    hint.className='tr-sub'; hint.style.marginBottom='10px';
+    hint.textContent = 'Điểm câu này: đúng 1 ý = 0,1đ · 2 ý = 0,25đ · 3 ý = 0,5đ · 4 ý = 1đ.';
+    fTF.appendChild(hint);
+    q.data.items.forEach((it,i)=>{
+      const itemBox = document.createElement('div');
+      itemBox.className = 'tf-item';
+
+      const itemLabel = document.createElement('div');
+      itemLabel.className = 'tf-item-label';
+      itemLabel.textContent = 'Ý ' + String.fromCharCode(97+i) + ')';
+      itemBox.appendChild(itemLabel);
+
+      const input = document.createElement('textarea');
+      input.rows = 2;
+      input.value = it.text;
+      input.placeholder = 'Nội dung ý ' + String.fromCharCode(97+i);
+      input.style.width='100%'; input.style.boxSizing='border-box'; input.style.background='var(--bg-elev)'; input.style.border='1px solid var(--line)';
+      input.style.color='var(--white)'; input.style.borderRadius='9px'; input.style.padding='10px 11px'; input.style.fontSize='14px'; input.style.marginBottom='8px';
+      input.oninput = ()=>{ it.text = input.value; };
+      itemBox.appendChild(input);
+
+      const row = document.createElement('div');
+      row.style.display='flex'; row.style.gap='8px';
+      [[true,'Đúng'],[false,'Sai']].forEach(([val,label])=>{
+        const b = document.createElement('button');
+        b.type='button'; b.textContent=label;
+        b.style.flex='1'; b.style.padding='9px'; b.style.borderRadius='9px'; b.style.fontSize='13px'; b.style.fontWeight='600';
+        b.style.border = it.correct===val ? '1px solid var(--teal)' : '1px solid var(--line)';
+        b.style.background = it.correct===val ? 'var(--teal)' : 'var(--bg-elev)';
+        b.style.color = it.correct===val ? 'var(--bg)' : 'var(--white)';
+        b.onclick = ()=>{ it.correct = val; render(); };
+        row.appendChild(b);
+      });
+      itemBox.appendChild(row);
+      fTF.appendChild(itemBox);
     });
-    fTF.appendChild(row);
     main.appendChild(fTF);
   } else {
     const fSA = document.createElement('div');
@@ -3110,15 +3164,13 @@ async function viewPastResult(){
 function startTakeTest(){
   takeTestOpen = { id: studentTestDetailOpen.id, title: studentTestDetailOpen.title, questions: studentTestDetailOpen.questions };
   takeTestAnswers = {};
-  takeTestError = '';
   render();
 }
 
+// Returns true on success. Deliberately avoids calling render() while the
+// request is in flight — the confirm dialog manages its own button state
+// directly so the question list underneath is never torn down/rescrolled.
 async function submitTest(){
-  const unanswered = takeTestOpen.questions.some(q => takeTestAnswers[q.id]===undefined || takeTestAnswers[q.id]==='');
-  if(unanswered){ takeTestError = 'Hãy trả lời hết tất cả câu hỏi trước khi nộp bài'; render(); return; }
-
-  takeTestBusy = true; takeTestError = ''; render();
   try{
     const answers = Object.keys(takeTestAnswers).map(qId => ({ questionId: qId, answer: takeTestAnswers[qId] }));
     const res = await authorizedRequest('/tests/submit', { testId: takeTestOpen.id, answers });
@@ -3130,10 +3182,12 @@ async function submitTest(){
     if(idx>=0) studentTests[idx].mySubmission = studentTestDetailOpen.mySubmission;
     takeTestOpen = null;
     toast('Đã nộp bài ✓ Điểm: ' + res.score + '/' + res.total);
+    render();
+    return true;
   }catch(e){
-    takeTestError = e.message || 'Nộp bài thất bại';
+    toast('Lỗi: ' + (e.message || 'Nộp bài thất bại'));
+    return false;
   }
-  takeTestBusy = false; render();
 }
 
 function renderStudentTestList(){
@@ -3266,34 +3320,83 @@ function renderStudentTestDetail(){
 
     if(testResultShowDetail && t.resultDetail){
       t.resultDetail.forEach((d,i)=>{
-        const card = document.createElement('div');
-        card.className = 'question-card';
-        card.style.cursor = 'default';
-        card.style.borderColor = d.isCorrect ? 'var(--teal)' : 'var(--coral)';
+        const qcard = document.createElement('div');
+        qcard.className = 'qcard';
 
-        const badge = document.createElement('div');
-        badge.className = 'question-badge';
-        badge.textContent = d.isCorrect ? '✓' : '✕';
-        badge.style.color = d.isCorrect ? 'var(--teal)' : 'var(--coral)';
-        badge.style.borderColor = d.isCorrect ? 'var(--teal)' : 'var(--coral)';
+        const promptEl = document.createElement('div');
+        promptEl.className = 'qcard-prompt';
+        promptEl.innerHTML = `Câu ${i+1}: ${escapeHtml(d.prompt)}`;
+        qcard.appendChild(promptEl);
 
-        const info = document.createElement('div');
-        info.className = 'test-info';
-        info.innerHTML = `
-          <div class="subject-name" style="font-size:14px; font-weight:500; line-height:1.4; margin-bottom:6px;">Câu ${i+1}. ${escapeHtml(d.prompt)}</div>
-          <div class="tr-sub">Bạn chọn: <b style="color:${d.isCorrect?'var(--teal)':'var(--coral)'};">${escapeHtml(d.yourAnswer ?? '(bỏ trống)')}</b></div>
-          ${!d.isCorrect ? `<div class="tr-sub">Đáp án đúng: <b style="color:var(--teal);">${escapeHtml(d.correctAnswer)}</b></div>` : ''}
-        `;
-
-        card.appendChild(badge);
-        card.appendChild(info);
         if(d.imageData){
           const img = document.createElement('img');
           img.src = d.imageData;
-          img.style.width='44px'; img.style.height='44px'; img.style.objectFit='cover'; img.style.borderRadius='8px'; img.style.flexShrink='0';
-          card.appendChild(img);
+          img.style.maxWidth='100%'; img.style.maxHeight='200px'; img.style.borderRadius='10px'; img.style.display='block'; img.style.marginBottom='12px';
+          qcard.appendChild(img);
         }
-        main.appendChild(card);
+
+        if(d.type === 'mcq' && Array.isArray(d.options)){
+          d.options.forEach((opt,oi)=>{
+            const isPicked = opt === d.yourAnswer;
+            const isCorrectOpt = opt === d.correctAnswer;
+            const row = document.createElement('div');
+            row.className = 'opt-row readonly' + (isCorrectOpt ? ' correct' : (isPicked ? ' wrong' : ''));
+            row.innerHTML = `<div class="opt-badge${isCorrectOpt?' correct':(isPicked?' wrong':'')}">${String.fromCharCode(65+oi)}</div><div class="opt-text">${escapeHtml(opt)}</div>`;
+            qcard.appendChild(row);
+            if(isPicked || isCorrectOpt){
+              const tags = document.createElement('div');
+              tags.className = 'opt-tags';
+              tags.innerHTML = (isPicked ? '<span class="opt-tag picked">✓ Bạn chọn</span>' : '') + (isCorrectOpt ? '<span class="opt-tag correct">✓ Đúng</span>' : '');
+              qcard.appendChild(tags);
+            }
+          });
+        } else if(d.type === 'true_false' && Array.isArray(d.items)){
+          d.items.forEach((it,ii)=>{
+            const itemBox = document.createElement('div');
+            itemBox.className = 'tf-item';
+            const itemLabel = document.createElement('div');
+            itemLabel.className = 'tf-item-label';
+            itemLabel.innerHTML = `${String.fromCharCode(97+ii)}) ${escapeHtml(it.text)}`;
+            itemBox.appendChild(itemLabel);
+            const optWrap = document.createElement('div');
+            optWrap.className = 'tf-optwrap';
+            [[true,'Đ','Đúng'],[false,'S','Sai']].forEach(([val,letter,label])=>{
+              const isPicked = it.yourAnswer === val;
+              const isCorrectOpt = it.correctAnswer === val;
+              const row = document.createElement('div');
+              row.className = 'opt-row readonly' + (isCorrectOpt ? ' correct' : (isPicked ? ' wrong' : ''));
+              row.innerHTML = `<div class="opt-badge${isCorrectOpt?' correct':(isPicked?' wrong':'')}">${letter}</div><div class="opt-text">${label}</div>`;
+              optWrap.appendChild(row);
+            });
+            itemBox.appendChild(optWrap);
+            qcard.appendChild(itemBox);
+          });
+          const ptsRow = document.createElement('div');
+          ptsRow.className = 'tr-sub';
+          ptsRow.style.marginTop = '4px'; ptsRow.style.fontWeight = '600';
+          const ptsStr = (Math.round((d.earnedPoints||0)*100)/100).toString().replace('.', ',');
+          ptsRow.textContent = `Đúng ${d.correctCount||0}/4 ý — ${ptsStr} điểm`;
+          qcard.appendChild(ptsRow);
+        } else {
+          const yourBox = document.createElement('div');
+          yourBox.innerHTML = `<div class="sa-label">Câu trả lời của bạn</div>`;
+          const yourVal = document.createElement('div');
+          yourVal.className = 'sa-box ' + (d.isCorrect ? 'correct' : 'wrong');
+          yourVal.textContent = (d.yourAnswer && d.yourAnswer.trim()) ? d.yourAnswer : '(bỏ trống)';
+          yourBox.appendChild(yourVal);
+          qcard.appendChild(yourBox);
+          if(!d.isCorrect){
+            const correctBox = document.createElement('div');
+            correctBox.innerHTML = `<div class="sa-label">Đáp án đúng</div>`;
+            const correctVal = document.createElement('div');
+            correctVal.className = 'sa-box correct';
+            correctVal.textContent = d.correctAnswer;
+            correctBox.appendChild(correctVal);
+            qcard.appendChild(correctBox);
+          }
+        }
+
+        main.appendChild(qcard);
       });
     }
   }
@@ -3319,107 +3422,158 @@ function renderStudentTestDetail(){
 function renderTakeTest(){
   const wrap = document.createElement('div');
   wrap.style.display = 'contents';
+  const typeLabel = { mcq:'Trắc nghiệm', true_false:'Đúng / Sai', short_answer:'Trả lời ngắn' };
 
   const header = document.createElement('header');
   header.className = 'topbar';
-  header.innerHTML = `<h1 class="display">Làm bài</h1>`;
+  header.innerHTML = `<h1 class="display" style="font-size:18px;">${escapeHtml(takeTestOpen.title)}</h1>`;
   wrap.appendChild(header);
 
   const main = document.createElement('main');
+
   const backLink = document.createElement('button');
   backLink.className = 'back-link';
-  backLink.textContent = '← ' + takeTestOpen.title;
-  backLink.style.marginBottom = '14px';
-  backLink.disabled = takeTestBusy;
-  backLink.onclick = ()=>{ if(!takeTestBusy){ takeTestOpen = null; render(); } };
+  backLink.textContent = '← Thoát (không lưu)';
+  backLink.style.marginBottom = '16px';
+  backLink.onclick = ()=>{ takeTestOpen = null; render(); };
   main.appendChild(backLink);
 
-  const typeLabel = { mcq:'Trắc nghiệm', true_false:'Đúng / Sai', short_answer:'Trả lời ngắn' };
-
   takeTestOpen.questions.forEach((q,i)=>{
-    const card = document.createElement('div');
-    card.className = 'question-card';
-    card.style.cursor = 'default';
-    card.style.flexDirection = 'column';
-    card.style.alignItems = 'stretch';
-    card.style.gap = '10px';
+    const qcard = document.createElement('div');
+    qcard.className = 'qcard';
 
-    const head = document.createElement('div');
-    head.innerHTML = `
-      <span class="question-type-tag ${q.type}">${typeLabel[q.type]||q.type}</span>
-      <div class="subject-name" style="font-size:14.5px; font-weight:600; line-height:1.4; margin-top:4px;">Câu ${i+1}. ${escapeHtml(q.prompt)}</div>
-    `;
-    card.appendChild(head);
+    const promptEl = document.createElement('div');
+    promptEl.className = 'qcard-prompt';
+    promptEl.innerHTML = `<span class="question-type-tag ${q.type}" style="margin-right:2px;">${typeLabel[q.type]||q.type}</span><br>Câu ${i+1}: ${escapeHtml(q.prompt)}`;
+    qcard.appendChild(promptEl);
 
     if(q.imageData){
       const img = document.createElement('img');
       img.src = q.imageData;
-      img.style.maxWidth='100%'; img.style.maxHeight='200px'; img.style.borderRadius='10px'; img.style.display='block';
-      card.appendChild(img);
+      img.style.maxWidth='100%'; img.style.maxHeight='220px'; img.style.borderRadius='10px'; img.style.display='block'; img.style.marginBottom='12px';
+      qcard.appendChild(img);
     }
 
     if(q.type==='mcq'){
       q.options.forEach((opt,oi)=>{
-        const optBtn = document.createElement('button');
-        optBtn.type = 'button';
-        optBtn.textContent = String.fromCharCode(65+oi) + '. ' + opt;
-        optBtn.style.textAlign = 'left';
-        optBtn.style.padding = '11px 12px';
-        optBtn.style.borderRadius = '10px';
-        optBtn.style.fontSize = '14px';
-        optBtn.style.marginBottom = '6px';
-        const selected = takeTestAnswers[q.id] === oi;
-        optBtn.style.border = selected ? '1px solid var(--teal)' : '1px solid var(--line)';
-        optBtn.style.background = selected ? 'rgba(63,167,150,0.15)' : 'var(--bg-elev)';
-        optBtn.style.color = 'var(--white)';
-        optBtn.onclick = ()=>{ takeTestAnswers[q.id] = oi; render(); };
-        card.appendChild(optBtn);
+        const row = document.createElement('div');
+        row.className = 'opt-row' + (takeTestAnswers[q.id]===oi ? ' selected' : '');
+        row.innerHTML = `<div class="opt-badge${takeTestAnswers[q.id]===oi?' selected':''}">${String.fromCharCode(65+oi)}</div><div class="opt-text">${escapeHtml(opt)}</div>`;
+        row.onclick = ()=>{
+          takeTestAnswers[q.id] = oi;
+          // Update just this question's rows directly — no full re-render,
+          // so the page never jumps back to the top while answering.
+          Array.from(row.parentNode.children).forEach(sib=>{
+            sib.classList.remove('selected');
+            const b = sib.querySelector('.opt-badge'); if(b) b.classList.remove('selected');
+          });
+          row.classList.add('selected');
+          row.querySelector('.opt-badge').classList.add('selected');
+        };
+        qcard.appendChild(row);
       });
     } else if(q.type==='true_false'){
-      const row = document.createElement('div');
-      row.style.display='flex'; row.style.gap='8px';
-      [[true,'Đúng'],[false,'Sai']].forEach(([val,label])=>{
-        const b = document.createElement('button');
-        b.type='button'; b.textContent=label;
-        b.style.flex='1'; b.style.padding='11px'; b.style.borderRadius='10px'; b.style.fontSize='14px'; b.style.fontWeight='600';
-        const selected = takeTestAnswers[q.id] === val;
-        b.style.border = selected ? '1px solid var(--teal)' : '1px solid var(--line)';
-        b.style.background = selected ? 'var(--teal)' : 'var(--bg-elev)';
-        b.style.color = selected ? 'var(--bg)' : 'var(--white)';
-        b.onclick = ()=>{ takeTestAnswers[q.id] = val; render(); };
-        row.appendChild(b);
+      if(!takeTestAnswers[q.id]) takeTestAnswers[q.id] = {};
+      (q.items||[]).forEach((it,ii)=>{
+        const itemBox = document.createElement('div');
+        itemBox.className = 'tf-item';
+        const itemLabel = document.createElement('div');
+        itemLabel.className = 'tf-item-label';
+        itemLabel.innerHTML = `${String.fromCharCode(97+ii)}) ${escapeHtml(it.text)}`;
+        itemBox.appendChild(itemLabel);
+        const optWrap = document.createElement('div');
+        optWrap.className = 'tf-optwrap';
+        [[true,'Đ','Đúng'],[false,'S','Sai']].forEach(([val,letter,label])=>{
+          const row = document.createElement('div');
+          row.className = 'opt-row' + (takeTestAnswers[q.id][ii]===val ? ' selected' : '');
+          row.innerHTML = `<div class="opt-badge${takeTestAnswers[q.id][ii]===val?' selected':''}">${letter}</div><div class="opt-text">${label}</div>`;
+          row.onclick = ()=>{
+            takeTestAnswers[q.id][ii] = val;
+            Array.from(optWrap.children).forEach(sib=>{
+              sib.classList.remove('selected');
+              const b = sib.querySelector('.opt-badge'); if(b) b.classList.remove('selected');
+            });
+            row.classList.add('selected');
+            row.querySelector('.opt-badge').classList.add('selected');
+          };
+          optWrap.appendChild(row);
+        });
+        itemBox.appendChild(optWrap);
+        qcard.appendChild(itemBox);
       });
-      card.appendChild(row);
     } else {
       const input = document.createElement('input');
       input.type = 'text';
       input.placeholder = 'Nhập câu trả lời';
       input.value = takeTestAnswers[q.id] || '';
-      input.style.background='var(--bg-elev)'; input.style.border='1px solid var(--line)';
-      input.style.color='var(--white)'; input.style.borderRadius='10px'; input.style.padding='11px 12px'; input.style.fontSize='14px';
+      input.style.width = '100%'; input.style.boxSizing = 'border-box';
+      input.style.background='var(--bg-elev)'; input.style.border='1.5px solid var(--line)';
+      input.style.color='var(--white)'; input.style.borderRadius='12px'; input.style.padding='12px 14px'; input.style.fontSize='14px';
       input.oninput = ()=>{ takeTestAnswers[q.id] = input.value; };
-      card.appendChild(input);
+      qcard.appendChild(input);
     }
 
-    main.appendChild(card);
+    main.appendChild(qcard);
   });
-
-  if(takeTestError){
-    const errBox = document.createElement('div');
-    errBox.style.color='var(--coral)'; errBox.style.fontSize='12px'; errBox.style.margin='0 0 12px'; errBox.style.textAlign='center';
-    errBox.textContent = takeTestError;
-    main.appendChild(errBox);
-  }
 
   const submitBtn = document.createElement('button');
   submitBtn.className = 'save-btn';
-  submitBtn.disabled = takeTestBusy;
-  submitBtn.textContent = takeTestBusy ? 'Đang nộp…' : 'Nộp bài';
-  submitBtn.onclick = submitTest;
+  submitBtn.textContent = 'Nộp bài';
+  submitBtn.onclick = showSubmitConfirm;
   main.appendChild(submitBtn);
 
   wrap.appendChild(main);
   return wrap;
+}
+
+// Shows the "Nộp bài?" confirmation as a direct DOM overlay (bypassing the
+// global render() cycle) so the question list underneath never gets torn
+// down and re-scrolled while the dialog is open.
+function showSubmitConfirm(){
+  if(document.getElementById('submitConfirmOverlay')) return;
+  const total = takeTestOpen.questions.length;
+  const answeredCount = takeTestOpen.questions.filter(q => {
+    const a = takeTestAnswers[q.id];
+    if(q.type==='true_false') return a && Object.keys(a).length === (q.items||[]).length;
+    return a!==undefined && a!=='';
+  }).length;
+  const unanswered = total - answeredCount;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'submitConfirmOverlay';
+  overlay.className = 'modal-backdrop';
+  overlay.onclick = (e)=>{ if(e.target===overlay) overlay.remove(); };
+
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+  card.innerHTML = `
+    <div class="modal-title display">Nộp bài?</div>
+    <p style="color:var(--ink-soft); font-size:14px; line-height:1.6; margin:0 0 4px;">
+      Bạn đã làm ${answeredCount}/${total} câu.
+      ${unanswered>0 ? `Còn <b style="color:var(--coral);">${unanswered} câu chưa làm</b>. Vẫn muốn nộp bài?` : 'Bạn đã làm hết tất cả câu hỏi.'}
+    </p>
+  `;
+
+  const btnRow = document.createElement('div');
+  btnRow.style.display='flex'; btnRow.style.gap='10px'; btnRow.style.marginTop='22px';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className='save-btn'; cancelBtn.style.background='var(--bg-elev)'; cancelBtn.style.color='var(--white)'; cancelBtn.style.border='1px solid var(--line)';
+  cancelBtn.textContent='Làm tiếp';
+  cancelBtn.onclick = ()=> overlay.remove();
+  const confirmBtn = document.createElement('button');
+  confirmBtn.className='save-btn';
+  confirmBtn.textContent='Nộp bài';
+  confirmBtn.onclick = async ()=>{
+    confirmBtn.disabled = true; cancelBtn.disabled = true;
+    confirmBtn.textContent = 'Đang nộp…';
+    const ok = await submitTest();
+    if(ok){ overlay.remove(); }
+    else { confirmBtn.disabled = false; cancelBtn.disabled = false; confirmBtn.textContent = 'Nộp bài'; }
+  };
+  btnRow.appendChild(cancelBtn); btnRow.appendChild(confirmBtn);
+  card.appendChild(btnRow);
+  overlay.appendChild(card);
+  $app.appendChild(overlay);
 }
 
 /* ---- daily push reminder (works even when app is fully closed) ---- */
@@ -3527,7 +3681,7 @@ function showRestartOverlay(){
     <div style="position:absolute;inset:0;z-index:999;display:flex;flex-direction:column;
       align-items:center;justify-content:center;gap:16px;background:var(--bg);">
       <div style="width:56px;height:56px;border-radius:16px;
-        background:linear-gradient(155deg,#232541,#1b1c2e 60%);border:1px solid var(--line);
+        background:linear-gradient(155deg,#251f42,#191730 60%);border:1px solid var(--line);
         display:flex;align-items:center;justify-content:center;font-size:26px;">📇</div>
       <div class="display" style="font-size:16px;font-weight:600;color:var(--white);">Đang khởi động lại...</div>
       <div style="font-size:12px;color:var(--ink-faint);">Có bản cập nhật mới</div>

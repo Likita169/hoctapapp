@@ -130,6 +130,35 @@ không có xác minh email hay khôi phục mật khẩu — nếu quên mật k
 tự xoá dòng tài khoản đó trong D1 (tab Console → `DELETE FROM users WHERE
 email = '...';`) rồi đăng ký lại.
 
+## Bài kiểm tra (giáo viên) và làm bài (học sinh)
+
+Giáo viên tạo được bài kiểm tra trong từng lớp (trắc nghiệm 4 phương án,
+đúng/sai, trả lời ngắn — có thể kèm ảnh). Dùng chung máy chủ `on-tap-sync`
+và database D1 ở trên — **không cần cài thêm gì**. Ảnh được nén nhỏ lại
+ngay trên máy trước khi lưu (giảm kích thước, giữ vừa đủ rõ để đọc) rồi lưu
+thẳng trong D1 cùng với câu hỏi, không cần một dịch vụ lưu trữ file riêng
+(kiểu như Cloudflare R2 sẽ yêu cầu khai báo thẻ ngân hàng dù dùng miễn phí,
+nên bản này tránh dùng tới nó).
+
+**Giao bài:** bài kiểm tra mới tạo mặc định là **bản nháp** — chỉ giáo
+viên thấy. Trong trang soạn bài, bật công tắc "Bản nháp / Đã giao bài" để
+học sinh trong lớp bắt đầu thấy và làm được. Có thể chọn "Chỉ 1 lần" (nộp
+xong khoá lại, không làm lại được) hoặc "Không giới hạn" (làm lại bao
+nhiêu lần cũng được, mỗi lần nộp ghi đè điểm bằng lần gần nhất).
+
+**Học sinh:** bấm vào thẻ lớp trong tab Lớp học → thấy danh sách bài kiểm
+tra đã được giao → làm bài → nộp → thấy điểm tổng ngay, bấm "Xem chi tiết"
+để biết câu nào đúng/sai và đáp án đúng là gì. Bài đã chấm tự động 100%
+(trắc nghiệm, đúng/sai, trả lời ngắn so khớp không phân biệt hoa/thường).
+
+**Giáo viên xem điểm:** trong trang soạn bài, bấm "📊 Xem điểm học sinh"
+để thấy danh sách email + điểm của từng học sinh đã nộp.
+
+Chỉ cần chạy lại `schema.sql` mới nhất (thêm bảng `test_submissions` và 2
+cột `published`, `max_attempts` cho bảng `tests`) rồi deploy `worker.js` +
+`app.js` mới là dùng được ngay. Nếu D1 báo lỗi "duplicate column name" khi
+chạy `schema.sql`, đó là vì cột đã có sẵn — bỏ qua lỗi đó là được.
+
 ## Cập nhật app sau khi đã cài
 
 Mỗi khi bạn sửa code (hoặc mình sửa giúp) và deploy lại:
