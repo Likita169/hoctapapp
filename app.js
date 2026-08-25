@@ -21,7 +21,15 @@ const PUSH_SERVER_URL = 'https://on-tap-push.nguyenngochuy8816.workers.dev';
 // sau khi deploy worker trong thư mục sync-server/
 const SYNC_SERVER_URL = 'https://on-tap-sync.nguyenngochuy8816.workers.dev/';
 const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system' };
-let DATA = { cards: [], subjects: [], settings: Object.assign({}, DEFAULT_SETTINGS), updatedAt: 0 };
+// Streak + XP + huy hiệu — tiến trình học tập lâu dài, tách riêng khỏi từng
+// thẻ để không ảnh hưởng thuật toán ôn tập ngắt quãng ở trên.
+const DEFAULT_PROGRESS = {
+  xp: 0, totalReviews: 0,
+  streak: 0, bestStreak: 0, lastStudyDate: null,
+  streakFreezes: 1,      // số lượt "đóng băng" chuỗi ngày còn lại (bù 1 ngày lỡ quên ôn)
+  badges: []             // id các huy hiệu đã mở khoá, xem BADGE_DEFS
+};
+let DATA = { cards: [], subjects: [], settings: Object.assign({}, DEFAULT_SETTINGS), progress: Object.assign({}, DEFAULT_PROGRESS), updatedAt: 0 };
 let VIEW = 'home';
 /* ---- account / cross-device sync state ---- */
 let AUTH = { token: null, email: null, role: null, name: null }; // loaded from localStorage in loadAuth()
@@ -64,6 +72,10 @@ let questionError = '';
 let questionImageProcessing = false;            // resizing/compressing the picked image, before it's attached to the question
 
 let testConfirm = null;                         // {type:'delete-test'|'delete-question', id, label} — drives the confirm modal
+let bulkImportOpen = null;                      // {text, busy, error} while the "Dán nhanh nhiều câu" modal is open
+let testAttachmentBusy = false;                 // uploading/removing the PDF/Word đề bài attached to a test
+let testAttachmentError = '';
+let filePreviewOpen = null;                     // {name, mime, dataUrl, html, loading, error} while the in-app file viewer is open
 
 /* ---- giao bài & xem điểm (giáo viên) ---- */
 let publishBusy = false;
@@ -83,6 +95,9 @@ let testReviewOpen = false;                     // true while the dedicated "Xem
 let takeTestOpen = null;                        // {id,title,questions} while actively taking a test
 let takeTestAnswers = {};                       // {questionId: answer}
 let reviewQueue = [];
+let sessionHadMiss = false;          // có thẻ nào bị chấm "Quên" trong phiên hiện tại không (huy hiệu Phiên hoàn hảo)
+let sessionXpEarned = 0;             // XP kiếm được trong phiên hiện tại, hiện ở màn hoàn thành
+let sessionCompletionHandled = false;// tránh cộng huy hiệu/toast lặp lại khi renderReview() gọi lại nhiều lần
 let reviewIdx = 0;
 let flipped = false;
 let reviewHistory = [];  // stack of {cardId, snapshot, idx} — powers the undo button
@@ -172,12 +187,14 @@ async function loadData(){
       DATA.settings = Object.assign({}, DEFAULT_SETTINGS, DATA.settings || {});
       DATA.updatedAt = DATA.updatedAt || 0;
       normalizeSubjects();
+      normalizeProgress();
       return;
     }
   }catch(e){ console.error('load failed', e); }
   // start empty — no seed subjects or cards
   DATA = {
     settings: Object.assign({}, DEFAULT_SETTINGS),
+    progress: Object.assign({}, DEFAULT_PROGRESS),
     subjects: [],
     cards: [],
     updatedAt: 0
@@ -227,6 +244,12 @@ function subjectPath(id){
 function normalizeSubjects(){
   DATA.subjects.forEach(s=>{ if(s.parentId===undefined) s.parentId = null; });
 }
+// Same idea for progress — fills in the field with sane defaults for data
+// saved before the streak/XP/huy hiệu feature existed.
+function normalizeProgress(){
+  DATA.progress = Object.assign({}, DEFAULT_PROGRESS, DATA.progress || {});
+  if(!Array.isArray(DATA.progress.badges)) DATA.progress.badges = [];
+}
 
 function grade(card, quality){
   // quality: 0 again, 1 hard, 2 good, 3 easy
@@ -253,6 +276,116 @@ function grade(card, quality){
   card.reps = reps;
   card.due = Date.now() + dayMs(interval);
   card.lastReview = Date.now();
+}
+
+/* ---------------- STREAK + XP + HUY HIỆU ---------------- */
+// XP mỗi thẻ tuỳ theo mức nhớ chọn — "Quên" vẫn được tính (khuyến khích cứ
+// ôn đều, không phạt nặng), nhớ càng chắc thì XP càng cao.
+const XP_PER_GRADE = [1, 2, 3, 4]; // [Quên, Khó, Nhớ, Dễ]
+
+// Level tăng dần độ khó: mức 1→2 cần 50 XP, mỗi mức sau cần thêm 20 XP so
+// với mức trước — vừa đủ chậm lại để cảm giác "lên cấp" luôn có ý nghĩa.
+function levelGap(level){ return 50 + (level-1)*20; }
+function computeLevel(xp){
+  let level = 1, threshold = 0, gap = levelGap(1);
+  while(xp >= threshold + gap){
+    threshold += gap;
+    level += 1;
+    gap = levelGap(level);
+  }
+  return { level, xpIntoLevel: xp - threshold, xpForThisLevel: gap };
+}
+
+function pad2(n){ return String(n).padStart(2,'0'); }
+function dateKey(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
+function todayKey(){ return dateKey(new Date()); }
+// Số ngày lịch chênh lệch giữa 2 khoá "YYYY-MM-DD" (so theo ngày, không theo giờ).
+function daysBetweenKeys(a, b){
+  const [ay,am,ad] = a.split('-').map(Number);
+  const [by,bm,bd] = b.split('-').map(Number);
+  const ta = Date.UTC(ay,am-1,ad), tb = Date.UTC(by,bm-1,bd);
+  return Math.round((tb-ta) / 86400000);
+}
+
+const BADGE_DEFS = {
+  first_review:  { icon:'🌱', title:'Buổi ôn đầu tiên', desc:'Ôn tập thẻ đầu tiên của bạn' },
+  streak_3:      { icon:'🔥', title:'Chuỗi 3 ngày',      desc:'Ôn tập 3 ngày liên tục' },
+  streak_7:      { icon:'🔥', title:'Chuỗi 7 ngày',      desc:'Ôn tập 7 ngày liên tục' },
+  streak_30:     { icon:'🏆', title:'Chuỗi 30 ngày',     desc:'Ôn tập 30 ngày liên tục' },
+  reviews_100:   { icon:'📚', title:'100 thẻ',           desc:'Ôn tổng cộng 100 lượt thẻ' },
+  reviews_500:   { icon:'🎓', title:'500 thẻ',           desc:'Ôn tổng cộng 500 lượt thẻ' },
+  reviews_1000:  { icon:'👑', title:'1000 thẻ',          desc:'Ôn tổng cộng 1000 lượt thẻ' },
+  level_5:       { icon:'⭐', title:'Cấp độ 5',          desc:'Đạt tới cấp độ 5' },
+  level_10:      { icon:'🌟', title:'Cấp độ 10',         desc:'Đạt tới cấp độ 10' },
+  perfect_session:{ icon:'✨', title:'Phiên hoàn hảo',   desc:'Ôn hết 1 phiên (≥5 thẻ) không "Quên" câu nào' }
+};
+
+function unlockBadge(id){
+  if(!DATA.progress.badges.includes(id)){
+    DATA.progress.badges.push(id);
+    const def = BADGE_DEFS[id];
+    if(def) toast(`🏅 Mở khoá huy hiệu: ${def.title}`);
+  }
+}
+
+function evaluateThresholdBadges(){
+  const p = DATA.progress;
+  if(p.totalReviews>=1) unlockBadge('first_review');
+  if(p.bestStreak>=3) unlockBadge('streak_3');
+  if(p.bestStreak>=7) unlockBadge('streak_7');
+  if(p.bestStreak>=30) unlockBadge('streak_30');
+  if(p.totalReviews>=100) unlockBadge('reviews_100');
+  if(p.totalReviews>=500) unlockBadge('reviews_500');
+  if(p.totalReviews>=1000) unlockBadge('reviews_1000');
+  const lvl = computeLevel(p.xp).level;
+  if(lvl>=5) unlockBadge('level_5');
+  if(lvl>=10) unlockBadge('level_10');
+}
+
+// Cập nhật chuỗi ngày ôn tập — gọi mỗi khi có ít nhất 1 thẻ được chấm điểm.
+// An toàn khi gọi nhiều lần trong cùng 1 ngày (không cộng streak trùng).
+function recordStudyDay(){
+  const p = DATA.progress;
+  const today = todayKey();
+  if(p.lastStudyDate === today) return; // đã tính hôm nay rồi
+
+  if(!p.lastStudyDate){
+    p.streak = 1;
+  } else {
+    const gap = daysBetweenKeys(p.lastStudyDate, today);
+    if(gap === 1){
+      p.streak += 1;
+    } else if(gap === 2 && p.streakFreezes > 0){
+      // Lỡ quên đúng 1 ngày — dùng 1 lượt "đóng băng" để nối chuỗi thay vì mất trắng.
+      p.streakFreezes -= 1;
+      p.streak += 1;
+      toast('❄️ Đã dùng 1 lượt đóng băng để giữ chuỗi ngày!');
+    } else {
+      p.streak = 1;
+    }
+  }
+  p.lastStudyDate = today;
+  p.bestStreak = Math.max(p.bestStreak, p.streak);
+  // Thưởng thêm 1 lượt đóng băng mỗi mốc 7 ngày liên tục, tối đa giữ 3 lượt.
+  if(p.streak > 0 && p.streak % 7 === 0 && p.streakFreezes < 3){
+    p.streakFreezes += 1;
+    toast('❄️ Nhận thêm 1 lượt đóng băng chuỗi ngày!');
+  }
+}
+
+// Gọi ngay sau grade(card, quality) mỗi lần học sinh chấm 1 thẻ.
+function recordXpAndStreak(quality){
+  normalizeProgress();
+  const p = DATA.progress;
+  const beforeLevel = computeLevel(p.xp).level;
+  p.xp += XP_PER_GRADE[quality] || 0;
+  p.totalReviews += 1;
+  if(quality === 0) sessionHadMiss = true;
+  sessionXpEarned += XP_PER_GRADE[quality] || 0;
+  recordStudyDay();
+  evaluateThresholdBadges();
+  const afterLevel = computeLevel(p.xp).level;
+  if(afterLevel > beforeLevel) toast(`🎉 Lên cấp ${afterLevel}!`);
 }
 
 function toast(msg){
@@ -382,6 +515,8 @@ function render(){
   if(authModalOpen) $app.appendChild(renderAuthModal());
   if(renameModalOpen) $app.appendChild(renderRenameModal());
   if(testConfirm) $app.appendChild(renderTestConfirmModal());
+  if(bulkImportOpen) $app.appendChild(renderBulkImportModal());
+  if(filePreviewOpen) $app.appendChild(renderFilePreviewModal());
   if(classroomConfirm) $app.appendChild(renderClassroomConfirmModal());
   if(classroomMembersView) $app.appendChild(renderClassroomMembersModal());
   if(actionSheetItems) $app.appendChild(renderActionSheet());
@@ -430,6 +565,30 @@ function renderTabbar(){
   return nav;
 }
 
+// Thanh streak + cấp độ nhỏ gọn hiện ở đầu trang chủ, bấm vào mở tab Thống
+// kê để xem chi tiết huy hiệu.
+function buildProgressBar(){
+  normalizeProgress();
+  const p = DATA.progress;
+  const lvl = computeLevel(p.xp);
+  const studiedToday = p.lastStudyDate === todayKey();
+  const pct = Math.round((lvl.xpIntoLevel / lvl.xpForThisLevel) * 100);
+
+  const bar = document.createElement('div');
+  bar.className = 'progress-bar-card';
+  bar.innerHTML = `
+    <div class="pb-streak ${studiedToday ? 'pb-streak-active' : ''}">
+      <span class="pb-flame">🔥</span><span class="pb-streak-num">${p.streak}</span>
+    </div>
+    <div class="pb-level">
+      <div class="pb-level-row"><span>Cấp ${lvl.level}</span><span class="pb-xp">${lvl.xpIntoLevel}/${lvl.xpForThisLevel} XP</span></div>
+      <div class="pb-track"><div class="pb-fill" style="width:${pct}%"></div></div>
+    </div>
+  `;
+  bar.onclick = ()=> setView('stats');
+  return bar;
+}
+
 /* ---------------- HOME ---------------- */
 function renderHome(){
   const wrap = document.createElement('div');
@@ -449,6 +608,8 @@ function renderHome(){
 
   const main = document.createElement('main');
   const totalDue = dueCards().length;
+
+  main.appendChild(buildProgressBar());
 
   const hero = document.createElement('div');
   hero.className='hero-card';
@@ -592,6 +753,20 @@ function initialsOf(p){
   const parts = label.trim().split(/\s+/).filter(Boolean);
   if(parts.length>1) return (parts[0][0]+parts[parts.length-1][0]).toUpperCase();
   return label.slice(0,2).toUpperCase();
+}
+// epoch-ms <-> the string format <input type="datetime-local"> needs/gives,
+// both always in the browser's local time zone (no explicit TZ in either).
+function toDatetimeLocalValue(ms){
+  if(!ms) return '';
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function formatDeadline(ms){
+  if(!ms) return '';
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2,'0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())} ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}`;
 }
 
 /* ---------------- ADD ---------------- */
@@ -995,6 +1170,9 @@ function startReview(){
   flipped = false;
   reviewHistory = [];
   reviewMenuOpen = false;
+  sessionHadMiss = false;
+  sessionXpEarned = 0;
+  sessionCompletionHandled = false;
   setView('review');
 }
 
@@ -1003,6 +1181,13 @@ function undoReview(){
   const entry = reviewHistory.pop();
   const c = DATA.cards.find(x=>x.id===entry.cardId);
   if(c) Object.assign(c, entry.snapshot);
+  // Hoàn lại XP/lượt ôn vừa cộng — tránh việc chấm rồi hoàn tác lặp lại để "cày" XP khống.
+  if(typeof entry.xpBefore === 'number'){
+    const xpAwarded = DATA.progress.xp - entry.xpBefore;
+    sessionXpEarned = Math.max(0, sessionXpEarned - xpAwarded);
+    DATA.progress.xp = entry.xpBefore;
+    DATA.progress.totalReviews = entry.reviewsBefore;
+  }
   reviewIdx = entry.idx;
   flipped = false;
   saveData();
@@ -1014,10 +1199,23 @@ function renderReview(){
   wrap.className='review-wrap';
 
   if(reviewQueue.length===0 || reviewIdx >= reviewQueue.length){
+    if(reviewQueue.length>0 && !sessionCompletionHandled){
+      sessionCompletionHandled = true;
+      if(!sessionHadMiss && reviewQueue.length>=5) unlockBadge('perfect_session');
+      saveData();
+    }
+    const p = DATA.progress;
+    const lvl = computeLevel(p.xp);
     wrap.innerHTML = `<div class="review-done">
       <div class="glyph">🎉</div>
       <h2 class="display">Xong hết rồi!</h2>
       <p>Bạn đã ôn hết các thẻ đến hạn. Quay lại vào ngày mai nhé.</p>
+      ${reviewQueue.length>0 ? `
+      <div class="session-recap">
+        <div class="session-recap-item"><span class="srv">+${sessionXpEarned}</span><span class="srl">XP</span></div>
+        <div class="session-recap-item"><span class="srv">🔥 ${p.streak}</span><span class="srl">ngày liên tục</span></div>
+        <div class="session-recap-item"><span class="srv">Lv.${lvl.level}</span><span class="srl">${lvl.xpIntoLevel}/${lvl.xpForThisLevel} XP</span></div>
+      </div>` : ''}
     </div>`;
     const btn = document.createElement('button');
     btn.className='hero-btn'; btn.style.maxWidth='260px'; btn.textContent='Về trang chủ';
@@ -1115,8 +1313,10 @@ function renderReview(){
     const qualities = [0,1,2,3];
     row.querySelectorAll('.grade-btn').forEach((btn,i)=>{
       btn.onclick = async ()=>{
-        reviewHistory.push({cardId: card.id, snapshot: {...card}, idx: reviewIdx});
+        const xpBefore = DATA.progress.xp, reviewsBefore = DATA.progress.totalReviews;
+        reviewHistory.push({cardId: card.id, snapshot: {...card}, idx: reviewIdx, xpBefore, reviewsBefore});
         grade(card, qualities[i]);
+        recordXpAndStreak(qualities[i]);
         await saveData();
         reviewIdx += 1;
         flipped = false;
@@ -1223,6 +1423,30 @@ function renderStats(){
   const due = dueCards().length;
   const mastered = DATA.cards.filter(c=>c.interval>=21).length;
   const learning = DATA.cards.filter(c=>c.reps>0 && c.interval<21).length;
+
+  main.appendChild(buildProgressBar());
+
+  const p = DATA.progress;
+  const badgeLabel = document.createElement('div');
+  badgeLabel.className = 'section-label';
+  badgeLabel.style.marginTop = '18px';
+  badgeLabel.textContent = `Huy hiệu (${p.badges.length}/${Object.keys(BADGE_DEFS).length}) · 🔥 Kỷ lục ${p.bestStreak} ngày · ❄️ ${p.streakFreezes} lượt đóng băng`;
+  main.appendChild(badgeLabel);
+
+  const badgeGrid = document.createElement('div');
+  badgeGrid.className = 'badge-grid';
+  Object.entries(BADGE_DEFS).forEach(([id, def])=>{
+    const unlocked = p.badges.includes(id);
+    const item = document.createElement('div');
+    item.className = 'badge-item' + (unlocked ? ' unlocked' : '');
+    item.innerHTML = `
+      <div class="badge-icon">${unlocked ? def.icon : '🔒'}</div>
+      <div class="badge-title">${unlocked ? escapeHtml(def.title) : '???'}</div>
+      <div class="badge-desc">${escapeHtml(def.desc)}</div>
+    `;
+    badgeGrid.appendChild(item);
+  });
+  main.appendChild(badgeGrid);
 
   const grid = document.createElement('div');
   grid.className='stat-grid';
@@ -1800,6 +2024,7 @@ function applyRemoteData(remote){
     parsed.updatedAt = remote.updatedAt || Date.now();
     DATA = parsed;
     normalizeSubjects();
+    normalizeProgress();
     idbSet(STORE_KEY, JSON.stringify(DATA)); // write straight to disk, skip re-triggering a push
   }catch(e){ toast('Lỗi khi đọc dữ liệu từ máy chủ'); }
 }
@@ -2457,6 +2682,7 @@ async function deleteTest(id){
 async function openTestEditor(testId){
   try{
     const detail = await authorizedGet('/tests/get?testId=' + encodeURIComponent(testId));
+    detail._deadlineDraftOn = !!detail.deadlineAt;   // UI-only flag, not sent to server
     testEditorOpen = detail;
     testEditorFresh = true;
     testTitleEditing = false;
@@ -2600,6 +2826,183 @@ async function deleteQuestion(id){
     toast('Lỗi: ' + (e.message||''));
   }
   testBusy = false; render();
+}
+
+/* ---- Dán nhanh nhiều câu trắc nghiệm cùng lúc (bulk import) ----
+   Nhận dạng văn bản dán vào theo định dạng phổ biến khi soạn đề trên Word:
+
+     Câu 1: Nội dung câu hỏi...
+     A. Phương án 1
+     B. Phương án 2
+     C. Phương án 3
+     D. Phương án 4
+     Đáp án: A
+
+     Câu 2: ...
+
+   Chấp nhận cả không có chữ "Câu", dấu ")" thay ".", "Đáp án đúng"/"ĐA"/
+   "Answer", và số câu không cần liên tục. Bất cứ câu nào thiếu 1 trong 4
+   phương án hoặc thiếu đáp án sẽ tự động bị bỏ qua khỏi bản xem trước —
+   giáo viên luôn thấy trước số câu nhận diện được trước khi bấm Thêm. */
+function parseBulkMCQ(text){
+  const lines = (text||'').replace(/\r\n/g,'\n').split('\n');
+  const qStartRe = /^\s*(?:Câu|Cau|Question)\s*\d+\s*[:.\)]?\s*(.*)$/i;
+  const optRe = /^\s*([A-Da-d])[.\):]\s*(.+)$/;
+  const ansRe = /^\s*(Đáp\s*án\s*(?:đúng)?|Dap\s*an|ĐA|DA|Answer|Correct)\b[^A-Da-d]*([A-Da-d])\s*\.?\s*$/i;
+
+  const blocks = [];
+  let cur = null;
+  for(const raw of lines){
+    const line = raw.trim();
+    if(!line) continue;
+    const qm = line.match(qStartRe);
+    const om = !qm ? line.match(optRe) : null;
+    const am = (!qm && !om) ? line.match(ansRe) : null;
+    if(qm){
+      cur = { promptLines: qm[1] ? [qm[1]] : [], options:{}, answer:null };
+      blocks.push(cur);
+    } else if(om && cur && Object.keys(cur.options).length < 4){
+      cur.options[om[1].toUpperCase()] = om[2].trim();
+    } else if(am && cur){
+      cur.answer = am[2].toUpperCase();
+    } else if(cur && Object.keys(cur.options).length===0){
+      // still part of the question prompt (before any option line appears)
+      cur.promptLines.push(line);
+    }
+  }
+
+  const questions = [];
+  const skipped = [];
+  blocks.forEach((b,i)=>{
+    const prompt = b.promptLines.join('\n').trim();
+    const opts = ['A','B','C','D'].map(k=>b.options[k]);
+    const complete = prompt && opts.every(Boolean) && b.answer && 'ABCD'.includes(b.answer);
+    if(complete){
+      questions.push({ prompt, options: opts, correctIndex: 'ABCD'.indexOf(b.answer) });
+    } else {
+      skipped.push(i+1);
+    }
+  });
+  return { questions, skippedCount: skipped.length };
+}
+
+async function submitBulkImport(){
+  const parsed = parseBulkMCQ(bulkImportOpen.text);
+  if(parsed.questions.length===0){
+    bulkImportOpen.error = 'Không nhận diện được câu hỏi nào hợp lệ — kiểm tra lại định dạng bên dưới.';
+    render();
+    return;
+  }
+  bulkImportOpen.busy = true; bulkImportOpen.error = ''; render();
+  let addedCount = 0;
+  try{
+    for(const q of parsed.questions){
+      const data = { options: q.options, correctIndex: q.correctIndex };
+      const res = await authorizedRequest('/tests/questions/add', {
+        testId: testEditorOpen.id, type:'mcq', prompt:q.prompt, imageData:null, data
+      });
+      testEditorOpen.questions.push({ id:res.id, type:'mcq', prompt:q.prompt, imageData:null, data, orderIndex:res.orderIndex });
+      addedCount++;
+    }
+    const idx = TESTS.findIndex(t=>t.id===testEditorOpen.id);
+    if(idx>=0) TESTS[idx].questionCount = testEditorOpen.questions.length;
+    bulkImportOpen = null;
+    toast(`Đã thêm ${addedCount} câu trắc nghiệm ✓` + (parsed.skippedCount ? ` (bỏ qua ${parsed.skippedCount} câu không nhận diện được)` : ''));
+  }catch(e){
+    bulkImportOpen.error = (addedCount>0 ? `Đã thêm ${addedCount} câu thì gặp lỗi: ` : 'Lỗi: ') + (e.message||'Thêm câu hỏi thất bại');
+    bulkImportOpen.busy = false;
+  }
+  render();
+}
+
+function renderBulkImportModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-backdrop';
+  overlay.onclick = (e)=>{ if(e.target===overlay && !bulkImportOpen.busy){ bulkImportOpen=null; render(); } };
+
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+  card.innerHTML = `<div class="modal-title display">⚡ Dán nhanh nhiều câu</div>`;
+
+  const help = document.createElement('div');
+  help.className = 'tr-sub';
+  help.style.marginBottom = '10px';
+  help.innerHTML = `Dán nội dung nhiều câu trắc nghiệm cùng lúc (copy từ Word/Zalo...), mỗi câu theo đúng khuôn:`;
+  card.appendChild(help);
+
+  const example = document.createElement('pre');
+  example.className = 'mono';
+  example.style.cssText = 'font-size:11px; line-height:1.6; background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:10px 12px; white-space:pre-wrap; color:var(--ink-faint); margin-bottom:12px;';
+  example.textContent =
+`Câu 1: Thủ đô của Việt Nam là gì?
+A. Hà Nội
+B. TP. Hồ Chí Minh
+C. Đà Nẵng
+D. Huế
+Đáp án: A
+
+Câu 2: 2 + 2 = ?
+A. 3
+B. 4
+C. 5
+D. 6
+Đáp án: B`;
+  card.appendChild(example);
+
+  const field = document.createElement('div');
+  field.className = 'field';
+  field.innerHTML = `<label>Dán nội dung đề vào đây</label>`;
+  const area = document.createElement('textarea');
+  area.rows = 10;
+  area.placeholder = 'Dán toàn bộ đề trắc nghiệm vào đây…';
+  area.value = bulkImportOpen.text;
+  area.disabled = bulkImportOpen.busy;
+  field.appendChild(area);
+  card.appendChild(field);
+
+  const preview = document.createElement('div');
+  preview.className = 'tr-sub';
+  preview.style.margin = '2px 0 6px';
+  const updatePreview = ()=>{
+    const p = parseBulkMCQ(area.value);
+    if(!area.value.trim()){ preview.textContent = ''; return; }
+    preview.innerHTML = p.questions.length
+      ? `<span style="color:var(--teal); font-weight:600;">✓ Nhận diện được ${p.questions.length} câu hợp lệ</span>` + (p.skippedCount ? ` · <span style="color:var(--coral);">${p.skippedCount} câu chưa đủ thông tin</span>` : '')
+      : `<span style="color:var(--coral);">Chưa nhận diện được câu nào — kiểm tra lại định dạng</span>`;
+  };
+  area.oninput = ()=>{ bulkImportOpen.text = area.value; updatePreview(); };
+  updatePreview();
+  card.appendChild(preview);
+
+  if(bulkImportOpen.error){
+    const err = document.createElement('div');
+    err.style.color = 'var(--coral)'; err.style.fontSize = '12px'; err.style.margin = '4px 0';
+    err.textContent = bulkImportOpen.error;
+    card.appendChild(err);
+  }
+
+  const btnRow = document.createElement('div');
+  btnRow.style.display = 'flex'; btnRow.style.gap = '8px'; btnRow.style.marginTop = '14px';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'save-btn secondary-btn';
+  cancelBtn.style.margin = '0'; cancelBtn.style.flex = '1';
+  cancelBtn.textContent = 'Huỷ';
+  cancelBtn.disabled = bulkImportOpen.busy;
+  cancelBtn.onclick = ()=>{ bulkImportOpen=null; render(); };
+  btnRow.appendChild(cancelBtn);
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'save-btn';
+  addBtn.style.margin = '0'; addBtn.style.flex = '2';
+  addBtn.textContent = bulkImportOpen.busy ? 'Đang thêm…' : '+ Thêm tất cả vào đề';
+  addBtn.disabled = bulkImportOpen.busy;
+  addBtn.onclick = submitBulkImport;
+  btnRow.appendChild(addBtn);
+
+  card.appendChild(btnRow);
+  overlay.appendChild(card);
+  return overlay;
 }
 
 function renderTestManager(){
@@ -2754,7 +3157,7 @@ function renderTestEditor(){
       <span class="track"></span>
     </label>
   `;
-  publishRow.querySelector('input').onchange = (e)=> publishTest(e.target.checked, testEditorOpen.maxAttempts);
+  publishRow.querySelector('input').onchange = (e)=> publishTest(e.target.checked, testEditorOpen.maxAttempts, testEditorOpen.deadlineAt);
   publishBox.appendChild(publishRow);
 
   const attemptsRow = document.createElement('div');
@@ -2768,10 +3171,70 @@ function renderTestEditor(){
     b.style.background = active ? 'var(--teal)' : 'var(--bg-elev)';
     b.style.color = active ? 'var(--bg)' : 'var(--white)';
     b.disabled = publishBusy;
-    b.onclick = ()=> publishTest(!!testEditorOpen.published, val);
+    b.onclick = ()=> publishTest(!!testEditorOpen.published, val, testEditorOpen.deadlineAt);
     attemptsRow.appendChild(b);
   });
   publishBox.appendChild(attemptsRow);
+
+  // --- hạn chót làm bài: "Không giới hạn" hoặc ngày giờ cụ thể ---
+  const deadlineLabel = document.createElement('div');
+  deadlineLabel.className = 'tr-sub';
+  deadlineLabel.style.fontWeight = '600';
+  deadlineLabel.style.margin = '2px 0 -2px';
+  deadlineLabel.textContent = 'Hạn chót làm bài';
+  publishBox.appendChild(deadlineLabel);
+
+  const deadlineRow = document.createElement('div');
+  deadlineRow.style.display = 'flex'; deadlineRow.style.gap = '8px';
+  [[false,'Không giới hạn'],[true,'Có hạn chót']].forEach(([wantsDeadline,label])=>{
+    const b = document.createElement('button');
+    b.type='button'; b.textContent=label;
+    b.style.flex='1'; b.style.padding='9px'; b.style.borderRadius='9px'; b.style.fontSize='12.5px'; b.style.fontWeight='600';
+    const active = !!testEditorOpen._deadlineDraftOn === wantsDeadline;
+    b.style.border = active ? '1px solid var(--amber)' : '1px solid var(--line)';
+    b.style.background = active ? 'var(--amber)' : 'var(--bg-elev)';
+    b.style.color = active ? 'var(--bg)' : 'var(--white)';
+    b.disabled = publishBusy;
+    b.onclick = ()=>{
+      if(wantsDeadline){
+        testEditorOpen._deadlineDraftOn = true;
+        render();
+      } else {
+        testEditorOpen._deadlineDraftOn = false;
+        publishTest(!!testEditorOpen.published, testEditorOpen.maxAttempts, null);
+      }
+    };
+    deadlineRow.appendChild(b);
+  });
+  publishBox.appendChild(deadlineRow);
+
+  if(testEditorOpen._deadlineDraftOn){
+    const dlField = document.createElement('div');
+    dlField.style.display = 'flex'; dlField.style.gap = '8px'; dlField.style.alignItems = 'center';
+    const dlInput = document.createElement('input');
+    dlInput.type = 'datetime-local';
+    dlInput.value = toDatetimeLocalValue(testEditorOpen.deadlineAt);
+    dlInput.min = toDatetimeLocalValue(Date.now());
+    dlInput.disabled = publishBusy;
+    dlInput.style.cssText = 'flex:1; background:var(--bg-elev); border:1px solid var(--line); border-radius:9px; padding:9px 10px; color:var(--white); font-size:13px; font-family:inherit;';
+    dlInput.onchange = (e)=>{
+      const val = e.target.value;
+      if(!val) return;
+      const ts = new Date(val).getTime();
+      if(!Number.isFinite(ts)) return;
+      publishTest(!!testEditorOpen.published, testEditorOpen.maxAttempts, ts);
+    };
+    dlField.appendChild(dlInput);
+    publishBox.appendChild(dlField);
+
+    const dlHint = document.createElement('div');
+    dlHint.className = 'tr-sub';
+    dlHint.style.margin = '-4px 0 0';
+    dlHint.textContent = testEditorOpen.deadlineAt
+      ? `Học sinh không mở/nộp bài được sau ${formatDeadline(testEditorOpen.deadlineAt)}.`
+      : 'Chọn ngày giờ hết hạn ở trên.';
+    publishBox.appendChild(dlHint);
+  }
 
   const scoresBtn = document.createElement('button');
   scoresBtn.className = 'save-btn';
@@ -2782,6 +3245,97 @@ function renderTestEditor(){
   publishBox.appendChild(scoresBtn);
 
   main.appendChild(publishBox);
+
+  // --- tệp đề bài đính kèm (PDF/Word) — học sinh tải về làm trước khi vào phần trắc nghiệm ---
+  const attachBox = document.createElement('div');
+  attachBox.className = 'toggle-row';
+  attachBox.style.flexDirection = 'column';
+  attachBox.style.alignItems = 'stretch';
+  attachBox.style.gap = '10px';
+  attachBox.style.marginTop = '12px';
+
+  const attachLabel = document.createElement('div');
+  attachLabel.className = 'tr-sub';
+  attachLabel.style.fontWeight = '600';
+  attachLabel.textContent = '📎 Tệp đề bài (PDF/Word)';
+  attachBox.appendChild(attachLabel);
+
+  const attachHint = document.createElement('div');
+  attachHint.className = 'tr-sub';
+  attachHint.textContent = 'Học sinh sẽ tải tệp này về làm trước, sau đó vào phần trắc nghiệm bên dưới để nộp đáp án.';
+  attachBox.appendChild(attachHint);
+
+  if(testEditorOpen.attachmentName){
+    const fileRow = document.createElement('div');
+    fileRow.style.display = 'flex'; fileRow.style.alignItems = 'center'; fileRow.style.gap = '10px';
+    fileRow.style.background = 'var(--bg)'; fileRow.style.border = '1px solid var(--line)';
+    fileRow.style.borderRadius = '10px'; fileRow.style.padding = '10px 12px';
+
+    const isPdf = (testEditorOpen.attachmentMime||'').includes('pdf');
+    const icon = document.createElement('div');
+    icon.style.fontSize = '20px'; icon.textContent = isPdf ? '📕' : '📄';
+    fileRow.appendChild(icon);
+
+    const nameEl = document.createElement('div');
+    nameEl.style.flex = '1'; nameEl.style.fontSize = '13px'; nameEl.style.fontWeight = '600';
+    nameEl.style.overflow = 'hidden'; nameEl.style.textOverflow = 'ellipsis'; nameEl.style.whiteSpace = 'nowrap';
+    nameEl.textContent = testEditorOpen.attachmentName;
+    fileRow.appendChild(nameEl);
+
+    if(testEditorOpen.attachmentData){
+      const viewBtn = document.createElement('button');
+      viewBtn.textContent = '👁';
+      viewBtn.title = 'Xem trong app';
+      viewBtn.style.cssText = 'background:none; border:none; color:var(--teal); font-size:16px; cursor:pointer; flex-shrink:0; padding:4px 6px;';
+      viewBtn.onclick = ()=> openFilePreview({ name: testEditorOpen.attachmentName, mime: testEditorOpen.attachmentMime, dataUrl: testEditorOpen.attachmentData });
+      fileRow.appendChild(viewBtn);
+
+      const openBtn = document.createElement('a');
+      openBtn.href = testEditorOpen.attachmentData;
+      openBtn.download = testEditorOpen.attachmentName;
+      openBtn.textContent = '⬇';
+      openBtn.title = 'Tải xuống';
+      openBtn.style.cssText = 'font-size:16px; text-decoration:none; padding:4px 6px; flex-shrink:0;';
+      fileRow.appendChild(openBtn);
+    }
+
+    const delFileBtn = document.createElement('button');
+    delFileBtn.textContent = '🗑';
+    delFileBtn.title = 'Xoá tệp';
+    delFileBtn.style.cssText = 'background:none; border:none; color:var(--coral); font-size:15px; cursor:pointer; flex-shrink:0; padding:4px 6px;';
+    delFileBtn.disabled = testAttachmentBusy;
+    delFileBtn.onclick = removeTestAttachment;
+    fileRow.appendChild(delFileBtn);
+
+    attachBox.appendChild(fileRow);
+
+    const replaceLabel = document.createElement('label');
+    replaceLabel.className = 'save-btn secondary-btn';
+    replaceLabel.style.margin = '0'; replaceLabel.style.textAlign = 'center'; replaceLabel.style.cursor = 'pointer';
+    replaceLabel.style.opacity = testAttachmentBusy ? '0.6' : '1';
+    replaceLabel.textContent = testAttachmentBusy ? 'Đang tải lên…' : 'Thay tệp khác';
+    const replaceInput = document.createElement('input');
+    replaceInput.type = 'file'; replaceInput.accept = '.pdf,.doc,.docx'; replaceInput.style.display = 'none';
+    replaceInput.disabled = testAttachmentBusy;
+    replaceInput.onchange = (e)=>{ const f = e.target.files[0]; if(f) uploadTestAttachment(f); e.target.value = ''; };
+    replaceLabel.appendChild(replaceInput);
+    attachBox.appendChild(replaceLabel);
+  } else {
+    const uploadLabel = document.createElement('label');
+    uploadLabel.className = 'save-btn';
+    uploadLabel.style.background = 'var(--bg-elev)'; uploadLabel.style.color = 'var(--white)'; uploadLabel.style.border = '1px solid var(--line)';
+    uploadLabel.style.margin = '0'; uploadLabel.style.textAlign = 'center'; uploadLabel.style.cursor = 'pointer';
+    uploadLabel.style.opacity = testAttachmentBusy ? '0.6' : '1';
+    uploadLabel.textContent = testAttachmentBusy ? 'Đang tải lên…' : '📎 Tải lên đề bài (PDF/Word)';
+    const uploadInput = document.createElement('input');
+    uploadInput.type = 'file'; uploadInput.accept = '.pdf,.doc,.docx'; uploadInput.style.display = 'none';
+    uploadInput.disabled = testAttachmentBusy;
+    uploadInput.onchange = (e)=>{ const f = e.target.files[0]; if(f) uploadTestAttachment(f); e.target.value = ''; };
+    uploadLabel.appendChild(uploadInput);
+    attachBox.appendChild(uploadLabel);
+  }
+
+  main.appendChild(attachBox);
 
   if(testEditorOpen.questions.length===0){
     const e = document.createElement('div'); e.className='tr-sub'; e.style.marginBottom='6px'; e.textContent='Chưa có câu hỏi nào.';
@@ -2841,6 +3395,15 @@ function renderTestEditor(){
     addBtn.textContent = addLabel;
     addBtn.onclick = ()=> openQuestionEditor('add', null, type);
     main.appendChild(addBtn);
+
+    if(type==='mcq'){
+      const bulkBtn = document.createElement('button');
+      bulkBtn.className = 'add-section-btn';
+      bulkBtn.style.color = 'var(--amber)';
+      bulkBtn.textContent = '⚡ Dán nhanh nhiều câu cùng lúc';
+      bulkBtn.onclick = ()=>{ bulkImportOpen = { text:'', busy:false, error:'' }; render(); };
+      main.appendChild(bulkBtn);
+    }
   });
 
   wrap.appendChild(main);
@@ -3069,14 +3632,194 @@ function renderTestConfirmModal(){
 }
 
 /* ---- giao bài & xem điểm (giáo viên) ---- */
-async function publishTest(published, maxAttempts){
+/* ---- Xem đề bài (PDF/Word) ngay trong app, không cần tải về ----
+   PDF: trình duyệt tự có sẵn khung xem PDF, chỉ cần nhúng qua <iframe>.
+   .docx: chuyển sang HTML để đọc ngay bằng thư viện mammoth.js (chạy hoàn
+   toàn trên máy người dùng, không gửi file lên đâu cả) — tải thư viện này
+   từ CDN đúng lúc cần, không tải sẵn để không làm nặng app lúc mở lần đầu.
+   .doc (định dạng Word cũ) không có cách xem trong trình duyệt, chỉ tải về. */
+let _mammothLoadPromise = null;
+function ensureMammothLoaded(){
+  if(window.mammoth) return Promise.resolve();
+  if(_mammothLoadPromise) return _mammothLoadPromise;
+  _mammothLoadPromise = new Promise((resolve, reject)=>{
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/mammoth@1.7.0/mammoth.browser.min.js';
+    s.onload = ()=> resolve();
+    s.onerror = ()=>{ _mammothLoadPromise = null; reject(new Error('Cần có mạng để mở trình xem Word lần đầu')); };
+    document.head.appendChild(s);
+  });
+  return _mammothLoadPromise;
+}
+
+function dataUrlToArrayBuffer(dataUrl){
+  const base64 = dataUrl.slice(dataUrl.indexOf(',')+1);
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+async function openFilePreview(file){
+  // file: {name, mime, dataUrl}
+  filePreviewOpen = { name: file.name, mime: file.mime, dataUrl: file.dataUrl, html: null, loading: false, error: '' };
+  render();
+
+  if(file.mime === 'application/msword'){
+    filePreviewOpen.error = 'Trình xem trong app chưa đọc được định dạng .doc cũ này. Hãy tải về máy để xem, hoặc nhờ giáo viên xuất lại dạng .docx hoặc PDF.';
+    render();
+    return;
+  }
+  if(file.mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'){
+    filePreviewOpen.loading = true; render();
+    try{
+      await ensureMammothLoaded();
+      const arrayBuffer = dataUrlToArrayBuffer(file.dataUrl);
+      const result = await window.mammoth.convertToHtml({ arrayBuffer });
+      filePreviewOpen.html = result.value || '<p><em>(Tài liệu trống)</em></p>';
+    }catch(e){
+      filePreviewOpen.error = (e && e.message) || 'Không mở được tệp này trong app — vui lòng tải về xem.';
+    }
+    filePreviewOpen.loading = false;
+    render();
+  }
+  // PDF: không cần xử lý thêm, <iframe> nhúng thẳng dataUrl trong renderFilePreviewModal.
+}
+
+function closeFilePreview(){ filePreviewOpen = null; render(); }
+
+function renderFilePreviewModal(){
+  const f = filePreviewOpen;
+  const overlay = document.createElement('div');
+  overlay.className = 'file-preview-overlay';
+
+  const bar = document.createElement('div');
+  bar.className = 'file-preview-bar';
+  const title = document.createElement('div');
+  title.className = 'file-preview-title';
+  title.textContent = f.name;
+  bar.appendChild(title);
+
+  const dlBtn = document.createElement('a');
+  dlBtn.href = f.dataUrl; dlBtn.download = f.name;
+  dlBtn.className = 'file-preview-icon-btn';
+  dlBtn.textContent = '⬇';
+  dlBtn.title = 'Tải xuống';
+  bar.appendChild(dlBtn);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'file-preview-icon-btn';
+  closeBtn.textContent = '✕';
+  closeBtn.title = 'Đóng';
+  closeBtn.onclick = closeFilePreview;
+  bar.appendChild(closeBtn);
+  overlay.appendChild(bar);
+
+  const body = document.createElement('div');
+  body.className = 'file-preview-body';
+
+  if(f.mime === 'application/pdf'){
+    const iframe = document.createElement('iframe');
+    iframe.src = f.dataUrl;
+    iframe.className = 'file-preview-iframe';
+    iframe.title = f.name;
+    body.appendChild(iframe);
+  } else if(f.loading){
+    const l = document.createElement('div');
+    l.className = 'tr-sub';
+    l.style.cssText = 'text-align:center; padding:48px 20px;';
+    l.textContent = 'Đang tải trình xem…';
+    body.appendChild(l);
+  } else if(f.error){
+    const errWrap = document.createElement('div');
+    errWrap.style.cssText = 'text-align:center; padding:40px 24px;';
+    const errMsg = document.createElement('div');
+    errMsg.className = 'tr-sub';
+    errMsg.style.marginBottom = '18px';
+    errMsg.textContent = f.error;
+    errWrap.appendChild(errMsg);
+    const dlBtn2 = document.createElement('a');
+    dlBtn2.href = f.dataUrl; dlBtn2.download = f.name;
+    dlBtn2.className = 'save-btn';
+    dlBtn2.style.cssText = 'max-width:240px; margin:0 auto; display:block; text-decoration:none;';
+    dlBtn2.textContent = '⬇ Tải về xem';
+    errWrap.appendChild(dlBtn2);
+    body.appendChild(errWrap);
+  } else if(f.html){
+    const docWrap = document.createElement('div');
+    docWrap.className = 'file-preview-doc';
+    docWrap.innerHTML = f.html;
+    body.appendChild(docWrap);
+  }
+  overlay.appendChild(body);
+  return overlay;
+}
+
+async function uploadTestAttachment(file){
+  if(!file) return;
+  const ALLOWED = {
+    'application/pdf': true,
+    'application/msword': true,
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': true
+  };
+  if(!ALLOWED[file.type]){
+    toast('Chỉ nhận tệp PDF hoặc Word (.pdf, .doc, .docx)');
+    return;
+  }
+  if(file.size > 5.5 * 1024 * 1024){
+    toast('Tệp quá lớn — vui lòng chọn tệp dưới khoảng 5MB');
+    return;
+  }
+  testAttachmentBusy = true; testAttachmentError = ''; render();
+  try{
+    const dataUrl = await new Promise((resolve,reject)=>{
+      const reader = new FileReader();
+      reader.onload = ()=> resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    const res = await authorizedRequest('/tests/attachment/set', {
+      testId: testEditorOpen.id, fileName: file.name, mime: file.type, data: dataUrl
+    });
+    testEditorOpen.attachmentName = res.attachmentName;
+    testEditorOpen.attachmentMime = res.attachmentMime;
+    testEditorOpen.attachmentData = dataUrl;
+    const idx = TESTS.findIndex(t=>t.id===testEditorOpen.id);
+    if(idx>=0) TESTS[idx].hasAttachment = true;
+    toast('Đã tải lên đề bài ✓');
+  }catch(e){
+    testAttachmentError = e.message || 'Tải tệp lên thất bại';
+    toast('Lỗi: ' + testAttachmentError);
+  }
+  testAttachmentBusy = false; render();
+}
+
+async function removeTestAttachment(){
+  testAttachmentBusy = true; render();
+  try{
+    await authorizedRequest('/tests/attachment/remove', { testId: testEditorOpen.id });
+    testEditorOpen.attachmentName = null;
+    testEditorOpen.attachmentMime = null;
+    testEditorOpen.attachmentData = null;
+    const idx = TESTS.findIndex(t=>t.id===testEditorOpen.id);
+    if(idx>=0) TESTS[idx].hasAttachment = false;
+    toast('Đã xoá tệp đề bài');
+  }catch(e){
+    toast('Lỗi: ' + (e.message||''));
+  }
+  testAttachmentBusy = false; render();
+}
+
+async function publishTest(published, maxAttempts, deadlineAt){
+  if(deadlineAt === undefined) deadlineAt = testEditorOpen.deadlineAt || null;
   publishBusy = true; render();
   try{
-    const res = await authorizedRequest('/tests/publish', { testId: testEditorOpen.id, published, maxAttempts });
+    const res = await authorizedRequest('/tests/publish', { testId: testEditorOpen.id, published, maxAttempts, deadlineAt });
     testEditorOpen.published = res.published;
     testEditorOpen.maxAttempts = res.maxAttempts;
+    testEditorOpen.deadlineAt = res.deadlineAt || null;
     const idx = TESTS.findIndex(t=>t.id===testEditorOpen.id);
-    if(idx>=0){ TESTS[idx].published = res.published; TESTS[idx].maxAttempts = res.maxAttempts; }
+    if(idx>=0){ TESTS[idx].published = res.published; TESTS[idx].maxAttempts = res.maxAttempts; TESTS[idx].deadlineAt = res.deadlineAt || null; }
     toast(res.published ? 'Đã giao bài cho học sinh ✓' : 'Đã chuyển về bản nháp');
   }catch(e){
     toast('Lỗi: ' + (e.message||''));
@@ -3201,7 +3944,7 @@ async function submitTest(){
     const answers = Object.keys(takeTestAnswers).map(qId => ({ questionId: qId, answer: takeTestAnswers[qId] }));
     const res = await authorizedRequest('/tests/submit', { testId: takeTestOpen.id, answers });
     studentTestDetailOpen.mySubmission = { score: res.score, total: res.total, attemptCount: res.attemptCount, submittedAt: res.submittedAt };
-    studentTestDetailOpen.canAttempt = studentTestDetailOpen.maxAttempts === null;
+    studentTestDetailOpen.canAttempt = studentTestDetailOpen.maxAttempts === null && !studentTestDetailOpen.isExpired;
     studentTestDetailOpen.resultDetail = res.detail;
     testReviewOpen = false;
     const idx = studentTests.findIndex(t=>t.id===takeTestOpen.id);
@@ -3229,12 +3972,20 @@ function scoreTier(pct){
 // serves both the "chưa hoàn thành" and "đã hoàn thành" sections below.
 function buildStudentTestCard(t, teacherLabel){
   const card = document.createElement('div');
-  card.className = 'srs-test-card' + (t.mySubmission ? ' is-done' : '');
+  card.className = 'srs-test-card' + (t.mySubmission ? ' is-done' : '') + (t.isExpired && !t.mySubmission ? ' is-expired' : '');
   card.onclick = ()=> openStudentTestDetail(t.id);
 
   const attemptPill = t.maxAttempts === 1
     ? '<span class="stc-pill">🔒 Chỉ 1 lần</span>'
     : '<span class="stc-pill">🔁 Không giới hạn</span>';
+
+  const deadlinePill = !t.deadlineAt
+    ? '<span class="stc-pill">🚩 Không thời hạn</span>'
+    : t.isExpired
+      ? '<span class="stc-pill stc-pill-danger">⏰ Đã hết hạn</span>'
+      : `<span class="stc-pill">⏰ Hạn: ${escapeHtml(formatDeadline(t.deadlineAt))}</span>`;
+
+  const attachmentPill = t.hasAttachment ? '<span class="stc-pill">📎 Có đề bài</span>' : '';
 
   let statusHtml, scorePillHtml = '';
   if(t.mySubmission){
@@ -3242,12 +3993,14 @@ function buildStudentTestCard(t, teacherLabel){
     const tier = scoreTier(pct);
     statusHtml = `<span class="stc-status" style="color:${tier.color};">Trạng thái: đã thi</span>`;
     scorePillHtml = `<span class="stc-pill" style="color:${tier.color}; border-color:${tier.color};">${tier.icon} ${t.mySubmission.score}/${t.mySubmission.total} điểm</span>`;
+  } else if(t.isExpired){
+    statusHtml = `<span class="stc-status stc-status-pending">Trạng thái: chưa thi · đã hết hạn</span>`;
   } else {
     statusHtml = `<span class="stc-status stc-status-pending">Trạng thái: chưa thi</span>`;
   }
 
   card.innerHTML = `
-    <div class="stc-pillrow">${attemptPill}${scorePillHtml}</div>
+    <div class="stc-pillrow">${deadlinePill}${attemptPill}${attachmentPill}${scorePillHtml}</div>
     <div class="stc-teacher"><span class="stc-avatar">${escapeHtml(initialsOf({name:teacherLabel}))}</span>${escapeHtml(teacherLabel)}</div>
     <div class="stc-title">${escapeHtml(t.title)}</div>
     ${statusHtml}
@@ -3353,9 +4106,54 @@ function renderStudentTestDetail(){
 
   const metaEl = document.createElement('div');
   metaEl.className = 'tr-sub';
-  metaEl.style.marginBottom = '20px';
+  metaEl.style.marginBottom = '6px';
   metaEl.textContent = t.questions.length + ' câu hỏi · ' + (t.maxAttempts===1 ? 'Chỉ làm 1 lần' : 'Được làm lại nhiều lần');
   main.appendChild(metaEl);
+
+  const deadlineEl = document.createElement('div');
+  deadlineEl.className = 'tr-sub';
+  deadlineEl.style.marginBottom = '20px';
+  if(t.deadlineAt){
+    deadlineEl.innerHTML = t.isExpired
+      ? `<span style="color:var(--coral); font-weight:600;">⏰ Đã hết hạn lúc ${formatDeadline(t.deadlineAt)}</span>`
+      : `⏰ Hạn chót: ${formatDeadline(t.deadlineAt)}`;
+  } else {
+    deadlineEl.textContent = '⏰ Không giới hạn thời hạn';
+  }
+  main.appendChild(deadlineEl);
+
+  if(t.attachmentName){
+    const attachCard = document.createElement('div');
+    attachCard.style.cssText = 'display:flex; align-items:center; gap:10px; background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:16px; flex-wrap:wrap;';
+    const isPdf = (t.attachmentMime||'').includes('pdf');
+    attachCard.innerHTML = `
+      <div style="font-size:22px;">${isPdf ? '📕' : '📄'}</div>
+      <div style="flex:1; min-width:120px;">
+        <div style="font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(t.attachmentName)}</div>
+        <div class="tr-sub" style="margin-top:1px;">Xem hoặc tải đề về làm trước, rồi quay lại nộp phần trắc nghiệm bên dưới.</div>
+      </div>
+    `;
+    const btnGroup = document.createElement('div');
+    btnGroup.style.cssText = 'display:flex; gap:8px; flex-shrink:0; margin-left:auto;';
+
+    const viewBtn = document.createElement('button');
+    viewBtn.type = 'button';
+    viewBtn.textContent = '👁 Xem đề';
+    viewBtn.style.cssText = 'font-size:12.5px; font-weight:700; border:none; color:var(--bg); background:var(--teal); padding:8px 12px; border-radius:9px; white-space:nowrap; cursor:pointer;';
+    viewBtn.onclick = ()=> openFilePreview({ name: t.attachmentName, mime: t.attachmentMime, dataUrl: t.attachmentData });
+    btnGroup.appendChild(viewBtn);
+
+    const dlBtn = document.createElement('a');
+    dlBtn.href = t.attachmentData;
+    dlBtn.download = t.attachmentName;
+    dlBtn.textContent = '⬇';
+    dlBtn.title = 'Tải xuống';
+    dlBtn.style.cssText = 'font-size:14px; font-weight:700; text-decoration:none; color:var(--white); background:var(--bg); border:1px solid var(--line); padding:8px 11px; border-radius:9px; white-space:nowrap;';
+    btnGroup.appendChild(dlBtn);
+
+    attachCard.appendChild(btnGroup);
+    main.appendChild(attachCard);
+  }
 
   if(t.mySubmission){
     const pct = t.mySubmission.total>0 ? (t.mySubmission.score/t.mySubmission.total) : 0;
@@ -3411,7 +4209,14 @@ function renderStudentTestDetail(){
     const note = document.createElement('div');
     note.className = 'tr-sub';
     note.style.textAlign = 'center';
-    note.textContent = 'Bài này chỉ được làm 1 lần.';
+    note.textContent = t.isExpired ? 'Bài đã hết hạn, không thể làm lại.' : 'Bài này chỉ được làm 1 lần.';
+    main.appendChild(note);
+  } else if(t.isExpired){
+    const note = document.createElement('div');
+    note.className = 'tr-sub';
+    note.style.textAlign = 'center';
+    note.style.color = 'var(--coral)';
+    note.textContent = 'Bài đã hết hạn, không thể bắt đầu làm bài.';
     main.appendChild(note);
   }
 
