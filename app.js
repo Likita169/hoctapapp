@@ -3718,6 +3718,7 @@ async function openFilePreview(file){
         // Người dùng có thể đã đóng preview hoặc mở tệp khác trong lúc đang vẽ dở — dừng lại luôn.
         if(!filePreviewOpen || filePreviewOpen.dataUrl !== file.dataUrl) return;
         const page = await pdf.getPage(i);
+        if(!filePreviewOpen || filePreviewOpen.dataUrl !== file.dataUrl) return;
         const unscaled = page.getViewport({ scale: 1 });
         const scale = (containerWidth / unscaled.width) * Math.min(window.devicePixelRatio || 1, 2);
         const viewport = page.getViewport({ scale });
@@ -3726,15 +3727,38 @@ async function openFilePreview(file){
         canvas.height = Math.round(viewport.height);
         canvas.className = 'file-preview-page';
         await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        if(!filePreviewOpen || filePreviewOpen.dataUrl !== file.dataUrl) return;
         filePreviewOpen.pages.push(canvas);
         filePreviewOpen.loading = false; // hiện dần từng trang ngay khi vẽ xong, không cần đợi hết tài liệu
-        render();
+        // Nối trực tiếp vào DOM thay vì gọi render() toàn app mỗi trang —
+        // render() xoá sạch rồi dựng lại cả cây DOM, làm animation mở modal
+        // chạy lại từ đầu mỗi lần → nhấp nháy liên tục cho tới khi xong hết
+        // trang. Chỉ khi khung xem chưa từng được vẽ ra (hiếm) mới cần render().
+        if(filePreviewOpen.pagesWrapEl && filePreviewOpen.pagesWrapEl.isConnected){
+          filePreviewOpen.pagesWrapEl.appendChild(canvas);
+          if(filePreviewOpen.statusEl && i < maxPages){
+            filePreviewOpen.statusEl.textContent = `Đang tải thêm trang… (${filePreviewOpen.pages.length}/${filePreviewOpen.totalPages})`;
+          }
+        } else {
+          render();
+        }
       }
+      // Xong toàn bộ — cập nhật dòng trạng thái tại chỗ, không gọi render() để tránh giật hình lần cuối.
+      if(filePreviewOpen.statusEl){
+        if(filePreviewOpen.truncated){
+          filePreviewOpen.statusEl.style.cssText = 'text-align:center; margin-top:10px;';
+          filePreviewOpen.statusEl.textContent = `Chỉ xem trước ${filePreviewOpen.pages.length}/${filePreviewOpen.totalPages} trang đầu — tải xuống để xem đầy đủ.`;
+        } else {
+          filePreviewOpen.statusEl.remove();
+        }
+        filePreviewOpen.statusEl = null;
+      }
+      filePreviewOpen.loading = false;
     }catch(e){
       filePreviewOpen.error = 'Không mở được bản xem trước PDF trong app — vui lòng tải xuống hoặc bấm ↗ để mở trong trình duyệt.';
+      filePreviewOpen.loading = false;
+      render();
     }
-    filePreviewOpen.loading = false;
-    render();
     return;
   }
 
@@ -3804,19 +3828,7 @@ function renderFilePreviewModal(){
   body.className = 'file-preview-body';
 
   if(f.mime === 'application/pdf'){
-    if(f.pages.length){
-      const pagesWrap = document.createElement('div');
-      pagesWrap.className = 'pdf-pages';
-      f.pages.forEach(canvas=> pagesWrap.appendChild(canvas));
-      body.appendChild(pagesWrap);
-    }
-    if(f.loading){
-      const l = document.createElement('div');
-      l.className = 'tr-sub';
-      l.style.cssText = 'text-align:center; padding:' + (f.pages.length ? '16px' : '48px 20px') + ';';
-      l.textContent = f.pages.length ? `Đang tải thêm trang… (${f.pages.length}/${f.totalPages})` : 'Đang tải bản xem trước…';
-      body.appendChild(l);
-    } else if(f.error && !f.pages.length){
+    if(f.error && !f.pages.length){
       const errWrap = document.createElement('div');
       errWrap.style.cssText = 'text-align:center; padding:40px 24px;';
       errWrap.innerHTML = `<div class="tr-sub" style="margin-bottom:18px;">${escapeHtml(f.error)}</div>`;
@@ -3827,12 +3839,29 @@ function renderFilePreviewModal(){
       dlBtn2.textContent = '⬇ Tải về xem';
       errWrap.appendChild(dlBtn2);
       body.appendChild(errWrap);
-    } else if(f.truncated){
-      const note = document.createElement('div');
-      note.className = 'tr-sub';
-      note.style.cssText = 'text-align:center; margin-top:10px;';
-      note.textContent = `Chỉ xem trước ${f.pages.length}/${f.totalPages} trang đầu — tải xuống để xem đầy đủ.`;
-      body.appendChild(note);
+    } else {
+      // Container "sống" — openFilePreview() nối thẳng canvas từng trang vào
+      // đây khi vẽ xong, không gọi lại render() toàn app (tránh nhấp nháy).
+      const pagesWrap = document.createElement('div');
+      pagesWrap.className = 'pdf-pages';
+      f.pages.forEach(canvas=> pagesWrap.appendChild(canvas));
+      body.appendChild(pagesWrap);
+      f.pagesWrapEl = pagesWrap;
+
+      if(f.loading || f.truncated){
+        const statusEl = document.createElement('div');
+        statusEl.className = 'tr-sub';
+        statusEl.style.cssText = f.loading
+          ? 'text-align:center; padding:' + (f.pages.length ? '16px' : '48px 20px') + ';'
+          : 'text-align:center; margin-top:10px;';
+        statusEl.textContent = f.loading
+          ? (f.pages.length ? `Đang tải thêm trang… (${f.pages.length}/${f.totalPages})` : 'Đang tải bản xem trước…')
+          : `Chỉ xem trước ${f.pages.length}/${f.totalPages} trang đầu — tải xuống để xem đầy đủ.`;
+        body.appendChild(statusEl);
+        f.statusEl = f.loading ? statusEl : null; // hết loading + không cần cập nhật thêm thì thôi không giữ tham chiếu
+      } else {
+        f.statusEl = null;
+      }
     }
   } else if(f.loading){
     const l = document.createElement('div');
