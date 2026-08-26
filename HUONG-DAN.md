@@ -159,6 +159,27 @@ cột `published`, `max_attempts` cho bảng `tests`) rồi deploy `worker.js` +
 `app.js` mới là dùng được ngay. Nếu D1 báo lỗi "duplicate column name" khi
 chạy `schema.sql`, đó là vì cột đã có sẵn — bỏ qua lỗi đó là được.
 
+## Câu tự luận (nộp ảnh, giáo viên chấm bằng cách khoanh lên ảnh)
+
+Ngoài trắc nghiệm / đúng-sai / trả lời ngắn, giáo viên có thể thêm câu
+**tự luận** trong trang soạn đề (Phần IV). Học sinh làm câu này bằng cách
+chụp/tải lên nhiều ảnh bài làm (tối đa 6 ảnh mỗi câu) thay vì gõ đáp án.
+
+Câu tự luận **không cộng điểm vào tổng điểm** của bài kiểm tra (điểm số
+bài kiểm tra chỉ tính trên trắc nghiệm/đúng-sai/trả lời ngắn) — kết quả
+câu tự luận hiển thị riêng dưới dạng **Đạt / Chưa đạt**.
+
+Sau khi học sinh nộp bài, vào trang **Điểm số** của bài kiểm tra, chạm vào
+tên một học sinh để xem toàn bộ bài làm của em đó. Với câu tự luận, bấm
+**"Chấm bài này"** để mở màn chấm: chạm và kéo trực tiếp trên ảnh để
+khoanh/vẽ chỗ sai (màu đỏ), chọn **Đạt** hoặc **Chưa đạt**, có thể ghi
+thêm nhận xét, rồi bấm **Lưu kết quả chấm**. Ảnh đã khoanh + nhận xét sẽ
+hiện ra khi học sinh vào xem lại bài làm của mình.
+
+Cần chạy thêm phần cuối `schema.sql` (tạo bảng `essay_gradings`) rồi
+deploy `worker.js` + `app.js` mới — làm đúng như hướng dẫn "Cập nhật app
+sau khi đã cài" bên dưới.
+
 ## Cập nhật app sau khi đã cài
 
 Mỗi khi bạn sửa code (hoặc mình sửa giúp) và deploy lại:

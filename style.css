@@ -362,6 +362,7 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .question-type-tag.mcq{background:rgba(157,142,242,0.2); color:var(--violet);}
 .question-type-tag.true_false{background:rgba(71,185,165,0.2); color:var(--teal);}
 .question-type-tag.short_answer{background:rgba(235,165,62,0.2); color:var(--amber);}
+.question-type-tag.essay{background:rgba(224,122,110,0.2); color:var(--coral);}
 
 /* ---------- Làm bài / Xem chi tiết (kiểu Azota: cuộn hết các câu) ---------- */
 .qcard{margin-bottom:28px; animation: rise .4s var(--ease-out) both;}
@@ -395,6 +396,22 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .tf-item .opt-row{flex:1; padding:9px 10px; margin-bottom:0; justify-content:center;}
 .tf-item .opt-badge{width:22px; height:22px; font-size:11px; flex-shrink:0;}
 .tf-item .opt-text{flex:0 0 auto;}
+
+.essay-photo-grid{display:flex; flex-wrap:wrap; gap:10px;}
+.essay-photo-thumb{position:relative; width:84px; height:84px; border-radius:10px; overflow:hidden; flex-shrink:0;}
+.essay-photo-thumb img{width:100%; height:100%; object-fit:cover; display:block;}
+.essay-photo-thumb button{position:absolute; top:3px; right:3px; width:20px; height:20px; border-radius:50%; border:none; background:var(--coral); color:#3a0d13; font-size:11px; line-height:1; cursor:pointer;}
+.essay-photo-add{width:84px; height:84px; border-radius:10px; border:1.5px dashed var(--line); display:flex; align-items:center; justify-content:center; font-size:26px; color:var(--ink-faint); cursor:pointer; flex-shrink:0;}
+.essay-photo-add:active{background:var(--bg-elev);}
+
+.essay-status-badge{display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700;}
+.essay-status-badge.pending{background:rgba(235,165,62,0.2); color:var(--amber);}
+.essay-status-badge.pass{background:rgba(71,185,165,0.2); color:var(--teal);}
+.essay-status-badge.fail{background:rgba(224,122,110,0.2); color:var(--coral);}
+
+.essay-grade-photo-wrap{position:relative; width:100%; margin-bottom:14px; border-radius:12px; overflow:hidden; background:var(--bg-elev); touch-action:none;}
+.essay-grade-photo-wrap img{width:100%; display:block;}
+.essay-grade-photo-wrap canvas{position:absolute; top:0; left:0; width:100%; height:100%;}
 
 /* ---------- Soạn bài: 3 phần cố định ---------- */
 .section-head{display:flex; align-items:center; justify-content:space-between; margin:22px 0 9px;}
