@@ -3633,10 +3633,15 @@ function renderTestConfirmModal(){
 
 /* ---- giao bài & xem điểm (giáo viên) ---- */
 /* ---- Xem đề bài (PDF/Word) ngay trong app, không cần tải về ----
-   PDF: trình duyệt tự có sẵn khung xem PDF, chỉ cần nhúng qua <iframe>.
-   .docx: chuyển sang HTML để đọc ngay bằng thư viện mammoth.js (chạy hoàn
-   toàn trên máy người dùng, không gửi file lên đâu cả) — tải thư viện này
-   từ CDN đúng lúc cần, không tải sẵn để không làm nặng app lúc mở lần đầu.
+   PDF: KHÔNG dùng <iframe> nhúng PDF nữa — nhiều trình duyệt di động (đặc
+   biệt app đã "Thêm vào màn hình chính" trên iPhone) không có sẵn khung xem
+   PDF nhúng trong iframe, chỉ hiện màn hình trắng. Thay vào đó dùng pdf.js
+   (thư viện mã nguồn mở của Mozilla) để tự vẽ từng trang ra <canvas> — cách
+   này chạy được trên mọi trình duyệt/webview vì canvas là chuẩn web cơ bản.
+   .docx: chuyển sang HTML để đọc ngay bằng thư viện mammoth.js.
+   Cả 2 thư viện đều chạy hoàn toàn trên máy người dùng (không gửi file lên
+   đâu cả), tải từ CDN đúng lúc cần, không tải sẵn để không làm nặng app lúc
+   mở lần đầu.
    .doc (định dạng Word cũ) không có cách xem trong trình duyệt, chỉ tải về. */
 let _mammothLoadPromise = null;
 function ensureMammothLoaded(){
@@ -3652,6 +3657,23 @@ function ensureMammothLoaded(){
   return _mammothLoadPromise;
 }
 
+let _pdfjsLoadPromise = null;
+function ensurePdfJsLoaded(){
+  if(window.pdfjsLib) return Promise.resolve();
+  if(_pdfjsLoadPromise) return _pdfjsLoadPromise;
+  _pdfjsLoadPromise = new Promise((resolve, reject)=>{
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+    s.onload = ()=>{
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+      resolve();
+    };
+    s.onerror = ()=>{ _pdfjsLoadPromise = null; reject(new Error('Cần có mạng để mở trình xem PDF lần đầu')); };
+    document.head.appendChild(s);
+  });
+  return _pdfjsLoadPromise;
+}
+
 function dataUrlToArrayBuffer(dataUrl){
   const base64 = dataUrl.slice(dataUrl.indexOf(',')+1);
   const binary = atob(base64);
@@ -3662,16 +3684,61 @@ function dataUrlToArrayBuffer(dataUrl){
 
 async function openFilePreview(file){
   // file: {name, mime, dataUrl}
-  filePreviewOpen = { name: file.name, mime: file.mime, dataUrl: file.dataUrl, html: null, loading: false, error: '' };
+  filePreviewOpen = {
+    name: file.name, mime: file.mime, dataUrl: file.dataUrl, objectUrl: null,
+    html: null, pages: [], totalPages: 0, truncated: false, loading: true, error: ''
+  };
   render();
 
   if(file.mime === 'application/msword'){
+    filePreviewOpen.loading = false;
     filePreviewOpen.error = 'Trình xem trong app chưa đọc được định dạng .doc cũ này. Hãy tải về máy để xem, hoặc nhờ giáo viên xuất lại dạng .docx hoặc PDF.';
     render();
     return;
   }
+
+  // objectUrl chỉ dùng cho nút "Mở trong trình duyệt" dự phòng — không còn
+  // dùng để nhúng iframe nữa.
+  try{
+    const resp = await fetch(file.dataUrl);
+    const blob = await resp.blob();
+    filePreviewOpen.objectUrl = URL.createObjectURL(blob);
+  }catch(e){ /* vẫn còn dataUrl gốc để dùng tạm nếu bước này lỗi */ }
+
+  if(file.mime === 'application/pdf'){
+    try{
+      await ensurePdfJsLoaded();
+      const arrayBuffer = dataUrlToArrayBuffer(file.dataUrl);
+      const pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+      const maxPages = Math.min(pdf.numPages, 40); // chặn tài liệu quá dài làm máy yếu bị đơ
+      filePreviewOpen.totalPages = pdf.numPages;
+      filePreviewOpen.truncated = pdf.numPages > maxPages;
+      const containerWidth = Math.min(document.documentElement.clientWidth - 24, 720);
+      for(let i=1; i<=maxPages; i++){
+        // Người dùng có thể đã đóng preview hoặc mở tệp khác trong lúc đang vẽ dở — dừng lại luôn.
+        if(!filePreviewOpen || filePreviewOpen.dataUrl !== file.dataUrl) return;
+        const page = await pdf.getPage(i);
+        const unscaled = page.getViewport({ scale: 1 });
+        const scale = (containerWidth / unscaled.width) * Math.min(window.devicePixelRatio || 1, 2);
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(viewport.width);
+        canvas.height = Math.round(viewport.height);
+        canvas.className = 'file-preview-page';
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        filePreviewOpen.pages.push(canvas);
+        filePreviewOpen.loading = false; // hiện dần từng trang ngay khi vẽ xong, không cần đợi hết tài liệu
+        render();
+      }
+    }catch(e){
+      filePreviewOpen.error = 'Không mở được bản xem trước PDF trong app — vui lòng tải xuống hoặc bấm ↗ để mở trong trình duyệt.';
+    }
+    filePreviewOpen.loading = false;
+    render();
+    return;
+  }
+
   if(file.mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'){
-    filePreviewOpen.loading = true; render();
     try{
       await ensureMammothLoaded();
       const arrayBuffer = dataUrlToArrayBuffer(file.dataUrl);
@@ -3680,13 +3747,18 @@ async function openFilePreview(file){
     }catch(e){
       filePreviewOpen.error = (e && e.message) || 'Không mở được tệp này trong app — vui lòng tải về xem.';
     }
-    filePreviewOpen.loading = false;
-    render();
   }
-  // PDF: không cần xử lý thêm, <iframe> nhúng thẳng dataUrl trong renderFilePreviewModal.
+  filePreviewOpen.loading = false;
+  render();
 }
 
-function closeFilePreview(){ filePreviewOpen = null; render(); }
+function closeFilePreview(){
+  if(filePreviewOpen && filePreviewOpen.objectUrl){
+    try{ URL.revokeObjectURL(filePreviewOpen.objectUrl); }catch(e){ /* ignore */ }
+  }
+  filePreviewOpen = null;
+  render();
+}
 
 function renderFilePreviewModal(){
   const f = filePreviewOpen;
@@ -3707,6 +3779,19 @@ function renderFilePreviewModal(){
   dlBtn.title = 'Tải xuống';
   bar.appendChild(dlBtn);
 
+  if(f.mime === 'application/pdf'){
+    // Dự phòng: mở bằng trình xem PDF thật của hệ điều hành/trình duyệt,
+    // phòng khi máy quá yếu để pdf.js vẽ hoặc gặp file PDF lỗi/đặc biệt.
+    const openTabBtn = document.createElement('a');
+    openTabBtn.href = f.objectUrl || f.dataUrl;
+    openTabBtn.target = '_blank';
+    openTabBtn.rel = 'noopener';
+    openTabBtn.className = 'file-preview-icon-btn';
+    openTabBtn.textContent = '↗';
+    openTabBtn.title = 'Mở trong trình duyệt';
+    bar.appendChild(openTabBtn);
+  }
+
   const closeBtn = document.createElement('button');
   closeBtn.className = 'file-preview-icon-btn';
   closeBtn.textContent = '✕';
@@ -3719,11 +3804,36 @@ function renderFilePreviewModal(){
   body.className = 'file-preview-body';
 
   if(f.mime === 'application/pdf'){
-    const iframe = document.createElement('iframe');
-    iframe.src = f.dataUrl;
-    iframe.className = 'file-preview-iframe';
-    iframe.title = f.name;
-    body.appendChild(iframe);
+    if(f.pages.length){
+      const pagesWrap = document.createElement('div');
+      pagesWrap.className = 'pdf-pages';
+      f.pages.forEach(canvas=> pagesWrap.appendChild(canvas));
+      body.appendChild(pagesWrap);
+    }
+    if(f.loading){
+      const l = document.createElement('div');
+      l.className = 'tr-sub';
+      l.style.cssText = 'text-align:center; padding:' + (f.pages.length ? '16px' : '48px 20px') + ';';
+      l.textContent = f.pages.length ? `Đang tải thêm trang… (${f.pages.length}/${f.totalPages})` : 'Đang tải bản xem trước…';
+      body.appendChild(l);
+    } else if(f.error && !f.pages.length){
+      const errWrap = document.createElement('div');
+      errWrap.style.cssText = 'text-align:center; padding:40px 24px;';
+      errWrap.innerHTML = `<div class="tr-sub" style="margin-bottom:18px;">${escapeHtml(f.error)}</div>`;
+      const dlBtn2 = document.createElement('a');
+      dlBtn2.href = f.dataUrl; dlBtn2.download = f.name;
+      dlBtn2.className = 'save-btn';
+      dlBtn2.style.cssText = 'max-width:240px; margin:0 auto; display:block; text-decoration:none;';
+      dlBtn2.textContent = '⬇ Tải về xem';
+      errWrap.appendChild(dlBtn2);
+      body.appendChild(errWrap);
+    } else if(f.truncated){
+      const note = document.createElement('div');
+      note.className = 'tr-sub';
+      note.style.cssText = 'text-align:center; margin-top:10px;';
+      note.textContent = `Chỉ xem trước ${f.pages.length}/${f.totalPages} trang đầu — tải xuống để xem đầy đủ.`;
+      body.appendChild(note);
+    }
   } else if(f.loading){
     const l = document.createElement('div');
     l.className = 'tr-sub';
@@ -3754,6 +3864,7 @@ function renderFilePreviewModal(){
   overlay.appendChild(body);
   return overlay;
 }
+
 
 async function uploadTestAttachment(file){
   if(!file) return;
