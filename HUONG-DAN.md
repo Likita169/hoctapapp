@@ -132,42 +132,56 @@ email = '...';`) rồi đăng ký lại.
 
 ## Bài kiểm tra (giáo viên) và làm bài (học sinh)
 
-Giáo viên tạo được bài kiểm tra trong từng lớp (trắc nghiệm 4 phương án,
-đúng/sai, trả lời ngắn — có thể kèm ảnh). Dùng chung máy chủ `on-tap-sync`
-và database D1 ở trên — **không cần cài thêm gì**. Ảnh được nén nhỏ lại
-ngay trên máy trước khi lưu (giảm kích thước, giữ vừa đủ rõ để đọc) rồi lưu
-thẳng trong D1 cùng với câu hỏi, không cần một dịch vụ lưu trữ file riêng
-(kiểu như Cloudflare R2 sẽ yêu cầu khai báo thẻ ngân hàng dù dùng miễn phí,
-nên bản này tránh dùng tới nó).
+Khi tạo bài kiểm tra, giáo viên chọn 1 trong 2 loại — **không trộn chung
+2 loại trong cùng 1 bài**:
+- **Trắc nghiệm**: gồm câu trắc nghiệm 4 phương án, đúng/sai, trả lời ngắn
+  — chấm điểm tự động 100% (so khớp không phân biệt hoa/thường).
+- **Tự luận**: học sinh nộp ảnh chụp bài làm, giáo viên chấm tay Đạt/Chưa
+  đạt (xem mục riêng bên dưới).
+
+Dùng chung máy chủ `on-tap-sync` và database D1 ở trên — **không cần cài
+thêm gì**. Ảnh được nén nhỏ lại ngay trên máy trước khi lưu (giảm kích
+thước, giữ vừa đủ rõ để đọc) rồi lưu thẳng trong D1 cùng với câu hỏi,
+không cần một dịch vụ lưu trữ file riêng (kiểu như Cloudflare R2 sẽ yêu
+cầu khai báo thẻ ngân hàng dù dùng miễn phí, nên bản này tránh dùng tới
+nó).
+
+**Đề bài đính kèm:** ở cả 2 loại bài, giáo viên có thể tải lên 1 tệp đề
+(ảnh/PDF/Word, tối đa khoảng 5MB) để học sinh xem/tải về. Với bài trắc
+nghiệm, đây thường là đề để đọc trước khi làm phần trắc nghiệm bên dưới.
+Với bài tự luận, đây chính là **đề bài chính** — học sinh xem đề này, làm
+ra giấy, rồi chụp ảnh bài làm nộp lại ở từng câu.
 
 **Giao bài:** bài kiểm tra mới tạo mặc định là **bản nháp** — chỉ giáo
 viên thấy. Trong trang soạn bài, bật công tắc "Bản nháp / Đã giao bài" để
 học sinh trong lớp bắt đầu thấy và làm được. Có thể chọn "Chỉ 1 lần" (nộp
 xong khoá lại, không làm lại được) hoặc "Không giới hạn" (làm lại bao
-nhiêu lần cũng được, mỗi lần nộp ghi đè điểm bằng lần gần nhất).
+nhiêu lần cũng được, mỗi lần nộp ghi đè điểm/bài làm bằng lần gần nhất).
 
 **Học sinh:** bấm vào thẻ lớp trong tab Lớp học → thấy danh sách bài kiểm
-tra đã được giao → làm bài → nộp → thấy điểm tổng ngay, bấm "Xem chi tiết"
-để biết câu nào đúng/sai và đáp án đúng là gì. Bài đã chấm tự động 100%
-(trắc nghiệm, đúng/sai, trả lời ngắn so khớp không phân biệt hoa/thường).
+tra đã được giao → làm bài → nộp. Với bài trắc nghiệm, thấy điểm tổng
+ngay, bấm "Xem chi tiết" để biết câu nào đúng/sai và đáp án đúng là gì.
+Với bài tự luận, thấy trạng thái "Đã nộp, chờ chấm" — vào "Xem lại bài
+làm" để theo dõi từng câu đã được chấm Đạt/Chưa đạt hay chưa.
 
 **Giáo viên xem điểm:** trong trang soạn bài, bấm "📊 Xem điểm học sinh"
-để thấy danh sách email + điểm của từng học sinh đã nộp.
+để thấy danh sách học sinh đã nộp (bài trắc nghiệm hiện điểm số, bài tự
+luận hiện số câu còn chờ chấm).
 
-Chỉ cần chạy lại `schema.sql` mới nhất (thêm bảng `test_submissions` và 2
-cột `published`, `max_attempts` cho bảng `tests`) rồi deploy `worker.js` +
-`app.js` mới là dùng được ngay. Nếu D1 báo lỗi "duplicate column name" khi
-chạy `schema.sql`, đó là vì cột đã có sẵn — bỏ qua lỗi đó là được.
+Chỉ cần chạy lại `schema.sql` mới nhất (thêm bảng `test_submissions`, cột
+`published`/`max_attempts`/`test_type` cho bảng `tests`) rồi deploy
+`worker.js` + `app.js` mới là dùng được ngay. Nếu D1 báo lỗi "duplicate
+column name" khi chạy `schema.sql`, đó là vì cột đã có sẵn — bỏ qua lỗi
+đó là được.
 
 ## Câu tự luận (nộp ảnh, giáo viên chấm bằng cách khoanh lên ảnh)
 
-Ngoài trắc nghiệm / đúng-sai / trả lời ngắn, giáo viên có thể thêm câu
-**tự luận** trong trang soạn đề (Phần IV). Học sinh làm câu này bằng cách
+Trong 1 bài kiểm tra **loại Tự luận**, giáo viên thêm từng câu hỏi (mỗi
+câu có thể kèm yêu cầu/rubric riêng). Học sinh làm mỗi câu bằng cách
 chụp/tải lên nhiều ảnh bài làm (tối đa 6 ảnh mỗi câu) thay vì gõ đáp án.
 
-Câu tự luận **không cộng điểm vào tổng điểm** của bài kiểm tra (điểm số
-bài kiểm tra chỉ tính trên trắc nghiệm/đúng-sai/trả lời ngắn) — kết quả
-câu tự luận hiển thị riêng dưới dạng **Đạt / Chưa đạt**.
+Bài tự luận **không có điểm số tự động** — kết quả từng câu hiển thị
+dưới dạng **Đạt / Chưa đạt**, do giáo viên chấm tay.
 
 Sau khi học sinh nộp bài, vào trang **Điểm số** của bài kiểm tra, chạm vào
 tên một học sinh để xem toàn bộ bài làm của em đó. Với câu tự luận, bấm
@@ -176,9 +190,9 @@ khoanh/vẽ chỗ sai (màu đỏ), chọn **Đạt** hoặc **Chưa đạt**, c
 thêm nhận xét, rồi bấm **Lưu kết quả chấm**. Ảnh đã khoanh + nhận xét sẽ
 hiện ra khi học sinh vào xem lại bài làm của mình.
 
-Cần chạy thêm phần cuối `schema.sql` (tạo bảng `essay_gradings`) rồi
-deploy `worker.js` + `app.js` mới — làm đúng như hướng dẫn "Cập nhật app
-sau khi đã cài" bên dưới.
+Cần chạy thêm phần cuối `schema.sql` (cột `test_type` + bảng
+`essay_gradings`) rồi deploy `worker.js` + `app.js` mới — làm đúng như
+hướng dẫn "Cập nhật app sau khi đã cài" bên dưới.
 
 ## Cập nhật app sau khi đã cài
 

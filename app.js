@@ -60,6 +60,7 @@ let TESTS = [];                                 // [{id,title,questionCount,crea
 let testsLoading = false;
 let testBusy = false;
 let testError = '';
+let newTestType = 'mcq';                        // 'mcq' | 'essay' — loại của bài kiểm tra sắp tạo, chọn trong renderTestManager
 
 let testEditorOpen = null;                      // {id,title,classroomId,questions:[...]} of the test being edited, or null
 let testEditorFresh = false;
@@ -2663,13 +2664,14 @@ async function fetchTests(classroomId){
   return res.tests || [];
 }
 
-async function createTest(title){
+async function createTest(title, testType){
   title = (title||'').trim();
+  testType = testType==='essay' ? 'essay' : 'mcq';
   if(!title){ testError = 'Nhập tên bài kiểm tra'; render(); return; }
   testBusy = true; testError = ''; render();
   try{
-    const res = await authorizedRequest('/tests/create', { classroomId: testManagerClassroom.id, title });
-    TESTS = [{ id:res.id, title:res.title, questionCount:0, createdAt:res.createdAt, updatedAt:res.updatedAt }, ...TESTS];
+    const res = await authorizedRequest('/tests/create', { classroomId: testManagerClassroom.id, title, testType });
+    TESTS = [{ id:res.id, title:res.title, questionCount:0, createdAt:res.createdAt, updatedAt:res.updatedAt, testType:res.testType, published:false, hasAttachment:false }, ...TESTS];
     toast('Đã tạo bài kiểm tra "' + title + '" ✓');
   }catch(e){
     testError = e.message || 'Tạo bài kiểm tra thất bại';
@@ -2743,7 +2745,9 @@ function openQuestionEditor(mode, question, presetType){
   render();
 }
 
-async function compressImageFile(file){
+async function compressImageFile(file, maxDim, quality){
+  maxDim = maxDim || 1000;
+  quality = quality || 0.8;
   const dataUrl = await new Promise((resolve,reject)=>{
     const reader = new FileReader();
     reader.onload = ()=> resolve(reader.result);
@@ -2756,10 +2760,9 @@ async function compressImageFile(file){
     el.onerror = reject;
     el.src = dataUrl;
   });
-  const MAX_DIM = 1000;
   let width = img.width, height = img.height;
-  if(width > MAX_DIM || height > MAX_DIM){
-    const scale = MAX_DIM / Math.max(width, height);
+  if(width > maxDim || height > maxDim){
+    const scale = maxDim / Math.max(width, height);
     width = Math.round(width*scale);
     height = Math.round(height*scale);
   }
@@ -2767,7 +2770,7 @@ async function compressImageFile(file){
   canvas.width = width; canvas.height = height;
   canvas.getContext('2d').drawImage(img, 0, 0, width, height);
   const outMime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
-  const outDataUrl = canvas.toDataURL(outMime, 0.8);
+  const outDataUrl = canvas.toDataURL(outMime, quality);
   return { mime: outMime, base64: outDataUrl.split(',')[1] };
 }
 
@@ -3050,18 +3053,45 @@ function renderTestManager(){
     main.appendChild(errBox);
   }
 
+  const typeField = document.createElement('div');
+  typeField.className = 'field';
+  typeField.style.marginBottom = '10px';
+  typeField.innerHTML = `<label>Loại bài kiểm tra sắp tạo</label>`;
+  const typeRow = document.createElement('div');
+  typeRow.style.display = 'flex'; typeRow.style.gap = '8px';
+  [['mcq','📝 Trắc nghiệm'],['essay','✍️ Tự luận']].forEach(([val,label])=>{
+    const b = document.createElement('button');
+    b.type='button'; b.textContent=label;
+    b.style.flex='1'; b.style.padding='10px'; b.style.borderRadius='9px'; b.style.fontSize='13px'; b.style.fontWeight='600';
+    const active = newTestType===val;
+    b.style.border = active ? '1px solid var(--teal)' : '1px solid var(--line)';
+    b.style.background = active ? 'var(--teal)' : 'var(--bg-elev)';
+    b.style.color = active ? 'var(--bg)' : 'var(--white)';
+    b.onclick = ()=>{ newTestType = val; render(); };
+    typeRow.appendChild(b);
+  });
+  typeField.appendChild(typeRow);
+  main.appendChild(typeField);
+
+  const typeHint = document.createElement('div');
+  typeHint.className = 'tr-sub'; typeHint.style.marginBottom = '10px';
+  typeHint.textContent = newTestType==='essay'
+    ? 'Bài tự luận: học sinh xem đề bạn tải lên, chụp ảnh bài làm để nộp — bạn chấm Đạt/Chưa đạt, không cộng điểm số.'
+    : 'Bài trắc nghiệm: gồm câu trắc nghiệm, đúng/sai, trả lời ngắn — chấm điểm tự động.';
+  main.appendChild(typeHint);
+
   const formRow = document.createElement('div');
   formRow.style.display='flex'; formRow.style.gap='8px'; formRow.style.marginBottom='16px';
   const input = document.createElement('input');
   input.type='text'; input.placeholder='Tên bài kiểm tra, ví dụ: Kiểm tra 15 phút - Chương 1';
   input.style.flex='1'; input.style.background='var(--bg-elev)'; input.style.border='1px solid var(--line)';
   input.style.color='var(--white)'; input.style.borderRadius='10px'; input.style.padding='11px 12px'; input.style.fontSize='14px';
-  input.onkeydown = (e)=>{ if(e.key==='Enter') createTest(input.value); };
+  input.onkeydown = (e)=>{ if(e.key==='Enter') createTest(input.value, newTestType); };
   const btn = document.createElement('button');
   btn.className='save-btn'; btn.style.width='auto'; btn.style.margin='0'; btn.style.padding='11px 16px'; btn.style.fontSize='14px';
   btn.textContent = testBusy ? '…' : '+ Tạo';
   btn.disabled = testBusy;
-  btn.onclick = ()=> createTest(input.value);
+  btn.onclick = ()=> createTest(input.value, newTestType);
   formRow.appendChild(input); formRow.appendChild(btn);
   main.appendChild(formRow);
 
@@ -3080,13 +3110,13 @@ function renderTestManager(){
 
     const icon = document.createElement('div');
     icon.className = 'test-icon';
-    icon.textContent = '📝';
+    icon.textContent = t.testType==='essay' ? '✍️' : '📝';
 
     const info = document.createElement('div');
     info.className = 'test-info';
     info.innerHTML = `
       <div class="test-title">${escapeHtml(t.title)}</div>
-      <div class="test-meta">${t.questionCount} câu hỏi</div>
+      <div class="test-meta">${t.testType==='essay' ? 'Tự luận · ' : ''}${t.questionCount} câu hỏi</div>
     `;
 
     const delBtn = document.createElement('button');
@@ -3268,15 +3298,20 @@ function renderTestEditor(){
   attachBox.style.gap = '10px';
   attachBox.style.marginTop = '12px';
 
+  const isEssayTest = testEditorOpen.testType === 'essay';
+  const attachAccept = isEssayTest ? '.pdf,.doc,.docx,image/*' : '.pdf,.doc,.docx';
+
   const attachLabel = document.createElement('div');
   attachLabel.className = 'tr-sub';
   attachLabel.style.fontWeight = '600';
-  attachLabel.textContent = '📎 Tệp đề bài (PDF/Word)';
+  attachLabel.textContent = isEssayTest ? '📎 Đề bài (ảnh/PDF/Word)' : '📎 Tệp đề bài (PDF/Word)';
   attachBox.appendChild(attachLabel);
 
   const attachHint = document.createElement('div');
   attachHint.className = 'tr-sub';
-  attachHint.textContent = 'Học sinh sẽ tải tệp này về làm trước, sau đó vào phần trắc nghiệm bên dưới để nộp đáp án.';
+  attachHint.textContent = isEssayTest
+    ? 'Học sinh sẽ xem/tải đề này về làm ra giấy, sau đó chụp ảnh bài làm để nộp ở từng câu bên dưới.'
+    : 'Học sinh sẽ tải tệp này về làm trước, sau đó vào phần trắc nghiệm bên dưới để nộp đáp án.';
   attachBox.appendChild(attachHint);
 
   if(testEditorOpen.attachmentName){
@@ -3285,10 +3320,19 @@ function renderTestEditor(){
     fileRow.style.background = 'var(--bg)'; fileRow.style.border = '1px solid var(--line)';
     fileRow.style.borderRadius = '10px'; fileRow.style.padding = '10px 12px';
 
-    const isPdf = (testEditorOpen.attachmentMime||'').includes('pdf');
-    const icon = document.createElement('div');
-    icon.style.fontSize = '20px'; icon.textContent = isPdf ? '📕' : '📄';
-    fileRow.appendChild(icon);
+    const attachMime = testEditorOpen.attachmentMime || '';
+    const isPdf = attachMime.includes('pdf');
+    const isImage = attachMime.startsWith('image/');
+    if(isImage && testEditorOpen.attachmentData){
+      const thumb = document.createElement('img');
+      thumb.src = testEditorOpen.attachmentData;
+      thumb.style.width = '32px'; thumb.style.height = '32px'; thumb.style.objectFit = 'cover'; thumb.style.borderRadius = '6px'; thumb.style.flexShrink = '0';
+      fileRow.appendChild(thumb);
+    } else {
+      const icon = document.createElement('div');
+      icon.style.fontSize = '20px'; icon.textContent = isPdf ? '📕' : '📄';
+      fileRow.appendChild(icon);
+    }
 
     const nameEl = document.createElement('div');
     nameEl.style.flex = '1'; nameEl.style.fontSize = '13px'; nameEl.style.fontWeight = '600';
@@ -3329,7 +3373,7 @@ function renderTestEditor(){
     replaceLabel.style.opacity = testAttachmentBusy ? '0.6' : '1';
     replaceLabel.textContent = testAttachmentBusy ? 'Đang tải lên…' : 'Thay tệp khác';
     const replaceInput = document.createElement('input');
-    replaceInput.type = 'file'; replaceInput.accept = '.pdf,.doc,.docx'; replaceInput.style.display = 'none';
+    replaceInput.type = 'file'; replaceInput.accept = attachAccept; replaceInput.style.display = 'none';
     replaceInput.disabled = testAttachmentBusy;
     replaceInput.onchange = (e)=>{ const f = e.target.files[0]; if(f) uploadTestAttachment(f); e.target.value = ''; };
     replaceLabel.appendChild(replaceInput);
@@ -3340,9 +3384,9 @@ function renderTestEditor(){
     uploadLabel.style.background = 'var(--bg-elev)'; uploadLabel.style.color = 'var(--white)'; uploadLabel.style.border = '1px solid var(--line)';
     uploadLabel.style.margin = '0'; uploadLabel.style.textAlign = 'center'; uploadLabel.style.cursor = 'pointer';
     uploadLabel.style.opacity = testAttachmentBusy ? '0.6' : '1';
-    uploadLabel.textContent = testAttachmentBusy ? 'Đang tải lên…' : '📎 Tải lên đề bài (PDF/Word)';
+    uploadLabel.textContent = testAttachmentBusy ? 'Đang tải lên…' : (isEssayTest ? '📎 Tải lên đề bài (ảnh/PDF/Word)' : '📎 Tải lên đề bài (PDF/Word)');
     const uploadInput = document.createElement('input');
-    uploadInput.type = 'file'; uploadInput.accept = '.pdf,.doc,.docx'; uploadInput.style.display = 'none';
+    uploadInput.type = 'file'; uploadInput.accept = attachAccept; uploadInput.style.display = 'none';
     uploadInput.disabled = testAttachmentBusy;
     uploadInput.onchange = (e)=>{ const f = e.target.files[0]; if(f) uploadTestAttachment(f); e.target.value = ''; };
     uploadLabel.appendChild(uploadInput);
@@ -3356,14 +3400,16 @@ function renderTestEditor(){
     main.appendChild(e);
   }
 
-  // Câu hỏi luôn được nhóm và hiển thị theo đúng thứ tự 3 phần cố định,
+  // Câu hỏi luôn được nhóm và hiển thị theo đúng thứ tự các phần cố định,
   // bất kể được tạo trước/sau — giáo viên bấm nút "+" trong từng phần để
-  // thêm câu hỏi thuộc đúng phần đó.
-  const SECTIONS = [
+  // thêm câu hỏi thuộc đúng phần đó. Một bài chỉ thuộc 1 loại (mcq hoặc
+  // essay) nên chỉ hiển thị đúng nhóm phần tương ứng với loại đó.
+  const SECTIONS = isEssayTest ? [
+    ['essay', 'Câu hỏi tự luận (nộp ảnh, chấm Đạt/Chưa đạt)', '+ Thêm câu tự luận']
+  ] : [
     ['mcq', 'Phần I. Trắc nghiệm', '+ Thêm câu trắc nghiệm'],
     ['true_false', 'Phần II. Đúng / Sai', '+ Thêm câu đúng/sai'],
-    ['short_answer', 'Phần III. Trả lời ngắn', '+ Thêm câu trả lời ngắn'],
-    ['essay', 'Phần IV. Tự luận (nộp ảnh, chấm Đạt/Chưa đạt)', '+ Thêm câu tự luận']
+    ['short_answer', 'Phần III. Trả lời ngắn', '+ Thêm câu trả lời ngắn']
   ];
 
   SECTIONS.forEach(([type, sectionLabel, addLabel])=>{
@@ -3929,29 +3975,44 @@ function renderFilePreviewModal(){
 
 async function uploadTestAttachment(file){
   if(!file) return;
-  const ALLOWED = {
+  const ALLOWED_DOC = {
     'application/pdf': true,
     'application/msword': true,
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document': true
   };
-  if(!ALLOWED[file.type]){
-    toast('Chỉ nhận tệp PDF hoặc Word (.pdf, .doc, .docx)');
+  const isImage = file.type.startsWith('image/');
+  if(!ALLOWED_DOC[file.type] && !isImage){
+    toast('Chỉ nhận tệp PDF, Word (.pdf, .doc, .docx) hoặc ảnh (.jpg, .png, .webp)');
     return;
   }
-  if(file.size > 5.5 * 1024 * 1024){
+  if(!isImage && file.size > 5.5 * 1024 * 1024){
     toast('Tệp quá lớn — vui lòng chọn tệp dưới khoảng 5MB');
     return;
   }
   testAttachmentBusy = true; testAttachmentError = ''; render();
   try{
-    const dataUrl = await new Promise((resolve,reject)=>{
-      const reader = new FileReader();
-      reader.onload = ()=> resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
+    let dataUrl, mime, fileName;
+    if(isImage){
+      // Nén ảnh đề bài với độ phân giải cao hơn ảnh câu hỏi thường (giữ chữ
+      // trong đề rõ để đọc), nhưng vẫn đủ nhỏ để lưu trong D1.
+      const { mime: outMime, base64 } = await compressImageFile(file, 1800, 0.85);
+      if(base64.length > 6_500_000){
+        toast('Ảnh vẫn còn quá lớn sau khi nén, hãy thử ảnh khác');
+        testAttachmentBusy = false; render();
+        return;
+      }
+      mime = outMime; dataUrl = 'data:' + outMime + ';base64,' + base64; fileName = file.name;
+    } else {
+      dataUrl = await new Promise((resolve,reject)=>{
+        const reader = new FileReader();
+        reader.onload = ()=> resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      mime = file.type; fileName = file.name;
+    }
     const res = await authorizedRequest('/tests/attachment/set', {
-      testId: testEditorOpen.id, fileName: file.name, mime: file.type, data: dataUrl
+      testId: testEditorOpen.id, fileName, mime, data: dataUrl
     });
     testEditorOpen.attachmentName = res.attachmentName;
     testEditorOpen.attachmentMime = res.attachmentMime;
@@ -4000,7 +4061,7 @@ async function publishTest(published, maxAttempts, deadlineAt){
 }
 
 function openTestSubmissions(){
-  testSubmissionsOpen = { testId: testEditorOpen.id, title: testEditorOpen.title };
+  testSubmissionsOpen = { testId: testEditorOpen.id, title: testEditorOpen.title, testType: testEditorOpen.testType };
   TEST_SUBMISSIONS = [];
   testSubmissionsLoading = true;
   render();
@@ -4011,11 +4072,11 @@ function openTestSubmissions(){
 }
 
 function openSubmissionDetail(studentId){
-  submissionDetailOpen = { testId: testSubmissionsOpen.testId, title: testSubmissionsOpen.title, studentId };
+  submissionDetailOpen = { testId: testSubmissionsOpen.testId, title: testSubmissionsOpen.title, testType: testSubmissionsOpen.testType, studentId };
   submissionDetailLoading = true;
   render();
   authorizedGet('/tests/submissions/detail?testId=' + encodeURIComponent(testSubmissionsOpen.testId) + '&studentId=' + encodeURIComponent(studentId))
-    .then(res=>{ submissionDetailOpen = { testId: testSubmissionsOpen.testId, title: testSubmissionsOpen.title, ...res }; })
+    .then(res=>{ submissionDetailOpen = { testId: testSubmissionsOpen.testId, title: testSubmissionsOpen.title, testType: testSubmissionsOpen.testType, ...res }; })
     .catch(e=>{ toast('Lỗi: ' + (e.message||'')); submissionDetailOpen = null; })
     .finally(()=>{ submissionDetailLoading = false; render(); });
 }
@@ -4045,6 +4106,7 @@ function renderTestSubmissions(){
     main.appendChild(e);
   }
 
+  const isEssayTest = testSubmissionsOpen.testType === 'essay';
   TEST_SUBMISSIONS.forEach(s=>{
     const row = document.createElement('div');
     row.className = 'subject-row';
@@ -4052,14 +4114,17 @@ function renderTestSubmissions(){
     row.onclick = ()=> openSubmissionDetail(s.studentId);
     const pct = s.total>0 ? Math.round((s.score/s.total)*100) : 0;
     const pendingBadge = s.essayPendingCount>0
-      ? `<div class="essay-status-badge pending" style="margin-top:4px;">⏳ ${s.essayPendingCount} câu tự luận chờ chấm</div>` : '';
+      ? `<div class="essay-status-badge pending" style="margin-top:4px;">⏳ ${s.essayPendingCount} câu chờ chấm</div>`
+      : (isEssayTest ? `<div class="essay-status-badge pass" style="margin-top:4px;">✓ Đã chấm xong</div>` : '');
+    const scoreHtml = isEssayTest ? '' :
+      `<div class="mono" style="font-size:15px; font-weight:700; color:${pct>=50?'var(--teal)':'var(--coral)'}; flex-shrink:0;">${s.total>0 ? s.score+'/'+s.total : ''}</div>`;
     row.innerHTML = `
       <div class="subject-info">
         <div class="subject-name">${escapeHtml(personLabel(s))}</div>
         <div class="subject-meta">${s.attemptCount>1 ? 'Đã làm '+s.attemptCount+' lần' : 'Đã nộp bài'}</div>
         ${pendingBadge}
       </div>
-      <div class="mono" style="font-size:15px; font-weight:700; color:${pct>=50?'var(--teal)':'var(--coral)'}; flex-shrink:0;">${s.total>0 ? s.score+'/'+s.total : ''}</div>
+      ${scoreHtml}
     `;
     main.appendChild(row);
   });
@@ -4098,7 +4163,7 @@ function renderSubmissionDetail(){
   nameEl.className = 'subject-name'; nameEl.style.fontSize = '16px'; nameEl.style.marginBottom = '2px';
   nameEl.textContent = s.studentName || s.studentEmail;
   main.appendChild(nameEl);
-  if(s.total>0){
+  if(s.testType !== 'essay' && s.total>0){
     const scoreEl = document.createElement('div');
     scoreEl.className = 'tr-sub'; scoreEl.style.marginBottom = '16px';
     scoreEl.textContent = `Điểm trắc nghiệm/đúng-sai/trả lời ngắn: ${s.score}/${s.total}`;
@@ -4420,8 +4485,13 @@ async function viewPastResult(){
 }
 
 function startTakeTest(){
-  takeTestOpen = { id: studentTestDetailOpen.id, title: studentTestDetailOpen.title, questions: studentTestDetailOpen.questions };
+  takeTestOpen = {
+    id: studentTestDetailOpen.id, title: studentTestDetailOpen.title, questions: studentTestDetailOpen.questions,
+    testType: studentTestDetailOpen.testType,
+    attachmentName: studentTestDetailOpen.attachmentName, attachmentMime: studentTestDetailOpen.attachmentMime, attachmentData: studentTestDetailOpen.attachmentData
+  };
   takeTestAnswers = {};
+  takeTestOpen.questions.forEach(q=>{ if(q.type==='essay') takeTestAnswers[q.id] = []; });
   testReviewOpen = false;
   render();
 }
@@ -4439,8 +4509,9 @@ async function submitTest(){
     testReviewOpen = false;
     const idx = studentTests.findIndex(t=>t.id===takeTestOpen.id);
     if(idx>=0) studentTests[idx].mySubmission = studentTestDetailOpen.mySubmission;
+    const wasEssay = takeTestOpen.testType === 'essay';
     takeTestOpen = null;
-    toast('Đã nộp bài ✓ Điểm: ' + res.score + '/' + res.total);
+    toast(wasEssay ? 'Đã nộp bài ✓ Chờ giáo viên chấm' : 'Đã nộp bài ✓ Điểm: ' + res.score + '/' + res.total);
     render();
     return true;
   }catch(e){
@@ -4476,9 +4547,13 @@ function buildStudentTestCard(t, teacherLabel){
       : `<span class="stc-pill">⏰ Hạn: ${escapeHtml(formatDeadline(t.deadlineAt))}</span>`;
 
   const attachmentPill = t.hasAttachment ? '<span class="stc-pill">📎 Có đề bài</span>' : '';
+  const typePill = t.testType==='essay' ? '<span class="stc-pill">✍️ Tự luận</span>' : '';
 
   let statusHtml, scorePillHtml = '';
-  if(t.mySubmission){
+  if(t.mySubmission && t.testType==='essay'){
+    statusHtml = `<span class="stc-status" style="color:var(--teal);">Trạng thái: đã nộp, chờ chấm</span>`;
+    scorePillHtml = `<span class="stc-pill" style="color:var(--teal); border-color:var(--teal);">✓ Đã nộp bài</span>`;
+  } else if(t.mySubmission){
     const pct = t.mySubmission.total>0 ? (t.mySubmission.score/t.mySubmission.total) : 0;
     const tier = scoreTier(pct);
     statusHtml = `<span class="stc-status" style="color:${tier.color};">Trạng thái: đã thi</span>`;
@@ -4490,7 +4565,7 @@ function buildStudentTestCard(t, teacherLabel){
   }
 
   card.innerHTML = `
-    <div class="stc-pillrow">${deadlinePill}${attemptPill}${attachmentPill}${scorePillHtml}</div>
+    <div class="stc-pillrow">${typePill}${deadlinePill}${attemptPill}${attachmentPill}${scorePillHtml}</div>
     <div class="stc-teacher"><span class="stc-avatar">${escapeHtml(initialsOf({name:teacherLabel}))}</span>${escapeHtml(teacherLabel)}</div>
     <div class="stc-title">${escapeHtml(t.title)}</div>
     ${statusHtml}
@@ -4599,7 +4674,6 @@ function renderStudentTestDetail(){
   metaEl.style.marginBottom = '6px';
   metaEl.textContent = t.questions.length + ' câu hỏi · ' + (t.maxAttempts===1 ? 'Chỉ làm 1 lần' : 'Được làm lại nhiều lần');
   main.appendChild(metaEl);
-
   const deadlineEl = document.createElement('div');
   deadlineEl.className = 'tr-sub';
   deadlineEl.style.marginBottom = '20px';
@@ -4615,12 +4689,20 @@ function renderStudentTestDetail(){
   if(t.attachmentName){
     const attachCard = document.createElement('div');
     attachCard.style.cssText = 'display:flex; align-items:center; gap:10px; background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:16px; flex-wrap:wrap;';
-    const isPdf = (t.attachmentMime||'').includes('pdf');
+    const attachMime = t.attachmentMime || '';
+    const isPdf = attachMime.includes('pdf');
+    const isImage = attachMime.startsWith('image/');
+    const iconHtml = isImage
+      ? `<img src="${t.attachmentData}" style="width:40px;height:40px;object-fit:cover;border-radius:8px;">`
+      : `<div style="font-size:22px;">${isPdf ? '📕' : '📄'}</div>`;
+    const attachHintText = t.testType==='essay'
+      ? 'Xem đề, làm ra giấy, rồi chụp ảnh bài làm để nộp ở từng câu bên dưới.'
+      : 'Xem hoặc tải đề về làm trước, rồi quay lại nộp phần trắc nghiệm bên dưới.';
     attachCard.innerHTML = `
-      <div style="font-size:22px;">${isPdf ? '📕' : '📄'}</div>
+      ${iconHtml}
       <div style="flex:1; min-width:120px;">
         <div style="font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(t.attachmentName)}</div>
-        <div class="tr-sub" style="margin-top:1px;">Xem hoặc tải đề về làm trước, rồi quay lại nộp phần trắc nghiệm bên dưới.</div>
+        <div class="tr-sub" style="margin-top:1px;">${attachHintText}</div>
       </div>
     `;
     const btnGroup = document.createElement('div');
@@ -4645,7 +4727,27 @@ function renderStudentTestDetail(){
     main.appendChild(attachCard);
   }
 
-  if(t.mySubmission){
+  if(t.mySubmission && t.testType==='essay'){
+    // Bài tự luận không có điểm số — hiện trạng thái đã nộp/chờ chấm thay
+    // vì vòng tròn điểm số (điểm từng câu chỉ có Đạt/Chưa đạt, xem ở "Xem
+    // lại bài làm").
+    const submittedBox = document.createElement('div');
+    submittedBox.className = 'score-result-card';
+    submittedBox.innerHTML = `
+      <div class="score-verdict" style="color:var(--teal);">✓ Đã nộp bài</div>
+      <div class="tr-sub">${t.mySubmission.attemptCount>1 ? 'Lần nộp gần nhất · Đã làm '+t.mySubmission.attemptCount+' lần' : 'Chờ giáo viên chấm bài'}</div>
+    `;
+    main.appendChild(submittedBox);
+
+    const detailBtn = document.createElement('button');
+    detailBtn.className = 'save-btn secondary-btn';
+    detailBtn.textContent = '📋 Xem lại bài làm';
+    detailBtn.onclick = ()=>{
+      if(t.resultDetail){ testReviewOpen = true; render(); }
+      else { viewPastResult(); }
+    };
+    main.appendChild(detailBtn);
+  } else if(t.mySubmission){
     const pct = t.mySubmission.total>0 ? (t.mySubmission.score/t.mySubmission.total) : 0;
     const pctInt = Math.round(pct*100);
     const tier = scoreTier(pct);
@@ -4732,7 +4834,7 @@ function renderTestReview(){
   backLink.onclick = ()=>{ testReviewOpen = false; render(); };
   main.appendChild(backLink);
 
-  if(t.mySubmission){
+  if(t.mySubmission && t.testType !== 'essay'){
     const pct = t.mySubmission.total>0 ? (t.mySubmission.score/t.mySubmission.total) : 0;
     const tier = scoreTier(pct);
     const summary = document.createElement('div');
@@ -4741,6 +4843,11 @@ function renderTestReview(){
       <div class="test-title" style="margin:0; white-space:normal;">${escapeHtml(t.title)}</div>
       <div class="mono" style="font-size:15px; font-weight:700; color:${tier.color}; flex-shrink:0;">${tier.icon} ${t.mySubmission.score}/${t.mySubmission.total}</div>
     `;
+    main.appendChild(summary);
+  } else if(t.mySubmission){
+    const summary = document.createElement('div');
+    summary.className = 'review-summary-bar';
+    summary.innerHTML = `<div class="test-title" style="margin:0; white-space:normal;">${escapeHtml(t.title)}</div>`;
     main.appendChild(summary);
   }
 
@@ -4956,6 +5063,28 @@ function renderTakeTest(){
   const initAnswered = countAnsweredTestQuestions();
   progressFill.style.width = (total ? (initAnswered/total*100) : 0) + '%';
   progressLabel.textContent = `Đã trả lời ${initAnswered}/${total} câu`;
+
+  if(takeTestOpen.attachmentName){
+    const attachMime = takeTestOpen.attachmentMime || '';
+    const isPdf = attachMime.includes('pdf');
+    const isImage = attachMime.startsWith('image/');
+    const attachCard = document.createElement('div');
+    attachCard.style.cssText = 'display:flex; align-items:center; gap:10px; background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:18px;';
+    const iconHtml = isImage
+      ? `<img src="${takeTestOpen.attachmentData}" style="width:40px;height:40px;object-fit:cover;border-radius:8px;">`
+      : `<div style="font-size:22px;">${isPdf ? '📕' : '📄'}</div>`;
+    attachCard.innerHTML = `
+      ${iconHtml}
+      <div style="flex:1; min-width:0; font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(takeTestOpen.attachmentName)}</div>
+    `;
+    const viewBtn = document.createElement('button');
+    viewBtn.type = 'button';
+    viewBtn.textContent = '👁 Xem đề';
+    viewBtn.style.cssText = 'font-size:12.5px; font-weight:700; border:none; color:var(--bg); background:var(--teal); padding:8px 12px; border-radius:9px; white-space:nowrap; cursor:pointer; flex-shrink:0;';
+    viewBtn.onclick = ()=> openFilePreview({ name: takeTestOpen.attachmentName, mime: takeTestOpen.attachmentMime, dataUrl: takeTestOpen.attachmentData });
+    attachCard.appendChild(viewBtn);
+    main.appendChild(attachCard);
+  }
 
   takeTestOpen.questions.forEach((q,i)=>{
     const qcard = document.createElement('div');
