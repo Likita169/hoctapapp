@@ -4562,8 +4562,20 @@ function buildStudentTestCard(t, teacherLabel){
 
   let statusHtml, scorePillHtml = '';
   if(t.mySubmission && t.testType==='essay'){
-    statusHtml = `<span class="stc-status" style="color:var(--teal);">Trạng thái: đã nộp, chờ chấm</span>`;
-    scorePillHtml = `<span class="stc-pill" style="color:var(--teal); border-color:var(--teal);">✓ Đã nộp bài</span>`;
+    const es = t.mySubmission.essay;
+    if(es && es.verdict==='pass'){
+      statusHtml = `<span class="stc-status" style="color:var(--teal);">Trạng thái: Đạt</span>`;
+      scorePillHtml = `<span class="stc-pill" style="color:var(--teal); border-color:var(--teal);">✓ Đạt</span>`;
+    } else if(es && es.verdict==='fail'){
+      statusHtml = `<span class="stc-status" style="color:var(--coral);">Trạng thái: Chưa đạt</span>`;
+      scorePillHtml = `<span class="stc-pill" style="color:var(--coral); border-color:var(--coral);">✕ Chưa đạt</span>`;
+    } else if(es && es.gradedCount>0){
+      statusHtml = `<span class="stc-status" style="color:var(--amber);">Trạng thái: đã chấm ${es.gradedCount}/${es.totalCount} câu</span>`;
+      scorePillHtml = `<span class="stc-pill" style="color:var(--amber); border-color:var(--amber);">⏳ ${es.gradedCount}/${es.totalCount} đã chấm</span>`;
+    } else {
+      statusHtml = `<span class="stc-status" style="color:var(--teal);">Trạng thái: đã nộp, chờ chấm</span>`;
+      scorePillHtml = `<span class="stc-pill" style="color:var(--teal); border-color:var(--teal);">✓ Đã nộp bài</span>`;
+    }
   } else if(t.mySubmission){
     const pct = t.mySubmission.total>0 ? (t.mySubmission.score/t.mySubmission.total) : 0;
     const tier = scoreTier(pct);
@@ -4741,14 +4753,26 @@ function renderStudentTestDetail(){
   }
 
   if(t.mySubmission && t.testType==='essay'){
-    // Bài tự luận không có điểm số — hiện trạng thái đã nộp/chờ chấm thay
-    // vì vòng tròn điểm số (điểm từng câu chỉ có Đạt/Chưa đạt, xem ở "Xem
-    // lại bài làm").
+    // Bài tự luận không có điểm số — hiện trạng thái Đạt/Chưa đạt/chờ
+    // chấm dựa trên kết quả chấm thật (t.mySubmission.essay), thay vì
+    // luôn hiện "chờ chấm" một cách tĩnh.
+    const es = t.mySubmission.essay;
+    let verdictText, verdictColor, subText;
+    if(es && es.verdict==='pass'){
+      verdictText = '✓ Đạt'; verdictColor = 'var(--teal)'; subText = 'Giáo viên đã chấm xong bài này.';
+    } else if(es && es.verdict==='fail'){
+      verdictText = '✕ Chưa đạt'; verdictColor = 'var(--coral)'; subText = 'Giáo viên đã chấm xong bài này.';
+    } else if(es && es.gradedCount>0){
+      verdictText = '⏳ Đã chấm ' + es.gradedCount + '/' + es.totalCount + ' câu'; verdictColor = 'var(--amber)';
+      subText = 'Còn ' + es.pendingCount + ' câu chưa chấm.';
+    } else {
+      verdictText = '✓ Đã nộp bài'; verdictColor = 'var(--teal)'; subText = 'Chờ giáo viên chấm bài';
+    }
     const submittedBox = document.createElement('div');
     submittedBox.className = 'score-result-card';
     submittedBox.innerHTML = `
-      <div class="score-verdict" style="color:var(--teal);">✓ Đã nộp bài</div>
-      <div class="tr-sub">${t.mySubmission.attemptCount>1 ? 'Lần nộp gần nhất · Đã làm '+t.mySubmission.attemptCount+' lần' : 'Chờ giáo viên chấm bài'}</div>
+      <div class="score-verdict" style="color:${verdictColor};">${verdictText}</div>
+      <div class="tr-sub">${t.mySubmission.attemptCount>1 ? 'Lần nộp gần nhất · Đã làm '+t.mySubmission.attemptCount+' lần' : subText}</div>
     `;
     main.appendChild(submittedBox);
 
