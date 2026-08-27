@@ -170,6 +170,13 @@ header.topbar .date{font-size:11.5px; color:var(--ink-faint); font-family:'IBM P
 }
 .gear-btn:active{color:var(--amber); border-color:var(--amber); transform:scale(0.9) rotate(-22deg);}
 @media (hover:hover){ .gear-btn:hover{color:var(--amber); border-color:var(--amber); transform:rotate(18deg);} }
+.bell-btn{position:relative; transform:none !important;}
+.bell-btn:active{transform:scale(0.9) !important;}
+.bell-badge{
+  position:absolute; top:-3px; right:-3px; min-width:16px; height:16px; padding:0 3px;
+  border-radius:8px; background:var(--coral); color:#3a0d13; font-size:9.5px; font-weight:800;
+  display:flex; align-items:center; justify-content:center; font-family:'IBM Plex Mono',monospace;
+}
 
 main{flex:1; overflow-y:auto; padding: 0 20px 100px; -webkit-overflow-scrolling:touch;}
 main::-webkit-scrollbar{display:none;}

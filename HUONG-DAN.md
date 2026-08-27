@@ -201,6 +201,24 @@ Cần chạy thêm phần cuối `schema.sql` (cột `test_type` + bảng
 `essay_gradings`) rồi deploy `worker.js` + `app.js` mới — làm đúng như
 hướng dẫn "Cập nhật app sau khi đã cài" bên dưới.
 
+## Chuông thông báo 🔔 (bài mới / đã chấm xong)
+
+Góc trên các tab Trang chủ, Lớp học, Thống kê có 1 biểu tượng chuông 🔔
+(chỉ hiện khi đã đăng nhập), có chấm đỏ báo số thông báo chưa đọc. Bấm vào
+mở ra danh sách thông báo, bấm vào 1 thông báo sẽ đánh dấu đã đọc và mở
+đúng lớp/bài liên quan.
+
+Hệ thống tự tạo thông báo trong 2 trường hợp:
+- **Học sinh** được báo khi giáo viên **giao bài kiểm tra mới** (chuyển 1
+  bài từ "bản nháp" sang "đã giao bài") — chỉ báo đúng 1 lần lúc giao,
+  không báo lại mỗi lần giáo viên sửa bài đã giao rồi.
+- **Học sinh** được báo khi giáo viên **chấm xong hết** các câu tự luận
+  của bài làm của mình, kèm kết quả Đạt/Chưa đạt.
+
+App tự tải lại thông báo mỗi 60 giây và mỗi khi quay lại app — không cần
+làm mới thủ công. Cần chạy thêm phần cuối `schema.sql` (bảng
+`notifications`) rồi deploy `worker.js` + `app.js` mới.
+
 ## Cập nhật app sau khi đã cài
 
 Mỗi khi bạn sửa code (hoặc mình sửa giúp) và deploy lại:
