@@ -176,9 +176,16 @@ column name" khi chạy `schema.sql`, đó là vì cột đã có sẵn — bỏ
 
 ## Câu tự luận (nộp ảnh, giáo viên chấm bằng cách khoanh lên ảnh)
 
-Trong 1 bài kiểm tra **loại Tự luận**, giáo viên thêm từng câu hỏi (mỗi
-câu có thể kèm yêu cầu/rubric riêng). Học sinh làm mỗi câu bằng cách
-chụp/tải lên nhiều ảnh bài làm (tối đa 6 ảnh mỗi câu) thay vì gõ đáp án.
+Trong 1 bài kiểm tra **loại Tự luận**, giáo viên **không bắt buộc** phải
+thêm câu hỏi cụ thể nào — có thể để trống hoàn toàn (không đề bài, không
+câu hỏi), học sinh vẫn thấy 1 khung nộp ảnh chung cho cả bài để chụp/tải
+bài làm lên, giống nộp thẳng 1 bài làm kiểu Azota. Nếu giáo viên có thêm
+từng câu hỏi riêng (mỗi câu kèm yêu cầu/rubric riêng), học sinh sẽ nộp
+ảnh theo từng câu và được chấm Đạt/Chưa đạt riêng cho từng câu.
+
+Học sinh chụp/tải lên nhiều ảnh bài làm (tối đa 6 ảnh mỗi câu/mỗi bài)
+thay vì gõ đáp án — chạm vào 1 ảnh đã tải lên để xem to hơn, dùng 2 nút
+‹ › cạnh ảnh để sắp xếp lại thứ tự trước khi nộp.
 
 Bài tự luận **không có điểm số tự động** — kết quả từng câu hiển thị
 dưới dạng **Đạt / Chưa đạt**, do giáo viên chấm tay.

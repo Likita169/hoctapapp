@@ -3396,7 +3396,10 @@ function renderTestEditor(){
   main.appendChild(attachBox);
 
   if(testEditorOpen.questions.length===0){
-    const e = document.createElement('div'); e.className='tr-sub'; e.style.marginBottom='6px'; e.textContent='Chưa có câu hỏi nào.';
+    const e = document.createElement('div'); e.className='tr-sub'; e.style.marginBottom='6px';
+    e.textContent = isEssayTest
+      ? 'Chưa có câu hỏi nào — không bắt buộc phải thêm. Nếu để trống, học sinh sẽ có 1 khung nộp ảnh chung cho cả bài (giống nộp trực tiếp trên Azota).'
+      : 'Chưa có câu hỏi nào.';
     main.appendChild(e);
   }
 
@@ -4200,10 +4203,12 @@ function renderSubmissionDetail(){
       } else {
         const grid = document.createElement('div');
         grid.className = 'essay-photo-grid'; grid.style.marginBottom = '12px';
-        (d.gradedImages && d.gradedImages.length ? d.gradedImages : d.submittedImages).forEach(src=>{
+        const imagesToShow = (d.gradedImages && d.gradedImages.length ? d.gradedImages : d.submittedImages);
+        imagesToShow.forEach((src,pi)=>{
           const thumb = document.createElement('div');
           thumb.className = 'essay-photo-thumb'; thumb.style.width='96px'; thumb.style.height='96px';
           const img = document.createElement('img'); img.src = src;
+          img.onclick = ()=> openImageLightbox(imagesToShow, pi);
           thumb.appendChild(img);
           grid.appendChild(thumb);
         });
@@ -4485,13 +4490,19 @@ async function viewPastResult(){
 }
 
 function startTakeTest(){
+  let questions = studentTestDetailOpen.questions;
+  if(studentTestDetailOpen.testType === 'essay' && questions.length === 0){
+    // Bài tự luận không có câu hỏi cụ thể nào — cho học sinh 1 khung nộp
+    // ảnh chung cho cả bài, giống nộp 1 bài làm duy nhất kiểu Azota.
+    questions = [{ id: '__general__', type: 'essay', prompt: 'Bài làm của bạn', rubric: '' }];
+  }
   takeTestOpen = {
-    id: studentTestDetailOpen.id, title: studentTestDetailOpen.title, questions: studentTestDetailOpen.questions,
+    id: studentTestDetailOpen.id, title: studentTestDetailOpen.title, questions,
     testType: studentTestDetailOpen.testType,
     attachmentName: studentTestDetailOpen.attachmentName, attachmentMime: studentTestDetailOpen.attachmentMime, attachmentData: studentTestDetailOpen.attachmentData
   };
   takeTestAnswers = {};
-  takeTestOpen.questions.forEach(q=>{ if(q.type==='essay') takeTestAnswers[q.id] = []; });
+  questions.forEach(q=>{ if(q.type==='essay') takeTestAnswers[q.id] = []; });
   testReviewOpen = false;
   render();
 }
@@ -4569,7 +4580,7 @@ function buildStudentTestCard(t, teacherLabel){
     <div class="stc-teacher"><span class="stc-avatar">${escapeHtml(initialsOf({name:teacherLabel}))}</span>${escapeHtml(teacherLabel)}</div>
     <div class="stc-title">${escapeHtml(t.title)}</div>
     ${statusHtml}
-    <div class="stc-meta">📄 ${t.questionCount} câu${t.mySubmission && t.mySubmission.attemptCount>1 ? ' · 🔁 Đã làm '+t.mySubmission.attemptCount+' lần' : ''}</div>
+    <div class="stc-meta">${(t.testType==='essay' && t.questionCount===0) ? '📷 Nộp ảnh bài làm' : '📄 '+t.questionCount+' câu'}${t.mySubmission && t.mySubmission.attemptCount>1 ? ' · 🔁 Đã làm '+t.mySubmission.attemptCount+' lần' : ''}</div>
   `;
   return card;
 }
@@ -4672,7 +4683,9 @@ function renderStudentTestDetail(){
   const metaEl = document.createElement('div');
   metaEl.className = 'tr-sub';
   metaEl.style.marginBottom = '6px';
-  metaEl.textContent = t.questions.length + ' câu hỏi · ' + (t.maxAttempts===1 ? 'Chỉ làm 1 lần' : 'Được làm lại nhiều lần');
+  const questionCountLabel = (t.testType==='essay' && t.questions.length===0)
+    ? 'Nộp ảnh bài làm' : t.questions.length + ' câu hỏi';
+  metaEl.textContent = questionCountLabel + ' · ' + (t.maxAttempts===1 ? 'Chỉ làm 1 lần' : 'Được làm lại nhiều lần');
   main.appendChild(metaEl);
   const deadlineEl = document.createElement('div');
   deadlineEl.className = 'tr-sub';
@@ -4886,10 +4899,11 @@ function renderTestReview(){
       if(imagesToShow.length){
         const grid = document.createElement('div');
         grid.className = 'essay-photo-grid';
-        imagesToShow.forEach(src=>{
+        imagesToShow.forEach((src,pi)=>{
           const thumb = document.createElement('div');
           thumb.className = 'essay-photo-thumb'; thumb.style.width='96px'; thumb.style.height='96px';
           const img = document.createElement('img'); img.src = src;
+          img.onclick = ()=> openImageLightbox(imagesToShow, pi);
           thumb.appendChild(img);
           grid.appendChild(thumb);
         });
@@ -4972,6 +4986,52 @@ function renderTestReview(){
 
 // Nén từng ảnh học sinh chọn (dùng chung compressImageFile với ảnh câu hỏi)
 // rồi thêm vào mảng câu trả lời của câu tự luận, tối đa 6 ảnh.
+// Overlay xem ảnh phóng to (chạm vào 1 ảnh đã tải lên để xem toàn màn
+// hình). Vẽ trực tiếp bằng DOM, không qua render() để không ảnh hưởng màn
+// hình bên dưới.
+function openImageLightbox(images, startIndex){
+  const existing = document.getElementById('imageLightboxOverlay');
+  if(existing) existing.remove();
+  let idx = startIndex || 0;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'imageLightboxOverlay';
+  overlay.className = 'image-lightbox-backdrop';
+  overlay.onclick = (e)=>{ if(e.target===overlay) overlay.remove(); };
+
+  const img = document.createElement('img');
+  img.style.cssText = 'max-width:92vw; max-height:80vh; object-fit:contain; border-radius:10px; display:block;';
+  img.src = images[idx];
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button'; closeBtn.textContent = '✕';
+  closeBtn.style.cssText = 'position:fixed; top:calc(env(safe-area-inset-top,0px) + 14px); right:16px; width:36px; height:36px; border-radius:50%; border:none; background:rgba(255,255,255,0.12); color:#fff; font-size:16px; cursor:pointer;';
+  closeBtn.onclick = ()=> overlay.remove();
+
+  overlay.appendChild(img);
+  overlay.appendChild(closeBtn);
+
+  if(images.length > 1){
+    const counter = document.createElement('div');
+    counter.style.cssText = 'position:fixed; bottom:calc(env(safe-area-inset-bottom,0px) + 18px); left:0; right:0; text-align:center; color:#fff; font-size:13px; font-weight:600;';
+    const updateCounter = ()=>{ counter.textContent = (idx+1) + ' / ' + images.length; img.src = images[idx]; };
+    updateCounter();
+    overlay.appendChild(counter);
+
+    const mkNavBtn = (dir, symbol)=>{
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = symbol;
+      b.style.cssText = `position:fixed; top:50%; ${dir<0?'left':'right'}:10px; transform:translateY(-50%); width:40px; height:40px; border-radius:50%; border:none; background:rgba(255,255,255,0.12); color:#fff; font-size:20px; cursor:pointer;`;
+      b.onclick = (e)=>{ e.stopPropagation(); idx = (idx+dir+images.length)%images.length; updateCounter(); };
+      return b;
+    };
+    overlay.appendChild(mkNavBtn(-1, '‹'));
+    overlay.appendChild(mkNavBtn(1, '›'));
+  }
+
+  document.body.appendChild(overlay);
+}
+
 async function addEssayPhotos(questionId, files, onDone){
   essayPhotoProcessing = questionId;
   if(onDone) onDone();
@@ -5159,21 +5219,44 @@ function renderTakeTest(){
         qcard.appendChild(rubricBox);
       }
       if(!Array.isArray(takeTestAnswers[q.id])) takeTestAnswers[q.id] = [];
+      const photoHint = document.createElement('div');
+      photoHint.className = 'tr-sub'; photoHint.style.marginBottom = '8px';
+      photoHint.textContent = 'Chạm vào ảnh để xem to hơn. Dùng nút ‹ › để đổi thứ tự ảnh.';
+      qcard.appendChild(photoHint);
       const photoGrid = document.createElement('div');
       photoGrid.className = 'essay-photo-grid';
       const renderPhotos = ()=>{
         photoGrid.innerHTML = '';
-        takeTestAnswers[q.id].forEach((src,pi)=>{
+        const photos = takeTestAnswers[q.id];
+        photos.forEach((src,pi)=>{
           const thumb = document.createElement('div');
           thumb.className = 'essay-photo-thumb';
           const img = document.createElement('img'); img.src = src;
+          img.onclick = ()=> openImageLightbox(photos, pi);
           const rm = document.createElement('button');
           rm.type='button'; rm.textContent='✕'; rm.title='Xoá ảnh';
-          rm.onclick = ()=>{ takeTestAnswers[q.id].splice(pi,1); renderPhotos(); updateTakeTestProgress(); };
+          rm.onclick = (e)=>{ e.stopPropagation(); photos.splice(pi,1); renderPhotos(); updateTakeTestProgress(); };
           thumb.appendChild(img); thumb.appendChild(rm);
+          if(photos.length > 1){
+            const reorderRow = document.createElement('div');
+            reorderRow.className = 'essay-photo-reorder';
+            const mkArrow = (dir, symbol, disabled)=>{
+              const b = document.createElement('button');
+              b.type='button'; b.textContent=symbol; b.disabled = disabled;
+              b.onclick = (e)=>{
+                e.stopPropagation();
+                const tmp = photos[pi]; photos[pi] = photos[pi+dir]; photos[pi+dir] = tmp;
+                renderPhotos();
+              };
+              return b;
+            };
+            reorderRow.appendChild(mkArrow(-1, '‹', pi===0));
+            reorderRow.appendChild(mkArrow(1, '›', pi===photos.length-1));
+            thumb.appendChild(reorderRow);
+          }
           photoGrid.appendChild(thumb);
         });
-        if(takeTestAnswers[q.id].length < 6){
+        if(photos.length < 6){
           const addBtn = document.createElement('label');
           addBtn.className = 'essay-photo-add';
           addBtn.textContent = essayPhotoProcessing===q.id ? '…' : '+';

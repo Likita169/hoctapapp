@@ -399,8 +399,11 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 
 .essay-photo-grid{display:flex; flex-wrap:wrap; gap:10px;}
 .essay-photo-thumb{position:relative; width:84px; height:84px; border-radius:10px; overflow:hidden; flex-shrink:0;}
-.essay-photo-thumb img{width:100%; height:100%; object-fit:cover; display:block;}
+.essay-photo-thumb img{width:100%; height:100%; object-fit:cover; display:block; cursor:pointer;}
 .essay-photo-thumb button{position:absolute; top:3px; right:3px; width:20px; height:20px; border-radius:50%; border:none; background:var(--coral); color:#3a0d13; font-size:11px; line-height:1; cursor:pointer;}
+.essay-photo-reorder{position:absolute; bottom:3px; left:3px; right:3px; display:flex; justify-content:space-between; gap:4px;}
+.essay-photo-reorder button{position:static; width:22px; height:22px; border-radius:6px; border:none; background:rgba(0,0,0,0.55); color:#fff; font-size:13px; line-height:1; cursor:pointer;}
+.essay-photo-reorder button:disabled{opacity:0.3; cursor:default;}
 .essay-photo-add{width:84px; height:84px; border-radius:10px; border:1.5px dashed var(--line); display:flex; align-items:center; justify-content:center; font-size:26px; color:var(--ink-faint); cursor:pointer; flex-shrink:0;}
 .essay-photo-add:active{background:var(--bg-elev);}
 
@@ -779,6 +782,12 @@ nav.tabbar button.active::before{
   background:rgba(8,8,15,0.64);
   display:flex; align-items:flex-end; justify-content:center;
   animation:fadeIn .2s ease;
+}
+.image-lightbox-backdrop{
+  position:fixed; inset:0; z-index:200;
+  background:rgba(10,10,16,0.92);
+  display:flex; align-items:center; justify-content:center;
+  animation:fadeIn .15s ease;
 }
 .modal-card{
   width:100%; max-width:480px;
