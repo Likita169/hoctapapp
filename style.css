@@ -519,22 +519,55 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .chip.active{border-color:transparent; color:#14151f; font-weight:700; box-shadow:var(--shadow-sm); animation:popIn .22s var(--ease-spring);}
 .chip-new{border-style:dashed;}
 
-/* ---------- Công cụ chèn ký hiệu toán học ---------- */
-.math-helper{margin-top:-8px; margin-bottom:18px;}
-.math-toolbar{display:flex; flex-wrap:wrap; gap:6px; overflow-x:auto; padding-bottom:2px;}
+/* ---------- Công cụ chèn ký hiệu toán học (nhập trực tiếp, hiện đúng dạng) ---------- */
+.math-toolbar{
+  display:flex; flex-wrap:wrap; gap:4px; padding:8px; margin-bottom:6px;
+  background:var(--bg-elev-2); border:1px solid var(--line); border-radius:var(--radius-sm);
+}
+.math-tgroup{display:flex; flex-wrap:wrap; gap:4px; padding-right:6px; margin-right:2px; border-right:1px solid var(--line);}
+.math-tgroup:last-child{border-right:none; padding-right:0; margin-right:0;}
 .math-btn{
-  flex-shrink:0; min-width:34px; padding:7px 10px; border-radius:9px; border:1px solid var(--line);
-  background:var(--bg-elev); color:var(--ink-soft); font-size:14px; font-family:'IBM Plex Mono',monospace;
-  cursor:pointer; text-align:center; line-height:1; transition: background .12s ease, border-color .12s ease;
+  flex-shrink:0; min-width:26px; height:26px; padding:0 7px; border-radius:7px; border:1px solid var(--line);
+  background:var(--bg-elev); color:var(--ink-soft); font-size:13px; font-family:'IBM Plex Mono',monospace;
+  cursor:pointer; text-align:center; line-height:1; display:inline-flex; align-items:center; justify-content:center;
+  transition: background .12s ease, border-color .12s ease, transform .1s ease;
 }
-.math-btn:active{background:var(--violet); border-color:transparent; color:#14151f;}
-.math-preview{
-  margin-top:8px; padding:12px 14px; border-radius:var(--radius-sm); border:1px dashed var(--line);
-  background:var(--bg-elev-2); font-size:15px; color:var(--ink-soft); min-height:22px; line-height:1.55;
-  word-break:break-word; overflow-x:auto;
+.math-btn.math-btn-wide{min-width:32px; font-size:12px;}
+.math-btn:active{background:var(--violet); border-color:transparent; color:#14151f; transform:scale(0.93);}
+
+/* Vùng nhập kiểu WYSIWYG: gõ chữ bình thường, chèn công thức là hiện đúng
+   hình dạng (căn, phân số, số mũ...) ngay tại chỗ, không cần xem trước riêng. */
+.card-input{
+  width:100%; min-height:80px; background:var(--bg-elev); border:1px solid var(--line); color:var(--white);
+  border-radius:var(--radius-sm); padding:13px 14px; font-size:15px; font-family:'Inter',sans-serif;
+  line-height:1.6; transition: border-color .15s ease, box-shadow .15s ease; outline:none; white-space:pre-wrap;
+  word-break:break-word;
 }
-.math-preview:empty::before{content:'Xem trước công thức sẽ hiện ở đây'; color:var(--ink-faint); font-size:12.5px;}
-.math-preview .katex-error{color:var(--coral);}
+.card-input:focus{outline:none; border-color:var(--violet); box-shadow:0 0 0 3px rgba(157,142,242,0.2);}
+.card-input.is-empty::before{content:attr(data-placeholder); color:var(--ink-faint); pointer-events:none;}
+
+/* Các "khối" công thức hiện ngay trong ô nhập */
+.math-widget{display:inline-flex; user-select:none; vertical-align:middle;}
+.math-slot{
+  display:inline-block; min-width:0.65em; outline:none; border-bottom:1px dotted transparent;
+  padding:0 1px;
+}
+.math-slot:focus{border-bottom-color:var(--violet);}
+.math-slot:empty::before{content:attr(data-placeholder); color:var(--ink-faint); opacity:0.65;}
+
+.math-sqrt{align-items:flex-start; margin:0 1px;}
+.math-sqrt .sqrt-sign{font-size:1.05em; line-height:1; transform:scaleY(1.05); margin-right:1px;}
+.math-sqrt .sqrt-body{border-top:1.4px solid currentColor; padding:0 3px 0 1px; display:inline-block;}
+
+.math-frac{align-items:center; margin:0 2px; vertical-align:-0.35em;}
+.math-frac .frac-col{display:inline-flex; flex-direction:column; align-items:center; font-size:0.82em; line-height:1.2;}
+.math-frac .frac-num{border-bottom:1.4px solid currentColor; padding:0 3px 1px; text-align:center;}
+.math-frac .frac-den{padding:1px 3px 0; text-align:center;}
+
+.math-sup, .math-sub{align-items:baseline; margin:0 1px;}
+.math-sup .math-slot{font-size:0.7em; vertical-align:super;}
+.math-sub .math-slot{font-size:0.7em; vertical-align:sub;}
+
 .content .katex, .answer .katex, .mi-front .katex, .mi-back .katex{font-size:1em;}
 .chip:active{transform:scale(0.95);}
 .save-btn{width:100%; padding:15px; border:none; border-radius:var(--radius-sm); background:var(--teal);

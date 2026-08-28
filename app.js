@@ -761,8 +761,8 @@ function escapeHtml(s){
 /* ---------------- Công thức toán học (KaTeX) ----------------
    Mặt trước/sau của thẻ được lưu dạng văn bản thường; đoạn nào đặt giữa
    $...$ (hoặc $$...$$) sẽ được KaTeX vẽ thành công thức toán. Hàm dưới
-   đây được gọi lại mỗi khi giao diện được vẽ (render()) cũng như trên
-   từng ô xem trước riêng lẻ khi đang gõ. */
+   đây được gọi lại mỗi khi giao diện được vẽ (render()) để hiện công thức
+   ở mọi nơi thẻ xuất hiện (ôn tập, danh sách quản lý, hộp xác nhận xoá...). */
 function renderMathIn(el){
   if(!el || typeof window.renderMathInElement !== 'function') return;
   try{
@@ -779,75 +779,213 @@ function renderMathIn(el){
   }catch(e){ /* đừng để lỗi vẽ công thức làm hỏng cả giao diện */ }
 }
 
-// Các ký hiệu/mẫu công thức hay dùng — bấm vào để chèn thẳng vào ô đang gõ,
-// đã tự bọc trong dấu $ nên xem trước hiện ra ngay, không cần tự gõ LaTeX.
-const MATH_SYMBOLS = [
-  {label:'α', tex:'\\alpha'}, {label:'β', tex:'\\beta'}, {label:'θ', tex:'\\theta'},
-  {label:'π', tex:'\\pi'}, {label:'Δ', tex:'\\Delta'}, {label:'λ', tex:'\\lambda'},
-  {label:'ω', tex:'\\omega'}, {label:'φ', tex:'\\varphi'},
-  {label:'x²', tex:'x^{2}', tpl:true}, {label:'xⁿ', tex:'x^{}', tpl:true},
-  {label:'x₁', tex:'x_{}', tpl:true}, {label:'√', tex:'\\sqrt{}', tpl:true},
-  {label:'a/b', tex:'\\frac{}{}', tpl:true},
-  {label:'sin', tex:'\\sin'}, {label:'cos', tex:'\\cos'}, {label:'tan', tex:'\\tan'},
-  {label:'log', tex:'\\log'}, {label:'ln', tex:'\\ln'},
-  {label:'Σ', tex:'\\sum_{}^{}', tpl:true}, {label:'∫', tex:'\\int_{}^{}', tpl:true},
-  {label:'≤', tex:'\\leq'}, {label:'≥', tex:'\\geq'}, {label:'≠', tex:'\\neq'},
-  {label:'±', tex:'\\pm'}, {label:'×', tex:'\\times'}, {label:'÷', tex:'\\div'},
-  {label:'→', tex:'\\rightarrow'}, {label:'⇌', tex:'\\rightleftharpoons'},
-  {label:'∞', tex:'\\infty'}, {label:'°', tex:'^{\\circ}'},
-  {label:'$…$', tex:'', tpl:true, wrapOnly:true},
+
+// Các ký hiệu chèn thẳng dạng chữ/ký tự thường — hiện đúng luôn, không cần
+// công thức LaTeX phức tạp (chữ Hy Lạp, phép toán, tên hàm lượng giác...).
+const MATH_TEXT_GROUPS = [
+  [
+    {label:'α', text:'α'}, {label:'β', text:'β'}, {label:'γ', text:'γ'}, {label:'θ', text:'θ'},
+    {label:'π', text:'π'}, {label:'Δ', text:'Δ'}, {label:'λ', text:'λ'}, {label:'ω', text:'ω'}, {label:'φ', text:'φ'},
+  ],
+  [
+    {label:'sin', text:'sin'}, {label:'cos', text:'cos'}, {label:'tan', text:'tan'},
+    {label:'log', text:'log'}, {label:'ln', text:'ln'},
+  ],
+  [
+    {label:'≤', text:'≤'}, {label:'≥', text:'≥'}, {label:'≠', text:'≠'}, {label:'±', text:'±'},
+    {label:'×', text:'×'}, {label:'÷', text:'÷'}, {label:'→', text:'→'}, {label:'⇌', text:'⇌'},
+    {label:'∞', text:'∞'}, {label:'°', text:'°'},
+  ],
+];
+// Các khối công thức có cấu trúc (căn, phân số, số mũ, chỉ số) — bấm vào là
+// hiện ra đúng hình dạng ngay tại chỗ đang gõ (không phải mã LaTeX thô),
+// gõ trực tiếp vào phần trống của khối đó rồi gõ tiếp chữ bình thường.
+const MATH_STRUCT_BUTTONS = [
+  {label:'√', type:'sqrt', title:'Căn bậc hai'},
+  {label:'a/b', type:'frac', title:'Phân số'},
+  {label:'x²', type:'sup', title:'Số mũ (lũy thừa)'},
+  {label:'x₁', type:'sub', title:'Chỉ số dưới'},
 ];
 
-// Chèn 1 ký hiệu/mẫu công thức vào vị trí con trỏ trong ô <textarea>,
-// tự bọc trong $...$; nếu là mẫu có {} rỗng thì đặt con trỏ vào bên trong
-// ô {} đầu tiên để gõ tiếp luôn (vd chọn "a/b" → con trỏ vào tử số).
-function insertMathSymbol(textarea, sym){
-  const start = textarea.selectionStart, end = textarea.selectionEnd;
-  const val = textarea.value;
-  const inner = sym.tex;
-  const snippet = '$' + inner + '$';
-  textarea.value = val.slice(0, start) + snippet + val.slice(end);
-  let cursorPos;
-  const braceIdx = inner.indexOf('{}');
-  if(braceIdx !== -1) cursorPos = start + 1 + braceIdx + 1;
-  else cursorPos = start + snippet.length;
-  textarea.focus();
-  textarea.setSelectionRange(cursorPos, cursorPos);
-  textarea.dispatchEvent(new Event('input', {bubbles:true}));
+function makeMathSlot(placeholder){
+  const s = document.createElement('span');
+  s.className = 'math-slot';
+  s.contentEditable = 'true';
+  if(placeholder) s.dataset.placeholder = placeholder;
+  return s;
 }
 
-// Xây thanh công cụ chọn ký hiệu + ô xem trước công thức, gắn ngay dưới
-// 1 ô textarea (dùng cho mặt trước/mặt sau khi tạo thẻ mới).
-function buildMathHelper(textarea){
+// Dựng DOM cho 1 khối công thức; trả về {el, focusSlot} — focusSlot là ô
+// trống sẽ được đưa con trỏ vào ngay sau khi chèn, để gõ tiếp luôn.
+function buildMathWidget(type){
+  const w = document.createElement('span');
+  w.className = 'math-widget math-' + type;
+  w.contentEditable = 'false';
+  w.dataset.type = type;
+  if(type === 'sqrt'){
+    const sign = document.createElement('span'); sign.className = 'sqrt-sign'; sign.textContent = '√';
+    const body = document.createElement('span'); body.className = 'sqrt-body';
+    const slot = makeMathSlot(''); slot.classList.add('sqrt-slot');
+    body.appendChild(slot);
+    w.appendChild(sign); w.appendChild(body);
+    return {el:w, focusSlot:slot};
+  }
+  if(type === 'frac'){
+    const col = document.createElement('span'); col.className = 'frac-col';
+    const num = makeMathSlot(''); num.classList.add('frac-num');
+    const den = makeMathSlot(''); den.classList.add('frac-den');
+    col.appendChild(num); col.appendChild(den);
+    w.appendChild(col);
+    return {el:w, focusSlot:num};
+  }
+  // sup / sub — chỉ 1 ô nhỏ nâng lên/hạ xuống, chèn ngay sau chữ đã gõ
+  // trước đó (không cần chọn "cơ số" riêng, đỡ rắc rối khi thao tác).
+  const slot = makeMathSlot(type==='sup' ? '2' : '1');
+  w.appendChild(slot);
+  return {el:w, focusSlot:slot};
+}
+
+// Lấy vị trí con trỏ hiện tại bên trong 1 ô nhập cụ thể; nếu con trỏ
+// không nằm trong ô đó (vd chưa từng bấm vào), đưa con trỏ về cuối ô.
+function getFieldRange(fieldEl){
+  const sel = window.getSelection();
+  if(sel && sel.rangeCount > 0){
+    const r = sel.getRangeAt(0);
+    if(fieldEl.contains(r.startContainer)) return r;
+  }
+  fieldEl.focus();
+  const r = document.createRange();
+  r.selectNodeContents(fieldEl);
+  r.collapse(false);
+  sel.removeAllRanges();
+  sel.addRange(r);
+  return r;
+}
+
+function markFieldEmptyState(fieldEl){
+  const empty = fieldEl.childNodes.length===0 ||
+    (fieldEl.childNodes.length===1 && fieldEl.firstChild.nodeType===3 && fieldEl.firstChild.textContent==='') ||
+    fieldEl.innerHTML === '<br>';
+  fieldEl.classList.toggle('is-empty', !!empty);
+}
+
+function insertPlainText(fieldEl, text){
+  const range = getFieldRange(fieldEl);
+  range.deleteContents();
+  const node = document.createTextNode(text);
+  range.insertNode(node);
+  range.setStartAfter(node); range.setEndAfter(node);
+  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  fieldEl.focus();
+  markFieldEmptyState(fieldEl);
+}
+
+function insertMathWidget(fieldEl, type){
+  const range = getFieldRange(fieldEl);
+  // Không lồng khối công thức vào bên trong 1 ô trống của khối khác —
+  // nếu con trỏ đang ở trong 1 ô như vậy thì chỉ chèn ký tự thường tương ứng.
+  const inSlot = range.startContainer.nodeType===1
+    ? range.startContainer.closest && range.startContainer.closest('.math-slot')
+    : range.startContainer.parentElement && range.startContainer.parentElement.closest('.math-slot');
+  if(inSlot){
+    const fallback = {sqrt:'√', frac:'/', sup:'^', sub:'_'}[type] || '';
+    insertPlainText(fieldEl, fallback);
+    return;
+  }
+  range.deleteContents();
+  const {el, focusSlot} = buildMathWidget(type);
+  range.insertNode(el);
+  // Neo con trỏ ngay sau khối vừa chèn bằng 1 ký tự rỗng, để gõ tiếp chữ
+  // thường sau công thức luôn hoạt động bình thường trên mọi trình duyệt.
+  const anchor = document.createTextNode('\u200b');
+  el.after(anchor);
+  fieldEl.focus();
+  const r2 = document.createRange();
+  r2.selectNodeContents(focusSlot); r2.collapse(true);
+  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r2);
+  markFieldEmptyState(fieldEl);
+}
+
+// Chuyển nội dung đã gõ (chữ thường + các khối công thức) thành 1 chuỗi
+// văn bản để lưu vào thẻ — mỗi khối công thức trở thành 1 đoạn $...$ mà
+// KaTeX sẽ vẽ lại đúng như vậy ở mọi nơi thẻ được hiển thị.
+function serializeMathInput(root){
+  let out = '';
+  function textOf(slot){ return slot ? slot.textContent.replace(/\u200b/g,'').trim() : ''; }
+  function walk(node){
+    if(node.nodeType === Node.TEXT_NODE){ out += node.textContent.replace(/\u200b/g,''); return; }
+    if(node.nodeType !== Node.ELEMENT_NODE) return;
+    if(node.tagName === 'BR'){ out += '\n'; return; }
+    const type = node.dataset && node.dataset.type;
+    if(type === 'sqrt'){
+      out += '$\\sqrt{' + textOf(node.querySelector('.sqrt-slot')) + '}$';
+      return;
+    }
+    if(type === 'frac'){
+      out += '$\\frac{' + textOf(node.querySelector('.frac-num')) + '}{' + textOf(node.querySelector('.frac-den')) + '}$';
+      return;
+    }
+    if(type === 'sup'){
+      out += '${}^{' + textOf(node.querySelector('.math-slot')) + '}$';
+      return;
+    }
+    if(type === 'sub'){
+      out += '${}_{' + textOf(node.querySelector('.math-slot')) + '}$';
+      return;
+    }
+    node.childNodes.forEach(walk);
+  }
+  root.childNodes.forEach(walk);
+  return out.trim();
+}
+
+// Xây 1 ô nhập kiểu WYSIWYG (thay cho <textarea> thường) cùng thanh công
+// cụ chèn công thức ngay phía trên — trả về {wrap, field} để gắn vào form.
+function buildMathCardInput(fieldId, placeholder){
   const wrap = document.createElement('div');
-  wrap.className = 'math-helper';
 
   const toolbar = document.createElement('div');
   toolbar.className = 'math-toolbar';
-  MATH_SYMBOLS.forEach(sym=>{
+
+  const field = document.createElement('div');
+  field.id = fieldId;
+  field.className = 'card-input is-empty';
+  field.contentEditable = 'true';
+  field.dataset.placeholder = placeholder || '';
+  field.setAttribute('translate', 'no');
+
+  const addBtn = (label, title, onClick)=>{
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'math-btn';
-    btn.textContent = sym.label;
-    btn.title = sym.wrapOnly ? 'Chèn cặp dấu $...$ để tự viết công thức' : ('Chèn ' + sym.label);
-    btn.onclick = (e)=>{ e.preventDefault(); insertMathSymbol(textarea, sym); };
-    toolbar.appendChild(btn);
-  });
-  wrap.appendChild(toolbar);
-
-  const preview = document.createElement('div');
-  preview.className = 'math-preview';
-  wrap.appendChild(preview);
-
-  const updatePreview = ()=>{
-    preview.textContent = textarea.value;
-    if(!textarea.value.trim()){ preview.innerHTML=''; return; }
-    renderMathIn(preview);
+    btn.className = 'math-btn' + (label.length>1 ? ' math-btn-wide' : '');
+    btn.textContent = label;
+    if(title) btn.title = title;
+    // preventDefault ở mousedown để ô nhập không bị mất focus/con trỏ
+    // trước khi kịp chèn ký hiệu vào đúng vị trí đang gõ.
+    btn.onmousedown = (e)=> e.preventDefault();
+    btn.onclick = (e)=>{ e.preventDefault(); onClick(); };
+    return btn;
   };
-  textarea.addEventListener('input', updatePreview);
-  updatePreview();
 
-  return wrap;
+  const structGroup = document.createElement('div');
+  structGroup.className = 'math-tgroup';
+  MATH_STRUCT_BUTTONS.forEach(s=>{
+    structGroup.appendChild(addBtn(s.label, s.title, ()=> insertMathWidget(field, s.type)));
+  });
+  toolbar.appendChild(structGroup);
+
+  MATH_TEXT_GROUPS.forEach(group=>{
+    const g = document.createElement('div');
+    g.className = 'math-tgroup';
+    group.forEach(s=> g.appendChild(addBtn(s.label, 'Chèn ' + s.label, ()=> insertPlainText(field, s.text))));
+    toolbar.appendChild(g);
+  });
+
+  field.addEventListener('input', ()=> markFieldEmptyState(field));
+
+  wrap.appendChild(toolbar);
+  wrap.appendChild(field);
+  return {wrap, field};
 }
 
 // Always prefer a real display name over an email address anywhere a person
@@ -929,31 +1067,33 @@ function renderAdd(){
   // front field
   const fFront = document.createElement('div');
   fFront.className='field';
-  fFront.innerHTML = `<label>Mặt trước — Câu hỏi / công thức</label>
-    <textarea id="frontInput" placeholder="Ví dụ: Định luật II Newton là gì? Chọn ký hiệu bên dưới để chèn công thức, ví dụ $\\sin^2\\alpha$"></textarea>`;
+  fFront.innerHTML = `<label>Mặt trước — Câu hỏi / công thức</label>`;
   main.appendChild(fFront);
-  fFront.appendChild(buildMathHelper(fFront.querySelector('#frontInput')));
+  const frontBuilt = buildMathCardInput('frontInput', 'Ví dụ: Định luật II Newton là gì?');
+  fFront.appendChild(frontBuilt.wrap);
 
   const fBack = document.createElement('div');
   fBack.className='field';
-  fBack.innerHTML = `<label>Mặt sau — Đáp án / giải thích</label>
-    <textarea id="backInput" placeholder="Ví dụ: F = m.a  (Lực = khối lượng × gia tốc)"></textarea>`;
+  fBack.innerHTML = `<label>Mặt sau — Đáp án / giải thích</label>`;
   main.appendChild(fBack);
-  fBack.appendChild(buildMathHelper(fBack.querySelector('#backInput')));
+  const backBuilt = buildMathCardInput('backInput', 'Ví dụ: F = m.a  (Lực = khối lượng × gia tốc)');
+  fBack.appendChild(backBuilt.wrap);
 
   const saveBtn = document.createElement('button');
   saveBtn.className='save-btn';
   saveBtn.textContent = 'Lưu thẻ';
   saveBtn.onclick = async ()=>{
-    const front = document.getElementById('frontInput').value.trim();
-    const back = document.getElementById('backInput').value.trim();
+    const front = serializeMathInput(document.getElementById('frontInput'));
+    const back = serializeMathInput(document.getElementById('backInput'));
     if(!addSubjectChoice){ toast('Hãy chọn hoặc tạo một bộ thẻ'); return; }
     if(!front || !back){ toast('Hãy điền cả hai mặt của thẻ'); return; }
     DATA.cards.push({id:uid(), subjectId:addSubjectChoice, front, back, ease:2.5, interval:0, reps:0, due:Date.now()});
     await saveData();
     toast('Đã lưu thẻ ✓');
-    document.getElementById('frontInput').value='';
-    document.getElementById('backInput').value='';
+    document.getElementById('frontInput').innerHTML = '';
+    document.getElementById('backInput').innerHTML = '';
+    markFieldEmptyState(document.getElementById('frontInput'));
+    markFieldEmptyState(document.getElementById('backInput'));
     render();
   };
   main.appendChild(saveBtn);

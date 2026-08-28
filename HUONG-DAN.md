@@ -222,24 +222,31 @@ làm mới thủ công. Cần chạy thêm phần cuối `schema.sql` (bảng
 
 ## Công thức toán học
 
-Khi tạo thẻ mới, dưới mỗi ô "Mặt trước" / "Mặt sau" có một hàng nút ký
-hiệu (α, β, x², √, a/b, sin, Σ, ≤...). Bấm vào ký hiệu nào, nó sẽ được
-chèn thẳng vào vị trí con trỏ đang gõ, tự bọc trong dấu `$...$`, và ô
-xem trước bên dưới sẽ vẽ ra công thức ngay lập tức — không cần tự gõ
-LaTeX hay đi copy ký hiệu ở ngoài.
+Khi tạo thẻ mới, dưới mỗi ô "Mặt trước" / "Mặt sau" có một thanh công cụ
+gọn, chia thành từng nhóm:
+- Nhóm cấu trúc: `√` (căn bậc hai), `a/b` (phân số), `x²` (số mũ), `x₁`
+  (chỉ số dưới) — bấm vào là **hiện ra đúng hình dạng thật** (dấu căn,
+  vạch phân số, số nhỏ nâng lên/hạ xuống) ngay tại chỗ đang gõ, không
+  phải mã LaTeX thô. Gõ trực tiếp vào phần trống của khối đó (vd số bên
+  trong dấu căn, tử số/mẫu số của phân số) rồi bấm ra ngoài để gõ tiếp
+  chữ bình thường.
+- Nhóm chữ Hy Lạp: α β γ θ π Δ λ ω φ.
+- Nhóm hàm số: sin cos tan log ln.
+- Nhóm phép toán: ≤ ≥ ≠ ± × ÷ → ⇌ ∞ °.
 
-Với các mẫu có ô trống (như `x^{}`, `√{}`, `a/b`, `Σ`, `∫`), con trỏ sẽ
-tự nhảy vào bên trong ô trống đầu tiên để gõ tiếp số/biến. Nút cuối
-cùng `$…$` chỉ chèn một cặp dấu `$` rỗng, dùng khi muốn tự gõ cả một
-biểu thức dài (vd `$\frac{a+b}{c}=x^2$`) mà không cần bấm từng ký hiệu.
+Các ký hiệu ở 3 nhóm sau chỉ là chữ/ký tự thường, chèn vào là hiện đúng
+luôn, không cần bọc gì thêm. Ví dụ gõ "sin", bấm `x²`, gõ "2", bấm ra
+ngoài gõ tiếp "α" sẽ ra đúng "sin²α" với số 2 nhỏ nâng lên như sách giáo
+khoa — không còn hiện mã `$...$` rối mắt khi đang soạn thẻ nữa.
 
-Công thức được lưu ngay trong nội dung thẻ dưới dạng văn bản thường
-(đoạn nào nằm giữa `$...$` là công thức), nên không cần thay đổi gì ở
-chỗ lưu trữ hay đồng bộ — nó tự hiển thị đúng ở mọi nơi thẻ xuất hiện
-(ôn tập, danh sách quản lý, xem trước khi xoá...). Việc vẽ công thức
-dùng thư viện KaTeX chạy hoàn toàn trên máy (không cần mạng), các file
-cần thiết nằm trong thư mục `katex/` và đã được thêm vào danh sách cache
-offline trong `service-worker.js`.
+Khi lưu thẻ, các khối căn/phân số/số mũ này được tự động chuyển thành
+công thức LaTeX (đặt trong `$...$`) để lưu vào nội dung thẻ dưới dạng
+văn bản thường — không cần thay đổi gì ở chỗ lưu trữ hay đồng bộ — và
+tự hiển thị đúng ở mọi nơi thẻ xuất hiện sau đó (ôn tập, danh sách quản
+lý, xem trước khi xoá...). Việc vẽ công thức dùng thư viện KaTeX chạy
+hoàn toàn trên máy (không cần mạng), các file cần thiết nằm trong thư
+mục `katex/` và đã được thêm vào danh sách cache offline trong
+`service-worker.js`.
 
 ## Cập nhật app sau khi đã cài
 
