@@ -518,6 +518,24 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
   color:var(--ink-soft); cursor:pointer; background:var(--bg-elev); font-weight:500;}
 .chip.active{border-color:transparent; color:#14151f; font-weight:700; box-shadow:var(--shadow-sm); animation:popIn .22s var(--ease-spring);}
 .chip-new{border-style:dashed;}
+
+/* ---------- Công cụ chèn ký hiệu toán học ---------- */
+.math-helper{margin-top:-8px; margin-bottom:18px;}
+.math-toolbar{display:flex; flex-wrap:wrap; gap:6px; overflow-x:auto; padding-bottom:2px;}
+.math-btn{
+  flex-shrink:0; min-width:34px; padding:7px 10px; border-radius:9px; border:1px solid var(--line);
+  background:var(--bg-elev); color:var(--ink-soft); font-size:14px; font-family:'IBM Plex Mono',monospace;
+  cursor:pointer; text-align:center; line-height:1; transition: background .12s ease, border-color .12s ease;
+}
+.math-btn:active{background:var(--violet); border-color:transparent; color:#14151f;}
+.math-preview{
+  margin-top:8px; padding:12px 14px; border-radius:var(--radius-sm); border:1px dashed var(--line);
+  background:var(--bg-elev-2); font-size:15px; color:var(--ink-soft); min-height:22px; line-height:1.55;
+  word-break:break-word; overflow-x:auto;
+}
+.math-preview:empty::before{content:'Xem trước công thức sẽ hiện ở đây'; color:var(--ink-faint); font-size:12.5px;}
+.math-preview .katex-error{color:var(--coral);}
+.content .katex, .answer .katex, .mi-front .katex, .mi-back .katex{font-size:1em;}
 .chip:active{transform:scale(0.95);}
 .save-btn{width:100%; padding:15px; border:none; border-radius:var(--radius-sm); background:var(--teal);
   color:#0a2622; font-weight:700; font-size:15px; cursor:pointer; margin-top:6px;

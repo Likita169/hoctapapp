@@ -11,6 +11,7 @@ srs-app/
 ├── manifest.json     cấu hình để cài lên màn hình chính
 ├── service-worker.js  cho phép chạy offline + tự cập nhật
 ├── icon-192.png, icon-512.png    icon app
+├── katex/                   thư viện vẽ công thức toán (katex.min.js/css, auto-render.min.js, fonts/)
 ├── sync-server/          worker.js + schema.sql — máy chủ tài khoản & đồng bộ (tuỳ chọn)
 ├── push-server/          worker.js — máy chủ nhắc đúng giờ (tuỳ chọn, xem mục bên dưới)
 └── HUONG-DAN.md        file này
@@ -218,6 +219,27 @@ Hệ thống tự tạo thông báo trong 2 trường hợp:
 App tự tải lại thông báo mỗi 60 giây và mỗi khi quay lại app — không cần
 làm mới thủ công. Cần chạy thêm phần cuối `schema.sql` (bảng
 `notifications`) rồi deploy `worker.js` + `app.js` mới.
+
+## Công thức toán học
+
+Khi tạo thẻ mới, dưới mỗi ô "Mặt trước" / "Mặt sau" có một hàng nút ký
+hiệu (α, β, x², √, a/b, sin, Σ, ≤...). Bấm vào ký hiệu nào, nó sẽ được
+chèn thẳng vào vị trí con trỏ đang gõ, tự bọc trong dấu `$...$`, và ô
+xem trước bên dưới sẽ vẽ ra công thức ngay lập tức — không cần tự gõ
+LaTeX hay đi copy ký hiệu ở ngoài.
+
+Với các mẫu có ô trống (như `x^{}`, `√{}`, `a/b`, `Σ`, `∫`), con trỏ sẽ
+tự nhảy vào bên trong ô trống đầu tiên để gõ tiếp số/biến. Nút cuối
+cùng `$…$` chỉ chèn một cặp dấu `$` rỗng, dùng khi muốn tự gõ cả một
+biểu thức dài (vd `$\frac{a+b}{c}=x^2$`) mà không cần bấm từng ký hiệu.
+
+Công thức được lưu ngay trong nội dung thẻ dưới dạng văn bản thường
+(đoạn nào nằm giữa `$...$` là công thức), nên không cần thay đổi gì ở
+chỗ lưu trữ hay đồng bộ — nó tự hiển thị đúng ở mọi nơi thẻ xuất hiện
+(ôn tập, danh sách quản lý, xem trước khi xoá...). Việc vẽ công thức
+dùng thư viện KaTeX chạy hoàn toàn trên máy (không cần mạng), các file
+cần thiết nằm trong thư mục `katex/` và đã được thêm vào danh sách cache
+offline trong `service-worker.js`.
 
 ## Cập nhật app sau khi đã cài
 

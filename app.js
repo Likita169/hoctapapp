@@ -556,6 +556,10 @@ function render(){
   const newMainEl = $app.querySelector('main');
   if(newMainEl && samePage) newMainEl.scrollTop = prevScrollTop;
   _prevRenderSig = newSig;
+
+  // Vẽ lại mọi công thức toán ($...$) xuất hiện trong khung nhìn vừa dựng
+  // (câu hỏi/đáp án của thẻ, danh sách quản lý, hộp xác nhận xoá...).
+  renderMathIn($app);
 }
 
 function renderTabbar(){
@@ -754,6 +758,98 @@ function escapeHtml(s){
   return (s||'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
+/* ---------------- Công thức toán học (KaTeX) ----------------
+   Mặt trước/sau của thẻ được lưu dạng văn bản thường; đoạn nào đặt giữa
+   $...$ (hoặc $$...$$) sẽ được KaTeX vẽ thành công thức toán. Hàm dưới
+   đây được gọi lại mỗi khi giao diện được vẽ (render()) cũng như trên
+   từng ô xem trước riêng lẻ khi đang gõ. */
+function renderMathIn(el){
+  if(!el || typeof window.renderMathInElement !== 'function') return;
+  try{
+    window.renderMathInElement(el, {
+      delimiters: [
+        {left:'$$', right:'$$', display:true},
+        {left:'\\[', right:'\\]', display:true},
+        {left:'$', right:'$', display:false},
+        {left:'\\(', right:'\\)', display:false}
+      ],
+      throwOnError:false,
+      ignoredTags:['script','noscript','style','textarea','pre']
+    });
+  }catch(e){ /* đừng để lỗi vẽ công thức làm hỏng cả giao diện */ }
+}
+
+// Các ký hiệu/mẫu công thức hay dùng — bấm vào để chèn thẳng vào ô đang gõ,
+// đã tự bọc trong dấu $ nên xem trước hiện ra ngay, không cần tự gõ LaTeX.
+const MATH_SYMBOLS = [
+  {label:'α', tex:'\\alpha'}, {label:'β', tex:'\\beta'}, {label:'θ', tex:'\\theta'},
+  {label:'π', tex:'\\pi'}, {label:'Δ', tex:'\\Delta'}, {label:'λ', tex:'\\lambda'},
+  {label:'ω', tex:'\\omega'}, {label:'φ', tex:'\\varphi'},
+  {label:'x²', tex:'x^{2}', tpl:true}, {label:'xⁿ', tex:'x^{}', tpl:true},
+  {label:'x₁', tex:'x_{}', tpl:true}, {label:'√', tex:'\\sqrt{}', tpl:true},
+  {label:'a/b', tex:'\\frac{}{}', tpl:true},
+  {label:'sin', tex:'\\sin'}, {label:'cos', tex:'\\cos'}, {label:'tan', tex:'\\tan'},
+  {label:'log', tex:'\\log'}, {label:'ln', tex:'\\ln'},
+  {label:'Σ', tex:'\\sum_{}^{}', tpl:true}, {label:'∫', tex:'\\int_{}^{}', tpl:true},
+  {label:'≤', tex:'\\leq'}, {label:'≥', tex:'\\geq'}, {label:'≠', tex:'\\neq'},
+  {label:'±', tex:'\\pm'}, {label:'×', tex:'\\times'}, {label:'÷', tex:'\\div'},
+  {label:'→', tex:'\\rightarrow'}, {label:'⇌', tex:'\\rightleftharpoons'},
+  {label:'∞', tex:'\\infty'}, {label:'°', tex:'^{\\circ}'},
+  {label:'$…$', tex:'', tpl:true, wrapOnly:true},
+];
+
+// Chèn 1 ký hiệu/mẫu công thức vào vị trí con trỏ trong ô <textarea>,
+// tự bọc trong $...$; nếu là mẫu có {} rỗng thì đặt con trỏ vào bên trong
+// ô {} đầu tiên để gõ tiếp luôn (vd chọn "a/b" → con trỏ vào tử số).
+function insertMathSymbol(textarea, sym){
+  const start = textarea.selectionStart, end = textarea.selectionEnd;
+  const val = textarea.value;
+  const inner = sym.tex;
+  const snippet = '$' + inner + '$';
+  textarea.value = val.slice(0, start) + snippet + val.slice(end);
+  let cursorPos;
+  const braceIdx = inner.indexOf('{}');
+  if(braceIdx !== -1) cursorPos = start + 1 + braceIdx + 1;
+  else cursorPos = start + snippet.length;
+  textarea.focus();
+  textarea.setSelectionRange(cursorPos, cursorPos);
+  textarea.dispatchEvent(new Event('input', {bubbles:true}));
+}
+
+// Xây thanh công cụ chọn ký hiệu + ô xem trước công thức, gắn ngay dưới
+// 1 ô textarea (dùng cho mặt trước/mặt sau khi tạo thẻ mới).
+function buildMathHelper(textarea){
+  const wrap = document.createElement('div');
+  wrap.className = 'math-helper';
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'math-toolbar';
+  MATH_SYMBOLS.forEach(sym=>{
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'math-btn';
+    btn.textContent = sym.label;
+    btn.title = sym.wrapOnly ? 'Chèn cặp dấu $...$ để tự viết công thức' : ('Chèn ' + sym.label);
+    btn.onclick = (e)=>{ e.preventDefault(); insertMathSymbol(textarea, sym); };
+    toolbar.appendChild(btn);
+  });
+  wrap.appendChild(toolbar);
+
+  const preview = document.createElement('div');
+  preview.className = 'math-preview';
+  wrap.appendChild(preview);
+
+  const updatePreview = ()=>{
+    preview.textContent = textarea.value;
+    if(!textarea.value.trim()){ preview.innerHTML=''; return; }
+    renderMathIn(preview);
+  };
+  textarea.addEventListener('input', updatePreview);
+  updatePreview();
+
+  return wrap;
+}
+
 // Always prefer a real display name over an email address anywhere a person
 // is shown (teacher on a class card, student in a roster/score list...).
 // Falls back to email only if the server hasn't sent a name for that person yet.
@@ -834,14 +930,16 @@ function renderAdd(){
   const fFront = document.createElement('div');
   fFront.className='field';
   fFront.innerHTML = `<label>Mặt trước — Câu hỏi / công thức</label>
-    <textarea id="frontInput" placeholder="Ví dụ: Định luật II Newton là gì?"></textarea>`;
+    <textarea id="frontInput" placeholder="Ví dụ: Định luật II Newton là gì? Chọn ký hiệu bên dưới để chèn công thức, ví dụ $\\sin^2\\alpha$"></textarea>`;
   main.appendChild(fFront);
+  fFront.appendChild(buildMathHelper(fFront.querySelector('#frontInput')));
 
   const fBack = document.createElement('div');
   fBack.className='field';
   fBack.innerHTML = `<label>Mặt sau — Đáp án / giải thích</label>
     <textarea id="backInput" placeholder="Ví dụ: F = m.a  (Lực = khối lượng × gia tốc)"></textarea>`;
   main.appendChild(fBack);
+  fBack.appendChild(buildMathHelper(fBack.querySelector('#backInput')));
 
   const saveBtn = document.createElement('button');
   saveBtn.className='save-btn';
