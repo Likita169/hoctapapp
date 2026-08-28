@@ -6,7 +6,8 @@
 srs-app/
 ├── index.html         khung trang, chỉ chứa cấu trúc HTML gốc
 ├── style.css           toàn bộ giao diện (màu sắc, layout, font)
-├── app.js               toàn bộ logic (thuật toán ôn tập, lưu dữ liệu, thông báo...)
+├── js/                   toàn bộ logic, tách thành nhiều file nhỏ cho dễ tìm — xem mục
+                          "Cấu trúc thư mục js/" ngay bên dưới
 ├── version.js           CHỈ chứa số phiên bản — sửa duy nhất file này khi deploy bản mới
 ├── manifest.json     cấu hình để cài lên màn hình chính
 ├── service-worker.js  cho phép chạy offline + tự cập nhật
@@ -17,10 +18,50 @@ srs-app/
 └── HUONG-DAN.md        file này
 ```
 
-Tách riêng 3 file này để dễ chỉnh sửa:
+Tách riêng 3 phần này để dễ chỉnh sửa:
 - Muốn đổi màu, font, khoảng cách → sửa `style.css`
-- Muốn đổi thuật toán ôn tập, thêm tính năng, sửa câu chữ → sửa `app.js`
+- Muốn đổi thuật toán ôn tập, thêm tính năng, sửa câu chữ → sửa file phù hợp trong `js/`
 - Muốn đổi cấu trúc khung (thêm thẻ HTML mới, đổi tiêu đề trang) → sửa `index.html`
+
+## Cấu trúc thư mục js/
+
+Toàn bộ logic trước đây nằm chung trong 1 file `app.js` rất dài, nay được
+tách thành 24 file nhỏ trong thư mục `js/`, mỗi file phụ trách đúng 1 phần
+việc, đánh số theo đúng thứ tự nạp (file số nhỏ nạp trước) để dễ tìm và dễ
+sửa hơn — tìm đúng tên việc cần sửa là ra đúng file, không cần lướt qua cả
+nghìn dòng nữa:
+
+| File | Phụ trách |
+|---|---|
+| `01-trang-thai-toan-cuc.js` | Hằng số + toàn bộ biến trạng thái dùng chung của app |
+| `02-du-lieu-luu-tru.js` | Lưu/đọc dữ liệu bằng IndexedDB, các hàm truy vấn bộ thẻ |
+| `03-thuat-toan-on-tap.js` | Thuật toán ôn tập ngắt quãng, XP/cấp độ, streak, huy hiệu |
+| `04-khung-giao-dien.js` | Khung giao diện dùng chung: menu bấm giữ, thanh tab, hàm vẽ lại màn hình |
+| `05-trang-chu-bo-the.js` | Tab Trang chủ — cây bộ thẻ lồng nhau (mở/thu gọn) |
+| `06-cong-thuc-toan.js` | Vẽ và soạn công thức toán (KaTeX) |
+| `07-them-the-va-bo-the.js` | Màn Thêm thẻ, modal tạo/đổi tên/xoá bộ thẻ, xoá thẻ |
+| `08-hen-gio-va-on-tap.js` | Modal chọn giờ, màn hình Ôn tập (lật thẻ, chấm điểm) |
+| `09-quan-ly-va-thong-ke.js` | Tab Thẻ ghi nhớ và tab Thống kê |
+| `10-dong-bo-va-dang-nhap.js` | Modal chọn dữ liệu khi đồng bộ lệch, màn Đăng nhập/Đăng ký |
+| `11-giao-dien-cai-dat.js` | Modal chọn giao diện sáng/tối, tab Cài đặt |
+| `12-api-tai-khoan-dong-bo.js` | Gọi máy chủ: đăng nhập, đồng bộ, API lớp học |
+| `13-lop-hoc.js` | Tab Lớp học |
+| `14-thong-bao.js` | Hệ thống thông báo (chuông 🔔) |
+| `15-quan-ly-bai-kiem-tra.js` | Giáo viên: tạo/xoá bài kiểm tra, câu hỏi |
+| `16-dan-nhap-cau-hoi.js` | Dán nhanh nhiều câu trắc nghiệm, danh sách câu hỏi |
+| `17-soan-bai-kiem-tra.js` | Giao diện soạn chi tiết 1 bài kiểm tra |
+| `18-xem-de-bai-dinh-kem.js` | Xem đề bài PDF/Word/ảnh đính kèm, giao bài |
+| `19-cham-bai-giao-vien.js` | Giáo viên xem điểm, chấm bài tự luận |
+| `20-danh-sach-bai-kiem-tra.js` | Học sinh: danh sách bài, xem lại kết quả |
+| `21-lam-bai-kiem-tra.js` | Học sinh: đang làm bài kiểm tra |
+| `22-nhac-nho-day-hoc.js` | Đăng ký/huỷ thông báo nhắc ôn tập đúng giờ |
+| `23-cap-nhat-va-giao-dien.js` | Phát hiện bản cập nhật mới, áp dụng theme |
+| `24-khoi-dong.js` | Điểm khởi động app — luôn nạp cuối cùng |
+
+Các file này chia sẻ chung biến/hàm với nhau (không phải module riêng biệt),
+nên khi thêm file mới cần khai báo thêm 1 dòng `<script src="js/...">` trong
+`index.html` (đúng thứ tự) và thêm đường dẫn vào mảng `SHELL` trong
+`service-worker.js` để file mới cũng được cài offline.
 
 Đây là bộ file đầy đủ của một Progressive Web App (PWA). Khi được host lên
 một địa chỉ web thật (không phải mở file trực tiếp), nó sẽ:
@@ -35,7 +76,7 @@ một địa chỉ web thật (không phải mở file trực tiếp), nó sẽ:
 
 **Cách nhanh nhất — Netlify Drop:**
 1. Vào https://app.netlify.com/drop bằng máy tính
-2. Kéo cả thư mục `srs-app` (chứa index.html, style.css, app.js, manifest.json,
+2. Kéo cả thư mục `srs-app` (chứa index.html, style.css, thư mục js/, manifest.json,
    service-worker.js, icon-192.png, icon-512.png) vào trang đó
 3. Netlify sẽ cho bạn một đường link dạng `https://ten-ngau-nhien.netlify.app`
 4. Mở link đó trên điện thoại → làm theo bước "Thêm vào màn hình chính" bên dưới
@@ -106,7 +147,7 @@ tự động ghi đè).
 **Bước 5 — Lấy URL của Worker và dán vào app:**
 1. Ở trang chính của Worker sẽ có URL dạng
    `https://on-tap-sync.<tên-của-bạn>.workers.dev`
-2. Mở file `app.js`, tìm dòng:
+2. Mở file `js/01-trang-thai-toan-cuc.js`, tìm dòng:
    ```
    const SYNC_SERVER_URL = 'https://on-tap-sync.YOUR-SUBDOMAIN.workers.dev';
    ```
@@ -171,7 +212,7 @@ luận hiện số câu còn chờ chấm).
 
 Chỉ cần chạy lại `schema.sql` mới nhất (thêm bảng `test_submissions`, cột
 `published`/`max_attempts`/`test_type` cho bảng `tests`) rồi deploy
-`worker.js` + `app.js` mới là dùng được ngay. Nếu D1 báo lỗi "duplicate
+`worker.js` + các file mới trong `js/` mới là dùng được ngay. Nếu D1 báo lỗi "duplicate
 column name" khi chạy `schema.sql`, đó là vì cột đã có sẵn — bỏ qua lỗi
 đó là được.
 
@@ -199,7 +240,7 @@ thêm nhận xét, rồi bấm **Lưu kết quả chấm**. Ảnh đã khoanh + 
 hiện ra khi học sinh vào xem lại bài làm của mình.
 
 Cần chạy thêm phần cuối `schema.sql` (cột `test_type` + bảng
-`essay_gradings`) rồi deploy `worker.js` + `app.js` mới — làm đúng như
+`essay_gradings`) rồi deploy `worker.js` + các file mới trong `js/` mới — làm đúng như
 hướng dẫn "Cập nhật app sau khi đã cài" bên dưới.
 
 ## Chuông thông báo 🔔 (bài mới / đã chấm xong)
@@ -218,7 +259,7 @@ Hệ thống tự tạo thông báo trong 2 trường hợp:
 
 App tự tải lại thông báo mỗi 60 giây và mỗi khi quay lại app — không cần
 làm mới thủ công. Cần chạy thêm phần cuối `schema.sql` (bảng
-`notifications`) rồi deploy `worker.js` + `app.js` mới.
+`notifications`) rồi deploy `worker.js` + các file mới trong `js/` mới.
 
 ## Công thức toán học
 
@@ -309,7 +350,7 @@ mỗi biến chọn kiểu **Secret**:
 **Bước 5 — Lấy URL của Worker và dán vào app:**
 1. Ở trang chính của Worker sẽ có URL dạng
    `https://on-tap-push.<tên-của-bạn>.workers.dev`
-2. Mở file `app.js`, tìm dòng:
+2. Mở file `js/01-trang-thai-toan-cuc.js`, tìm dòng:
    ```
    const PUSH_SERVER_URL = 'https://on-tap-push.YOUR-SUBDOMAIN.workers.dev';
    ```
