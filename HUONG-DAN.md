@@ -39,8 +39,8 @@ nghìn dòng nữa:
 | `04-khung-giao-dien.js` | Khung giao diện dùng chung: menu bấm giữ, thanh tab, hàm vẽ lại màn hình |
 | `05-trang-chu-bo-the.js` | Tab Trang chủ — cây bộ thẻ lồng nhau (mở/thu gọn) |
 | `06-cong-thuc-toan.js` | Vẽ và soạn công thức toán (KaTeX) |
-| `07-them-the-va-bo-the.js` | Màn Thêm thẻ, modal tạo/đổi tên/xoá bộ thẻ, xoá thẻ |
-| `08-hen-gio-va-on-tap.js` | Modal chọn giờ, màn hình Ôn tập (lật thẻ, chấm điểm) |
+| `07-them-the-va-bo-the.js` | Màn Thêm thẻ (thẻ Lật thẻ hoặc Điền từ/cloze), modal tạo/đổi tên/xoá bộ thẻ, xoá thẻ |
+| `08-hen-gio-va-on-tap.js` | Modal chọn giờ, màn hình Ôn tập — 3 kiểu trả lời: Lật thẻ / Gõ đáp án / Trắc nghiệm nhanh |
 | `09-quan-ly-va-thong-ke.js` | Tab Thẻ ghi nhớ và tab Thống kê |
 | `10-dong-bo-va-dang-nhap.js` | Modal chọn dữ liệu khi đồng bộ lệch, màn Đăng nhập/Đăng ký |
 | `11-giao-dien-cai-dat.js` | Modal chọn giao diện sáng/tối, tab Cài đặt |
@@ -56,7 +56,8 @@ nghìn dòng nữa:
 | `21-lam-bai-kiem-tra.js` | Học sinh: đang làm bài kiểm tra |
 | `22-nhac-nho-day-hoc.js` | Đăng ký/huỷ thông báo nhắc ôn tập đúng giờ |
 | `23-cap-nhat-va-giao-dien.js` | Phát hiện bản cập nhật mới, áp dụng theme |
-| `24-khoi-dong.js` | Điểm khởi động app — luôn nạp cuối cùng |
+| `24-tro-choi-ghep-the.js` | Trò chơi Ghép thẻ (không ảnh hưởng lịch ôn tập) |
+| `25-khoi-dong.js` | Điểm khởi động app — luôn nạp cuối cùng |
 
 Các file này chia sẻ chung biến/hàm với nhau (không phải module riêng biệt),
 nên khi thêm file mới cần khai báo thêm 1 dòng `<script src="js/...">` trong
@@ -288,6 +289,51 @@ lý, xem trước khi xoá...). Việc vẽ công thức dùng thư viện KaTeX
 hoàn toàn trên máy (không cần mạng), các file cần thiết nằm trong thư
 mục `katex/` và đã được thêm vào danh sách cache offline trong
 `service-worker.js`.
+
+## Điền vào chỗ trống (Cloze) — giúp nhớ lâu hơn nhờ "bắt não truy xuất"
+
+Ở màn Thêm thẻ, chọn loại thẻ **🕳 Điền từ** thay vì **🔄 Lật thẻ** mặc
+định. Gõ 1 câu hoàn chỉnh, bôi đen từ/cụm từ cần ẩn rồi bấm nút **"🕳 Ẩn
+từ"** trên thanh công cụ — chỗ đó sẽ được đánh dấu (viền đứt màu hồng).
+Có thể ẩn nhiều chỗ trong cùng 1 câu; mỗi chỗ ẩn khi lưu sẽ trở thành
+**1 thẻ ôn tập riêng** (giống Anki): thẻ đó chỉ hỏi đúng chỗ của nó, các
+chỗ ẩn khác trong câu vẫn hiện chữ thật để làm ngữ cảnh. Bấm vào 1 chỗ
+đã ẩn để bỏ đánh dấu nếu lỡ tay.
+
+Về mặt lưu trữ, câu cloze vẫn chỉ là text thường với cú pháp
+`{{c1::từ bị ẩn}}` lồng trong nội dung thẻ (`front`), không cần bảng dữ
+liệu hay cơ chế đồng bộ riêng — cùng cơ chế với công thức toán `$...$`
+ở trên. Logic đọc/ghi nằm trong `js/06-cong-thuc-toan.js`.
+
+## 3 kiểu trả lời khi ôn tập: Lật thẻ / Gõ đáp án / Trắc nghiệm nhanh
+
+Trong màn Ôn tập, bấm nút **⋮** ở góc trên bên phải để chọn kiểu trả lời
+cho phiên ôn hiện tại (được nhớ lại cho các lần ôn sau):
+- **🔄 Lật thẻ** — kiểu mặc định như trước giờ: xem câu hỏi, bấm "Hiện
+  đáp án", tự chấm mức nhớ.
+- **⌨️ Gõ đáp án** — gõ hẳn câu trả lời ra rồi bấm "Kiểm tra" (hoặc nhấn
+  Enter); app so khớp (không phân biệt hoa/thường, bỏ qua khoảng trắng
+  thừa và công thức toán) và báo đúng/sai trước khi hiện đáp án đúng.
+  Việc *chủ động nhớ ra* thay vì chỉ *nhận ra* giúp ghi nhớ chắc hơn hẳn.
+- **🧠 Trắc nghiệm nhanh** — hiện 4 lựa chọn (đáp án đúng + 3 phương án
+  nhiễu lấy từ các thẻ khác, ưu tiên cùng bộ thẻ), chạm 1 lựa chọn để trả
+  lời ngay. Ôn theo kiểu này nhẹ nhàng, phù hợp lúc mới học hoặc ôn
+  nhanh nhiều thẻ.
+
+Dù chọn kiểu nào, sau khi trả lời vẫn hiện đủ 4 nút chấm mức nhớ (Quên/
+Khó/Nhớ/Dễ) như cũ — thuật toán ôn tập ngắt quãng không đổi. Thẻ Điền
+từ cũng ôn được ở cả 3 kiểu (câu hỏi luôn hiện đúng chỗ trống của nó).
+Logic nằm trong `js/08-hen-gio-va-on-tap.js`.
+
+## Trò chơi Ghép thẻ 🧩
+
+Bấm giữ vào 1 bộ thẻ ở Trang chủ → **"🧩 Trò chơi ghép thẻ"** để mở 1 ván
+chơi nhanh: 2 cột câu hỏi/đáp án (tối đa 8 cặp, chọn ngẫu nhiên mỗi lần
+chơi) đã xáo trộn riêng từng cột, chạm 1 ô mỗi cột để ghép đúng cặp,
+tính thời gian và số lần sai. Không cần đủ thẻ đến hạn ôn — dùng để
+luyện lại nhanh, không ảnh hưởng gì đến lịch ôn tập ngắt quãng. Cần ít
+nhất 3 thẻ trong bộ thẻ (kể cả bộ thẻ phụ bên trong) để chơi được.
+Logic nằm trong `js/24-tro-choi-ghep-the.js`.
 
 ## Cập nhật app sau khi đã cài
 

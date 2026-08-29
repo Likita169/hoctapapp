@@ -253,6 +253,12 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .subject-due:active{background:rgba(235,165,62,0.14); transform:scale(0.94);}
 .subject-due.zero{color:var(--ink-faint); cursor:default;}
 .subject-due.zero:active{background:none; transform:none;}
+.subject-expand{width:24px; height:24px; flex-shrink:0; display:flex; align-items:center; justify-content:center;
+  background:none; border:none; color:var(--ink-faint); font-size:10px; cursor:pointer; border-radius:7px;
+  transition:transform .18s var(--ease-out), background .18s var(--ease-out), color .18s var(--ease-out);}
+.subject-expand.open{transform:rotate(90deg); color:var(--ink-soft);}
+.subject-expand:active{background:var(--bg-elev);}
+.subject-expand-spacer{width:24px; height:24px; flex-shrink:0; background:none; border:none;}
 .subject-del{background:none; border:none; color:var(--ink-faint); font-size:16px; cursor:pointer;
   padding:6px; flex-shrink:0; line-height:1; border-radius:8px;}
 .subject-del:hover, .subject-del:active{color:var(--coral); background:rgba(239,91,115,0.12);}
@@ -546,8 +552,16 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .card-input:focus{outline:none; border-color:var(--violet); box-shadow:0 0 0 3px rgba(157,142,242,0.2);}
 .card-input.is-empty::before{content:attr(data-placeholder); color:var(--ink-faint); pointer-events:none;}
 
-/* Các "khối" công thức hiện ngay trong ô nhập */
-.math-widget{display:inline-flex; user-select:none; vertical-align:middle;}
+/* Các "khối" công thức hiện ngay trong ô nhập.
+   Quan trọng: dùng inline-block + overflow:hidden (không phải inline-flex)
+   cho khối ngoài cùng — đây là mẹo CSS kinh điển để "đường baseline" của
+   khối luôn là mép dưới của nó, CỐ ĐỊNH và giống nhau trên mọi trình
+   duyệt. Nếu để inline-flex, trình duyệt tự tính baseline theo flexbox —
+   cách tính này không đồng nhất giữa các trình duyệt/nội dung bên trong,
+   gây ra hiện tượng chữ gõ trước/sau khối bị lệch lên xuống thất thường.
+   Layout dạng flex (dấu căn nằm ngang, phân số xếp chồng) vẫn dùng bên
+   TRONG (.sqrt-body, .frac-col) — chỉ khối ngoài cùng đổi sang inline-block. */
+.math-widget{display:inline-block; overflow:hidden; user-select:none; vertical-align:baseline;}
 .math-slot{
   display:inline-block; min-width:0.65em; outline:none; border-bottom:1px dotted transparent;
   padding:0 1px;
@@ -555,20 +569,46 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .math-slot:focus{border-bottom-color:var(--violet);}
 .math-slot:empty::before{content:attr(data-placeholder); color:var(--ink-faint); opacity:0.65;}
 
-.math-sqrt{align-items:flex-start; margin:0 1px;}
-.math-sqrt .sqrt-sign{font-size:1.05em; line-height:1; transform:scaleY(1.05); margin-right:1px;}
-.math-sqrt .sqrt-body{border-top:1.4px solid currentColor; padding:0 3px 0 1px; display:inline-block;}
+.math-sqrt{margin:0 1px; white-space:nowrap;}
+.math-sqrt .sqrt-sign{font-size:1.15em; line-height:1; display:inline-block; position:relative; top:1px; margin-right:-1px;}
+.math-sqrt .sqrt-body{border-top:1.5px solid currentColor; padding:1px 4px 0 3px; display:inline-block; vertical-align:top;}
 
-.math-frac{align-items:center; margin:0 2px; vertical-align:-0.35em;}
-.math-frac .frac-col{display:inline-flex; flex-direction:column; align-items:center; font-size:0.82em; line-height:1.2;}
-.math-frac .frac-num{border-bottom:1.4px solid currentColor; padding:0 3px 1px; text-align:center;}
-.math-frac .frac-den{padding:1px 3px 0; text-align:center;}
+.math-frac{margin:0 3px; vertical-align:-0.08em;}
+.math-frac .frac-col{display:inline-flex; flex-direction:column; align-items:center; font-size:0.85em; line-height:1.15;}
+.math-frac .frac-num{border-bottom:1.5px solid currentColor; padding:0 4px 2px; text-align:center;}
+.math-frac .frac-den{padding:2px 4px 0; text-align:center;}
 
-.math-sup, .math-sub{align-items:baseline; margin:0 1px;}
+.math-sup, .math-sub{margin:0 1px;}
 .math-sup .math-slot{font-size:0.7em; vertical-align:super;}
 .math-sub .math-slot{font-size:0.7em; vertical-align:sub;}
 
 .content .katex, .answer .katex, .mi-front .katex, .mi-back .katex{font-size:1em;}
+
+/* Điền vào chỗ trống (Cloze): nút "Ẩn từ" nổi bật riêng + chỗ đã đánh dấu
+   trong ô soạn thẻ, và cách hiện chỗ trống/đáp án khi ôn tập hoặc xem lại. */
+.math-btn-cloze{background:rgba(221,148,207,0.16); border-color:var(--pink); color:var(--pink); font-family:'Inter',sans-serif; font-weight:600;}
+.math-btn-cloze:active{background:var(--pink); color:#2b0f27;}
+.cloze-mark{
+  background:rgba(221,148,207,0.22); border:1px dashed var(--pink); border-radius:5px;
+  padding:0 4px; cursor:pointer; color:var(--pink); font-weight:600;
+}
+.cloze-mark:active{background:rgba(221,148,207,0.4);}
+.cloze-gap{
+  display:inline-block; min-width:2.4em; border-bottom:2px solid var(--violet);
+  color:transparent; text-align:center;
+}
+mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radius:4px; padding:0 4px; font-weight:700;}
+
+/* Segmented control: chọn loại thẻ (Lật thẻ / Điền từ) ở màn Thêm thẻ */
+.card-type-toggle{display:flex; gap:8px;}
+.card-type-btn{
+  flex:1; padding:11px 8px; border-radius:var(--radius-sm); border:1px solid var(--line);
+  background:var(--bg-elev); color:var(--ink-soft); font-size:13.5px; font-weight:600; cursor:pointer;
+  transition:background .15s ease, border-color .15s ease, color .15s ease, transform .1s ease;
+}
+.card-type-btn.active{background:var(--violet); border-color:transparent; color:#14151f; box-shadow:var(--shadow-sm);}
+.card-type-btn:active{transform:scale(0.97);}
+
 .chip:active{transform:scale(0.95);}
 .save-btn{width:100%; padding:15px; border:none; border-radius:var(--radius-sm); background:var(--teal);
   color:#0a2622; font-weight:700; font-size:15px; cursor:pointer; margin-top:6px;
@@ -644,6 +684,35 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
   animation: riseSm .3s var(--ease-out) both;}
 .reveal-btn:active{transform:scale(0.98); box-shadow:0 4px 12px rgba(43,125,233,0.25);}
 
+/* Chế độ "Gõ đáp án" — ô nhập + nút kiểm tra, thay cho nút "Hiện đáp án" */
+.type-answer-box{margin:0 16px 26px; display:flex; gap:8px; animation: riseSm .3s var(--ease-out) both;}
+.type-answer-input{
+  flex:1; padding:14px 15px; border-radius:var(--radius-sm); border:1px solid var(--line);
+  background:var(--bg-elev); color:var(--white); font-size:15px; font-family:'Inter',sans-serif; outline:none;
+  transition:border-color .15s ease, box-shadow .15s ease;
+}
+.type-answer-input:focus{border-color:var(--violet); box-shadow:0 0 0 3px rgba(157,142,242,0.2);}
+.type-answer-box .reveal-btn{margin:0; flex-shrink:0; padding:14px 18px;}
+.type-feedback{
+  text-align:center; font-size:14px; font-weight:700; padding:10px 16px 0;
+  animation: riseSm .25s var(--ease-out) both;
+}
+.type-feedback.correct{color:var(--teal);}
+.type-feedback.wrong{color:var(--coral);}
+
+/* Chế độ "Trắc nghiệm nhanh" — 4 lựa chọn thay cho nút "Hiện đáp án" */
+.quiz-choices{padding:0 16px 26px; display:grid; grid-template-columns:1fr 1fr; gap:8px; animation: riseSm .3s var(--ease-out) both;}
+.quiz-choice{
+  padding:13px 10px; border-radius:var(--radius-sm); border:1px solid var(--line);
+  background:var(--bg-elev); color:var(--white); font-size:14px; font-weight:600; cursor:pointer;
+  font-family:'Inter',sans-serif; transition:background .15s ease, border-color .15s ease, transform .1s ease;
+  word-break:break-word;
+}
+.quiz-choice:active{transform:scale(0.96); border-color:var(--violet);}
+.quiz-choices.answered .quiz-choice{cursor:default;}
+.quiz-choices.answered .quiz-choice.correct{background:rgba(71,185,165,0.22); border-color:var(--teal); color:var(--teal);}
+.quiz-choices.answered .quiz-choice.wrong{background:rgba(239,91,115,0.18); border-color:var(--coral); color:var(--coral);}
+
 .grade-row{padding: 0 16px 26px; display:flex; gap:8px; animation: rise .3s .05s var(--ease-out) both;}
 .grade-btn{flex:1; padding:14px 4px; border:none; border-radius:var(--radius-sm); cursor:pointer;
   display:flex; flex-direction:column; align-items:center; gap:3px; font-family:'Inter',sans-serif;}
@@ -682,6 +751,24 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .review-done h2{font-family:'Fraunces',serif; font-weight:600; margin:0 0 8px; letter-spacing:-0.01em; animation: riseSm .4s .1s var(--ease-out) both;}
 .review-done p{color:var(--ink-faint); font-size:14px; margin:0 0 24px; animation: riseSm .4s .16s var(--ease-out) both;}
 .review-done .hero-btn{animation: riseSm .4s .22s var(--ease-out) both;}
+
+/* ---------- Trò chơi Ghép thẻ ---------- */
+.match-stats-row{
+  display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;
+  font-family:'IBM Plex Mono',monospace; font-size:13px; color:var(--ink-faint);
+}
+.match-grid{display:flex; gap:10px;}
+.match-col{flex:1; display:flex; flex-direction:column; gap:8px;}
+.match-tile{
+  padding:13px 10px; border-radius:var(--radius-sm); border:1px solid var(--line);
+  background:var(--bg-elev); color:var(--white); font-size:13.5px; font-weight:600; text-align:left;
+  cursor:pointer; font-family:'Inter',sans-serif; line-height:1.35; word-break:break-word;
+  transition:background .15s ease, border-color .15s ease, opacity .2s ease, transform .1s ease;
+}
+.match-tile:active{transform:scale(0.97);}
+.match-tile.selected{border-color:var(--violet); background:rgba(157,142,242,0.18); box-shadow:0 0 0 2px rgba(157,142,242,0.25);}
+.match-tile.matched{background:rgba(71,185,165,0.16); border-color:var(--teal); color:var(--teal); opacity:0.6; cursor:default;}
+.match-tile.wrong{border-color:var(--coral); background:rgba(239,91,115,0.18); animation: shakeX .35s ease;}
 
 /* ---------- Manage ---------- */
 .manage-item{padding:14px 6px; border-bottom:1px solid var(--line); border-radius:10px; animation: riseSm .3s var(--ease-out) both;}
