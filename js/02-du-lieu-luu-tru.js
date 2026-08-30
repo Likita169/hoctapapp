@@ -97,6 +97,13 @@ function dueCards(subjectId){
   const set = new Set(subtreeIds(subjectId));
   return DATA.cards.filter(c => c.due <= now && set.has(c.subjectId));
 }
+// Toàn bộ thẻ trong 1 bộ + các bộ thẻ phụ bên trong nó, KHÔNG lọc theo hạn ôn
+// — dùng cho trò chơi Ghép thẻ (luyện tự do, không theo lịch ôn tập).
+function subjectCards(subjectId){
+  if(!subjectId) return DATA.cards.slice();
+  const set = new Set(subtreeIds(subjectId));
+  return DATA.cards.filter(c => set.has(c.subjectId));
+}
 function deleteSubjectCascade(id){
   const set = new Set(subtreeIds(id));
   DATA.subjects = DATA.subjects.filter(s=>!set.has(s.id));

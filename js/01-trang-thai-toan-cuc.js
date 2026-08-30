@@ -150,6 +150,38 @@ let timeModalHour = 20;
 let timeModalMinute = 0;
 const TIME_ITEM_H = 44;
 
+/* ---- chế độ trả lời khi ôn tập: lật thẻ / gõ đáp án / trắc nghiệm nhanh ---- */
+let reviewInputMode = 'flip';    // 'flip' | 'type' | 'quiz' — nhớ lại lựa chọn lần ôn trước
+try{ reviewInputMode = localStorage.getItem('srs_review_mode') || 'flip'; }catch(e){ /* ignore */ }
+function setReviewInputMode(mode){
+  reviewInputMode = mode;
+  try{ localStorage.setItem('srs_review_mode', mode); }catch(e){ /* ignore */ }
+}
+let typedAnswerValue = '';       // đang gõ gì ở chế độ "Gõ đáp án", cho đúng thẻ hiện tại
+let typedAnswerChecked = false;  // đã bấm "Kiểm tra" cho thẻ hiện tại chưa
+let typedAnswerCorrect = false;
+let quizCurrentCardId = null;    // id thẻ mà quizCurrentChoices đang ứng với — tránh sinh lại đáp án mỗi lần vẽ lại
+let quizCurrentChoices = [];     // các lựa chọn trắc nghiệm (đã xáo trộn) cho thẻ hiện tại
+let quizSelectedChoice = null;
+let quizIsCorrect = false;
+
+/* ---- soạn thẻ: loại "Lật thẻ" (mặc định) hay "Điền từ" (cloze) ---- */
+let addCardType = 'basic';       // 'basic' | 'cloze' — chọn ở màn Thêm thẻ
+
+/* ---- trò chơi Ghép thẻ — chỉ để luyện vui, không ảnh hưởng lịch ôn tập ---- */
+let matchGameSubjectId = null;
+let matchGamePairs = [];         // [{cardId, front, back}] các cặp trong ván đang chơi
+let matchGameLeftOrder = [];     // thứ tự cardId ở cột trái (đã xáo trộn riêng)
+let matchGameRightOrder = [];    // thứ tự cardId ở cột phải (đã xáo trộn riêng)
+let matchGameMatchedIds = new Set();
+let matchGameSelectedLeft = null;
+let matchGameSelectedRight = null;
+let matchGameWrongFlash = null;  // {left,right} — vừa chọn sai 1 cặp, đang chớp đỏ trước khi tự bỏ chọn
+let matchGameMistakes = 0;
+let matchGameStartedAt = 0;
+let matchGameFinishedAt = null;
+let matchGameTimerHandle = null; // id của setInterval đồng hồ, dọn dẹp khi rời màn chơi
+
 const $app = document.getElementById('app');
 
 // Long-pressing cards/buttons shouldn't trigger the OS text-selection

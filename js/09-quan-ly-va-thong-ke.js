@@ -59,13 +59,14 @@ function renderManageList(list){
     const s = subjectById(c.subjectId);
     const item = document.createElement('div');
     item.className='manage-item';
+    const isCloze = c.type==='cloze';
     item.innerHTML = `
       <div class="mi-top">
         <div>
           <span class="subject-dot" style="background:${s?s.color:'#888'};display:inline-block;margin-right:6px;"></span>
-          <span style="font-size:11px;color:var(--ink-faint)">${s?escapeHtml(s.name):''}</span>
-          <div class="mi-front">${escapeHtml(c.front)}</div>
-          <div class="mi-back">${escapeHtml(c.back)}</div>
+          <span style="font-size:11px;color:var(--ink-faint)">${s?escapeHtml(s.name):''}${isCloze ? ' · 🕳 Điền từ' : ''}</span>
+          <div class="mi-front">${isCloze ? clozeDisplayHtml(c.front, c.clozeIndex, false) : escapeHtml(c.front)}</div>
+          <div class="mi-back">${isCloze ? 'Đáp án: '+escapeHtml(clozeAnswerAt(c.front, c.clozeIndex)) : escapeHtml(c.back)}</div>
         </div>
         <button class="mi-del">✕</button>
       </div>

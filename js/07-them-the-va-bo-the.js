@@ -46,6 +46,66 @@ function renderAdd(){
   fSub.appendChild(picker);
   main.appendChild(fSub);
 
+  // Loại thẻ: Lật thẻ (mặc định) hay Điền từ (cloze)
+  const fType = document.createElement('div');
+  fType.className = 'field';
+  fType.innerHTML = `<label>Loại thẻ</label>`;
+  const typeToggle = document.createElement('div');
+  typeToggle.className = 'card-type-toggle';
+  const typeBtns = [
+    {id:'basic', label:'🔄 Lật thẻ'},
+    {id:'cloze', label:'🕳 Điền từ'},
+  ];
+  typeBtns.forEach(t=>{
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'card-type-btn' + (addCardType===t.id ? ' active' : '');
+    btn.textContent = t.label;
+    btn.onclick = ()=>{ addCardType = t.id; render(); };
+    typeToggle.appendChild(btn);
+  });
+  fType.appendChild(typeToggle);
+  main.appendChild(fType);
+
+  if(addCardType === 'cloze'){
+    const fCloze = document.createElement('div');
+    fCloze.className = 'field';
+    fCloze.innerHTML = `<label>Câu văn — bôi đen từ/cụm từ cần ẩn rồi bấm "🕳 Ẩn từ"</label>`;
+    main.appendChild(fCloze);
+    const clozeBuilt = buildMathCardInput('clozeInput', 'Ví dụ: Nước sôi ở 100 độ C.', {clozeButton:true});
+    fCloze.appendChild(clozeBuilt.wrap);
+    const clozeHint = document.createElement('p');
+    clozeHint.style.cssText = 'color:var(--ink-faint); font-size:12px; margin:8px 2px 0; line-height:1.5;';
+    clozeHint.textContent = 'Mỗi chỗ đã ẩn sẽ trở thành 1 thẻ ôn tập riêng — bấm vào 1 chỗ đã ẩn để bỏ đánh dấu nếu lỡ tay.';
+    main.appendChild(clozeHint);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'save-btn';
+    saveBtn.textContent = 'Lưu thẻ điền từ';
+    saveBtn.onclick = async ()=>{
+      const field = document.getElementById('clozeInput');
+      const text = serializeMathInput(field);
+      if(!addSubjectChoice){ toast('Hãy chọn hoặc tạo một bộ thẻ'); return; }
+      const indices = clozeIndicesOf(text);
+      if(!text.trim() || indices.length===0){
+        toast('Hãy bôi đen ít nhất 1 từ/cụm từ để ẩn trước khi lưu');
+        return;
+      }
+      indices.forEach(idx=>{
+        DATA.cards.push({id:uid(), subjectId:addSubjectChoice, type:'cloze', front:text, back:'', clozeIndex:idx, ease:2.5, interval:0, reps:0, due:Date.now()});
+      });
+      await saveData();
+      toast(indices.length>1 ? `Đã lưu ${indices.length} thẻ điền từ ✓` : 'Đã lưu thẻ điền từ ✓');
+      field.innerHTML = '';
+      markFieldEmptyState(field);
+      render();
+    };
+    main.appendChild(saveBtn);
+
+    wrap.appendChild(main);
+    return wrap;
+  }
+
   // front field
   const fFront = document.createElement('div');
   fFront.className='field';
@@ -69,7 +129,7 @@ function renderAdd(){
     const back = serializeMathInput(document.getElementById('backInput'));
     if(!addSubjectChoice){ toast('Hãy chọn hoặc tạo một bộ thẻ'); return; }
     if(!front || !back){ toast('Hãy điền cả hai mặt của thẻ'); return; }
-    DATA.cards.push({id:uid(), subjectId:addSubjectChoice, front, back, ease:2.5, interval:0, reps:0, due:Date.now()});
+    DATA.cards.push({id:uid(), subjectId:addSubjectChoice, type:'basic', front, back, ease:2.5, interval:0, reps:0, due:Date.now()});
     await saveData();
     toast('Đã lưu thẻ ✓');
     document.getElementById('frontInput').innerHTML = '';
@@ -259,8 +319,11 @@ function renderDeleteCardModal(){
       Hành động này không thể hoàn tác.
     </p>
     <div style="background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:14px;">
-      <div style="font-size:14px; font-weight:600; line-height:1.4;">${escapeHtml(c.front)}</div>
-      <div style="font-size:13px; color:var(--ink-faint); margin-top:6px; line-height:1.4;">${escapeHtml(c.back)}</div>
+      ${c.type==='cloze'
+        ? `<div style="font-size:14px; font-weight:600; line-height:1.4;">${clozeDisplayHtml(c.front, c.clozeIndex, false)}</div>
+           <div style="font-size:13px; color:var(--ink-faint); margin-top:6px; line-height:1.4;">Đáp án: ${escapeHtml(clozeAnswerAt(c.front, c.clozeIndex))}</div>`
+        : `<div style="font-size:14px; font-weight:600; line-height:1.4;">${escapeHtml(c.front)}</div>
+           <div style="font-size:13px; color:var(--ink-faint); margin-top:6px; line-height:1.4;">${escapeHtml(c.back)}</div>`}
     </div>
   `;
 

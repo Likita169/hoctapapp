@@ -112,7 +112,21 @@ function startReview(){
   sessionHadMiss = false;
   sessionXpEarned = 0;
   sessionCompletionHandled = false;
+  resetAnswerInputState();
   setView('review');
+}
+
+// Xoá sạch trạng thái "đang gõ / đang chọn trắc nghiệm" của thẻ hiện tại —
+// gọi mỗi khi chuyển sang thẻ khác (tiến hoặc hoàn tác) để thẻ mới luôn
+// bắt đầu từ đầu, không dính trạng thái của thẻ trước.
+function resetAnswerInputState(){
+  typedAnswerValue = '';
+  typedAnswerChecked = false;
+  typedAnswerCorrect = false;
+  quizCurrentCardId = null;
+  quizCurrentChoices = [];
+  quizSelectedChoice = null;
+  quizIsCorrect = false;
 }
 
 function undoReview(){
@@ -129,7 +143,61 @@ function undoReview(){
   }
   reviewIdx = entry.idx;
   flipped = false;
+  resetAnswerInputState();
   saveData();
+  render();
+}
+
+// Sinh 3 phương án nhiễu (khác đáp án đúng) cho chế độ Trắc nghiệm nhanh —
+// ưu tiên lấy từ các thẻ khác CÙNG bộ thẻ trước để các lựa chọn hợp lý về
+// mặt ngữ nghĩa, thiếu thì lấy thêm từ toàn bộ dữ liệu.
+function buildQuizChoices(card){
+  const correct = correctAnswerText(card);
+  function answerPool(list){
+    return list
+      .filter(c=>c.id!==card.id)
+      .map(c=> correctAnswerText(c))
+      .map(s=>(s||'').trim())
+      .filter(s=> s && normalizeForCompare(s)!==normalizeForCompare(correct));
+  }
+  function pickUnique(arr, n, alreadyUsed){
+    const seen = new Set(alreadyUsed.map(normalizeForCompare));
+    const out = [];
+    const shuffled = arr.slice().sort(()=>Math.random()-0.5);
+    for(const s of shuffled){
+      const key = normalizeForCompare(s);
+      if(seen.has(key)) continue;
+      seen.add(key); out.push(s);
+      if(out.length>=n) break;
+    }
+    return out;
+  }
+  const sameSubjectPool = answerPool(DATA.cards.filter(c=>c.subjectId===card.subjectId));
+  let distractors = pickUnique(sameSubjectPool, 3, [correct]);
+  if(distractors.length < 3){
+    distractors = distractors.concat(pickUnique(answerPool(DATA.cards), 3-distractors.length, [correct, ...distractors]));
+  }
+  const choices = [correct, ...distractors];
+  for(let i=choices.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [choices[i],choices[j]]=[choices[j],choices[i]]; }
+  return choices;
+}
+
+function checkTypedAnswer(){
+  const input = document.getElementById('typedAnswerInput');
+  typedAnswerValue = input ? input.value : '';
+  const card = reviewQueue[reviewIdx];
+  const correct = correctAnswerText(card);
+  typedAnswerCorrect = !!typedAnswerValue.trim() && normalizeForCompare(typedAnswerValue) === normalizeForCompare(correct);
+  typedAnswerChecked = true;
+  flipped = true;
+  render();
+}
+
+function selectQuizChoice(choice){
+  const card = reviewQueue[reviewIdx];
+  quizSelectedChoice = choice;
+  quizIsCorrect = normalizeForCompare(choice) === normalizeForCompare(correctAnswerText(card));
+  flipped = true;
   render();
 }
 
@@ -164,6 +232,7 @@ function renderReview(){
   }
 
   const card = reviewQueue[reviewIdx];
+  const cardType = card.type || 'basic';
 
   // Counters over the cards still left in this session (from this card on).
   const remaining = reviewQueue.slice(reviewIdx);
@@ -194,10 +263,26 @@ function renderReview(){
   if(reviewMenuOpen){
     const menu = document.createElement('div');
     menu.className = 'review-menu';
-    menu.innerHTML = `
+    const modes = [
+      {id:'flip', icon:'🔄', label:'Lật thẻ'},
+      {id:'type', icon:'⌨️', label:'Gõ đáp án'},
+      {id:'quiz', icon:'🧠', label:'Trắc nghiệm'},
+    ];
+    menu.innerHTML = modes.map(m=>
+      `<button class="review-menu-item" data-mode="${m.id}">${m.icon} ${m.label} ${reviewInputMode===m.id?'✓':''}</button>`
+    ).join('') + `
       <button class="review-menu-item" id="shuffleReviewBtn">🔀 Xáo trộn thẻ còn lại</button>
       <button class="review-menu-item" id="endReviewBtn">✕ Kết thúc phiên</button>
     `;
+    menu.querySelectorAll('[data-mode]').forEach(btn=>{
+      btn.onclick = ()=>{
+        setReviewInputMode(btn.dataset.mode);
+        reviewMenuOpen = false;
+        flipped = false;
+        resetAnswerInputState();
+        render();
+      };
+    });
     menu.querySelector('#shuffleReviewBtn').onclick = ()=>{
       const head = reviewQueue.slice(0, reviewIdx);
       const tail = reviewQueue.slice(reviewIdx);
@@ -221,20 +306,90 @@ function renderReview(){
   stage.className='card-stage';
   const fc = document.createElement('div');
   fc.className='flashcard flashcard-plain';
+  const questionHtml = cardType==='cloze' ? clozeDisplayHtml(card.front, card.clozeIndex, false) : escapeHtml(card.front);
+  const answerHtml = flipped
+    ? (cardType==='cloze' ? escapeHtml(clozeAnswerAt(card.front, card.clozeIndex)) : escapeHtml(card.back))
+    : '';
   fc.innerHTML = `
-    <div class="content">${escapeHtml(card.front)}</div>
-    ${flipped ? `<hr class="answer-divider"><div class="answer">${escapeHtml(card.back)}</div>` : ''}
+    <div class="content">${questionHtml}</div>
+    ${flipped ? `<hr class="answer-divider"><div class="answer">${answerHtml}</div>` : ''}
   `;
   stage.appendChild(fc);
   wrap.appendChild(stage);
 
   if(!flipped){
-    const revealBtn = document.createElement('button');
-    revealBtn.className = 'reveal-btn';
-    revealBtn.textContent = 'Hiện đáp án';
-    revealBtn.onclick = ()=>{ flipped = true; render(); };
-    wrap.appendChild(revealBtn);
+    if(reviewInputMode==='type'){
+      const box = document.createElement('div');
+      box.className = 'type-answer-box';
+      box.innerHTML = `
+        <input type="text" id="typedAnswerInput" class="type-answer-input" placeholder="Gõ đáp án của bạn..." autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button class="reveal-btn type-answer-check">Kiểm tra</button>
+      `;
+      box.querySelector('.type-answer-check').onclick = ()=> checkTypedAnswer();
+      box.querySelector('#typedAnswerInput').onkeydown = (e)=>{ if(e.key==='Enter') checkTypedAnswer(); };
+      wrap.appendChild(box);
+      requestAnimationFrame(()=>{ const el = document.getElementById('typedAnswerInput'); if(el) el.focus(); });
+    } else if(reviewInputMode==='quiz'){
+      if(quizCurrentCardId !== card.id){
+        quizCurrentChoices = buildQuizChoices(card);
+        quizCurrentCardId = card.id;
+        quizSelectedChoice = null;
+      }
+      if(quizCurrentChoices.length < 2){
+        const note = document.createElement('p');
+        note.style.cssText = 'text-align:center; color:var(--ink-faint); font-size:12.5px; margin:0 16px 10px;';
+        note.textContent = 'Chưa đủ thẻ khác để ra trắc nghiệm — hiện đáp án như bình thường nhé.';
+        wrap.appendChild(note);
+        const revealBtn = document.createElement('button');
+        revealBtn.className = 'reveal-btn';
+        revealBtn.textContent = 'Hiện đáp án';
+        revealBtn.onclick = ()=>{ flipped = true; render(); };
+        wrap.appendChild(revealBtn);
+      } else {
+        const choicesEl = document.createElement('div');
+        choicesEl.className = 'quiz-choices';
+        quizCurrentChoices.forEach(choice=>{
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'quiz-choice';
+          btn.innerHTML = escapeHtml(choice);
+          btn.onclick = ()=> selectQuizChoice(choice);
+          choicesEl.appendChild(btn);
+        });
+        wrap.appendChild(choicesEl);
+      }
+    } else {
+      const revealBtn = document.createElement('button');
+      revealBtn.className = 'reveal-btn';
+      revealBtn.textContent = 'Hiện đáp án';
+      revealBtn.onclick = ()=>{ flipped = true; render(); };
+      wrap.appendChild(revealBtn);
+    }
   } else {
+    if(reviewInputMode==='type' && typedAnswerChecked){
+      const feedback = document.createElement('div');
+      feedback.className = 'type-feedback ' + (typedAnswerCorrect ? 'correct' : 'wrong');
+      feedback.textContent = typedAnswerCorrect
+        ? '✓ Chính xác!'
+        : (typedAnswerValue.trim() ? `✗ Chưa đúng — bạn đã gõ: "${typedAnswerValue.trim()}"` : '✗ Bạn chưa gõ gì cả');
+      wrap.insertBefore(feedback, wrap.querySelector('.card-stage').nextSibling);
+    } else if(reviewInputMode==='quiz' && quizCurrentChoices.length>=2){
+      const choicesEl = document.createElement('div');
+      choicesEl.className = 'quiz-choices answered';
+      const correct = correctAnswerText(card);
+      quizCurrentChoices.forEach(choice=>{
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.disabled = true;
+        const isCorrectChoice = normalizeForCompare(choice)===normalizeForCompare(correct);
+        const isChosen = choice === quizSelectedChoice;
+        btn.className = 'quiz-choice' + (isCorrectChoice ? ' correct' : '') + (isChosen && !isCorrectChoice ? ' wrong' : '');
+        btn.innerHTML = escapeHtml(choice) + (isCorrectChoice ? ' ✓' : (isChosen ? ' ✗' : ''));
+        choicesEl.appendChild(btn);
+      });
+      wrap.insertBefore(choicesEl, wrap.querySelector('.card-stage').nextSibling);
+    }
+
     const preview = {
       again: (()=>{ const c={...card}; grade(c,0); return c.interval; })(),
       hard: (()=>{ const c={...card}; grade(c,1); return c.interval; })(),
@@ -259,6 +414,7 @@ function renderReview(){
         await saveData();
         reviewIdx += 1;
         flipped = false;
+        resetAnswerInputState();
         render();
       };
     });
@@ -267,4 +423,3 @@ function renderReview(){
 
   return wrap;
 }
-

@@ -32,6 +32,12 @@ function openDeckActionSheet(s){
   actionSheetItems = [
     { icon:'➕', label:'Thêm', onClick: ()=>{ addSubjectChoice = s.id; setView('add'); } },
     { icon:'📄', label:'Xem tất cả thẻ', onClick: ()=>{ manageFilterSubjectId = s.id; setView('manage'); } },
+    { icon:'🧩', label:'Trò chơi ghép thẻ', onClick: ()=> startMatchGame(s.id) },
+    { icon:'🧠', label:'Trắc nghiệm nhanh', onClick: ()=>{
+        setReviewInputMode('quiz');
+        sessionSubjectFilter = s.id;
+        startReview();
+      } },
     { icon:'✏️', label:'Đổi tên bộ thẻ', onClick: ()=>{
         editSubjectId = s.id; newSubjectParentId = s.parentId||null; subjectModalColor = s.color;
         subjectModalOpen = true; render();
@@ -93,6 +99,7 @@ function render(){
     else if(VIEW==='manage') main.appendChild(renderManage());
     else if(VIEW==='classroom') main.appendChild(renderClassroomView());
     else if(VIEW==='stats') main.appendChild(renderStats());
+    else if(VIEW==='match') main.appendChild(renderMatchGame());
   }catch(e){
     // Never let a rendering bug in one tab take the whole app (and the
     // tabbar) down with it — fall back to Home so the person isn't stuck.
@@ -126,7 +133,7 @@ function render(){
   if(classroomMembersView) $app.appendChild(renderClassroomMembersModal());
   if(actionSheetItems) $app.appendChild(renderActionSheet());
 
-  if(VIEW!=='review' && !takeTestOpen){
+  if(VIEW!=='review' && VIEW!=='match' && !takeTestOpen){
     $app.appendChild(renderTabbar());
     if(VIEW==='home' || VIEW==='manage'){
       const fab = document.createElement('button');
