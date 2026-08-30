@@ -118,7 +118,11 @@ function subjectPath(id){
 // Make sure every subject has a parentId (null = top level) — handles data
 // saved before nested subjects existed, whether loaded locally or synced.
 function normalizeSubjects(){
-  DATA.subjects.forEach(s=>{ if(s.parentId===undefined) s.parentId = null; });
+  DATA.subjects.forEach(s=>{
+    if(s.parentId===undefined) s.parentId = null;
+    if(s.countdownEnabled===undefined) s.countdownEnabled = false;
+    if(!s.countdownSeconds) s.countdownSeconds = 15;
+  });
 }
 // Same idea for progress — fills in the field with sane defaults for data
 // saved before the streak/XP/huy hiệu feature existed.

@@ -39,6 +39,8 @@ function renderAdd(){
   newChip.onclick = ()=>{
     newSubjectParentId = null;
     subjectModalColor = COLORS[DATA.subjects.length % COLORS.length];
+    subjectModalCountdownEnabled = false;
+    subjectModalCountdownSeconds = 15;
     subjectModalOpen = true;
     render();
   };
@@ -72,7 +74,7 @@ function renderAdd(){
     fCloze.className = 'field';
     fCloze.innerHTML = `<label>Câu văn — bôi đen từ/cụm từ cần ẩn rồi bấm "🕳 Ẩn từ"</label>`;
     main.appendChild(fCloze);
-    const clozeBuilt = buildMathCardInput('clozeInput', 'Ví dụ: Nước sôi ở 100 độ C.', {clozeButton:true});
+    const clozeBuilt = buildCardTextarea('clozeInput', 'Ví dụ: Nước sôi ở 100 độ C.', {clozeButton:true});
     fCloze.appendChild(clozeBuilt.wrap);
     const clozeHint = document.createElement('p');
     clozeHint.style.cssText = 'color:var(--ink-faint); font-size:12px; margin:8px 2px 0; line-height:1.5;';
@@ -109,14 +111,14 @@ function renderAdd(){
   fFront.className='field';
   fFront.innerHTML = `<label>Mặt trước — Câu hỏi / công thức</label>`;
   main.appendChild(fFront);
-  const frontBuilt = buildMathCardInput('frontInput', 'Ví dụ: Định luật II Newton là gì?');
+  const frontBuilt = buildCardTextarea('frontInput', 'Ví dụ: Định luật II Newton là gì?');
   fFront.appendChild(frontBuilt.wrap);
 
   const fBack = document.createElement('div');
   fBack.className='field';
   fBack.innerHTML = `<label>Mặt sau — Đáp án / giải thích</label>`;
   main.appendChild(fBack);
-  const backBuilt = buildMathCardInput('backInput', 'Ví dụ: F = m.a  (Lực = khối lượng × gia tốc)');
+  const backBuilt = buildCardTextarea('backInput', 'Ví dụ: F = m.a  (Lực = khối lượng × gia tốc)');
   fBack.appendChild(backBuilt.wrap);
 
   const saveBtn = document.createElement('button');
@@ -162,6 +164,23 @@ function renderSubjectModal(){
       <label>Màu sắc</label>
       <div class="color-picker" id="colorPicker"></div>
     </div>
+    <div class="field" style="margin-top:20px; margin-bottom:4px;">
+      <label>Đếm ngược khi làm Trắc nghiệm nhanh</label>
+    </div>
+    <div class="toggle-row" id="countdownRow">
+      <div class="tr-text">
+        <div class="tr-title">⏱ Bật đếm ngược</div>
+        <div class="tr-sub">Chỉ áp dụng cho Trắc nghiệm nhanh — Lật thẻ và Gõ đáp án không giới hạn giờ.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="countdownCheckbox" ${subjectModalCountdownEnabled ? 'checked' : ''}>
+        <span class="track"></span>
+      </label>
+    </div>
+    <div class="field" id="countdownSecondsField" style="margin-top:12px; display:${subjectModalCountdownEnabled ? 'block' : 'none'};">
+      <label>Số giây mỗi câu</label>
+      <div class="color-picker" id="countdownSecondsPicker" style="gap:8px;"></div>
+    </div>
   `;
 
   const colorPicker = card.querySelector('#colorPicker');
@@ -177,6 +196,26 @@ function renderSubjectModal(){
     };
     colorPicker.appendChild(dot);
   });
+
+  const secondsField = card.querySelector('#countdownSecondsField');
+  const secondsPicker = card.querySelector('#countdownSecondsPicker');
+  [10, 15, 20, 30].forEach(sec=>{
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'chip' + (sec===subjectModalCountdownSeconds ? ' active' : '');
+    btn.textContent = sec + 's';
+    btn.onclick = ()=>{
+      subjectModalCountdownSeconds = sec;
+      secondsPicker.querySelectorAll('.chip').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+    };
+    secondsPicker.appendChild(btn);
+  });
+
+  card.querySelector('#countdownCheckbox').onchange = (e)=>{
+    subjectModalCountdownEnabled = e.target.checked;
+    secondsField.style.display = subjectModalCountdownEnabled ? 'block' : 'none';
+  };
 
   const btnRow = document.createElement('div');
   btnRow.style.display = 'flex';
@@ -200,10 +239,17 @@ function renderSubjectModal(){
     if(!name){ toast('Hãy nhập tên bộ thẻ'); return; }
     if(editing){
       const s = subjectById(editSubjectId);
-      if(s){ s.name = name; s.color = subjectModalColor; }
+      if(s){
+        s.name = name; s.color = subjectModalColor;
+        s.countdownEnabled = subjectModalCountdownEnabled;
+        s.countdownSeconds = subjectModalCountdownSeconds;
+      }
       editSubjectId = null;
     } else {
-      const s = {id:uid(), name, color: subjectModalColor, parentId: newSubjectParentId||null};
+      const s = {
+        id:uid(), name, color: subjectModalColor, parentId: newSubjectParentId||null,
+        countdownEnabled: subjectModalCountdownEnabled, countdownSeconds: subjectModalCountdownSeconds,
+      };
       DATA.subjects.push(s);
       addSubjectChoice = s.id;
     }

@@ -127,6 +127,43 @@ function resetAnswerInputState(){
   quizCurrentChoices = [];
   quizSelectedChoice = null;
   quizIsCorrect = false;
+  stopQuizCountdown();
+}
+
+// Đồng hồ đếm ngược cho chế độ Trắc nghiệm nhanh — chỉ chạy khi bộ thẻ
+// của thẻ đang ôn có bật "Đếm ngược" (đặt trong modal Tạo/Đổi bộ thẻ).
+// Hết giờ mà chưa chọn đáp án nào thì coi như trả lời sai, tự lật thẻ.
+function stopQuizCountdown(){
+  if(quizCountdownHandle){ clearInterval(quizCountdownHandle); quizCountdownHandle = null; }
+  quizCountdownRemaining = null;
+  quizCountdownCardId = null;
+}
+function startQuizCountdownIfNeeded(card){
+  const subj = subjectById(card.subjectId);
+  if(!subj || !subj.countdownEnabled){ stopQuizCountdown(); return; }
+  if(quizCountdownCardId === card.id) return; // đã chạy cho đúng thẻ này rồi
+  stopQuizCountdown();
+  quizCountdownCardId = card.id;
+  quizCountdownRemaining = subj.countdownSeconds || 15;
+  quizCountdownHandle = setInterval(()=>{
+    quizCountdownRemaining -= 1;
+    if(quizCountdownRemaining <= 0){
+      stopQuizCountdown();
+      // Hết giờ — coi như chưa trả lời được, tự lật thẻ hiện đáp án đúng.
+      quizSelectedChoice = null;
+      quizIsCorrect = false;
+      flipped = true;
+      render();
+      return;
+    }
+    // Chỉ cập nhật đúng con số hiện trên màn hình, không vẽ lại cả trang
+    // để khỏi giật giao diện mỗi giây.
+    const el = document.getElementById('quizCountdownDisplay');
+    if(el){
+      el.textContent = '⏱ ' + quizCountdownRemaining + 's';
+      el.classList.toggle('low', quizCountdownRemaining <= 5);
+    }
+  }, 1000);
 }
 
 function undoReview(){
@@ -195,6 +232,7 @@ function checkTypedAnswer(){
 
 function selectQuizChoice(choice){
   const card = reviewQueue[reviewIdx];
+  stopQuizCountdown();
   quizSelectedChoice = choice;
   quizIsCorrect = normalizeForCompare(choice) === normalizeForCompare(correctAnswerText(card));
   flipped = true;
@@ -206,6 +244,7 @@ function renderReview(){
   wrap.className='review-wrap';
 
   if(reviewQueue.length===0 || reviewIdx >= reviewQueue.length){
+    stopQuizCountdown();
     if(reviewQueue.length>0 && !sessionCompletionHandled){
       sessionCompletionHandled = true;
       if(!sessionHadMiss && reviewQueue.length>=5) unlockBadge('perfect_session');
@@ -255,7 +294,7 @@ function renderReview(){
       <button class="review-icon-btn review-menu-btn" aria-label="Thêm">⋮</button>
     </div>
   `;
-  topbar.querySelector('.review-back').onclick = ()=> setView('home');
+  topbar.querySelector('.review-back').onclick = ()=>{ stopQuizCountdown(); setView('home'); };
   topbar.querySelector('.review-undo').onclick = ()=> undoReview();
   topbar.querySelector('.review-menu-btn').onclick = (e)=>{ e.stopPropagation(); reviewMenuOpen = !reviewMenuOpen; render(); };
   wrap.appendChild(topbar);
@@ -291,7 +330,7 @@ function renderReview(){
       reviewMenuOpen = false;
       render();
     };
-    menu.querySelector('#endReviewBtn').onclick = ()=>{ reviewMenuOpen=false; setView('home'); };
+    menu.querySelector('#endReviewBtn').onclick = ()=>{ reviewMenuOpen=false; stopQuizCountdown(); setView('home'); };
     wrap.appendChild(menu);
     // Tapping anywhere outside the menu closes it.
     setTimeout(()=>{
@@ -336,6 +375,7 @@ function renderReview(){
         quizSelectedChoice = null;
       }
       if(quizCurrentChoices.length < 2){
+        stopQuizCountdown();
         const note = document.createElement('p');
         note.style.cssText = 'text-align:center; color:var(--ink-faint); font-size:12.5px; margin:0 16px 10px;';
         note.textContent = 'Chưa đủ thẻ khác để ra trắc nghiệm — hiện đáp án như bình thường nhé.';
@@ -346,6 +386,14 @@ function renderReview(){
         revealBtn.onclick = ()=>{ flipped = true; render(); };
         wrap.appendChild(revealBtn);
       } else {
+        startQuizCountdownIfNeeded(card);
+        if(quizCountdownRemaining !== null){
+          const cd = document.createElement('div');
+          cd.id = 'quizCountdownDisplay';
+          cd.className = 'quiz-countdown' + (quizCountdownRemaining<=5 ? ' low' : '');
+          cd.textContent = '⏱ ' + quizCountdownRemaining + 's';
+          wrap.appendChild(cd);
+        }
         const choicesEl = document.createElement('div');
         choicesEl.className = 'quiz-choices';
         quizCurrentChoices.forEach(choice=>{
@@ -388,6 +436,12 @@ function renderReview(){
         choicesEl.appendChild(btn);
       });
       wrap.insertBefore(choicesEl, wrap.querySelector('.card-stage').nextSibling);
+      if(quizSelectedChoice === null){
+        const timeout = document.createElement('div');
+        timeout.className = 'type-feedback wrong';
+        timeout.textContent = '⏱ Hết giờ — chưa kịp chọn đáp án';
+        wrap.insertBefore(timeout, choicesEl);
+      }
     }
 
     const preview = {

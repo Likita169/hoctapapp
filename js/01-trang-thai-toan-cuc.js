@@ -119,6 +119,8 @@ let reviewMenuOpen = false;
 let addSubjectChoice = null;
 let subjectModalOpen = false;
 let subjectModalColor = COLORS[0];
+let subjectModalCountdownEnabled = false;  // đang bật/tắt đếm ngược cho bộ thẻ đang tạo/sửa trong modal
+let subjectModalCountdownSeconds = 15;     // số giây đếm ngược đang chọn trong modal
 let newSubjectParentId = null;   // parent for the subject the modal is about to create
 let editSubjectId = null;        // if set, the modal edits (renames/recolors) this subject instead of creating one
 // Bộ thẻ nào đang "mở" (hiện các bộ thẻ phụ bên trong) trên Trang chủ — cây
@@ -164,6 +166,9 @@ let quizCurrentCardId = null;    // id thẻ mà quizCurrentChoices đang ứng 
 let quizCurrentChoices = [];     // các lựa chọn trắc nghiệm (đã xáo trộn) cho thẻ hiện tại
 let quizSelectedChoice = null;
 let quizIsCorrect = false;
+let quizCountdownRemaining = null;  // số giây còn lại — null khi không bật đếm ngược cho thẻ hiện tại
+let quizCountdownHandle = null;     // setInterval id, dọn dẹp khi chuyển thẻ/đổi chế độ/rời màn ôn tập
+let quizCountdownCardId = null;     // id thẻ mà bộ đếm đang chạy ứng với — tránh khởi động lại mỗi lần vẽ
 
 /* ---- soạn thẻ: loại "Lật thẻ" (mặc định) hay "Điền từ" (cloze) ---- */
 let addCardType = 'basic';       // 'basic' | 'cloze' — chọn ở màn Thêm thẻ

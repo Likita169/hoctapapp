@@ -40,10 +40,14 @@ function openDeckActionSheet(s){
       } },
     { icon:'✏️', label:'Đổi tên bộ thẻ', onClick: ()=>{
         editSubjectId = s.id; newSubjectParentId = s.parentId||null; subjectModalColor = s.color;
+        subjectModalCountdownEnabled = !!s.countdownEnabled;
+        subjectModalCountdownSeconds = s.countdownSeconds || 15;
         subjectModalOpen = true; render();
       } },
     { icon:'📁', label:'Tạo bộ thẻ phụ', onClick: ()=>{
         editSubjectId = null; newSubjectParentId = s.id; subjectModalColor = COLORS[DATA.subjects.length % COLORS.length];
+        subjectModalCountdownEnabled = false;
+        subjectModalCountdownSeconds = 15;
         subjectModalOpen = true; render();
       } },
     { icon:'🗑', label:'Xoá bộ thẻ', danger:true, onClick: ()=>{ deleteSubjectId = s.id; render(); } },
@@ -145,6 +149,8 @@ function render(){
           { icon:'📚', label:'Tạo bộ thẻ', onClick: ()=>{
               editSubjectId = null; newSubjectParentId = null;
               subjectModalColor = COLORS[DATA.subjects.length % COLORS.length];
+              subjectModalCountdownEnabled = false;
+              subjectModalCountdownSeconds = 15;
               subjectModalOpen = true; render();
             } },
         ];
