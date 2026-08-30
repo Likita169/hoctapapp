@@ -12,7 +12,7 @@ srs-app/
 ├── manifest.json     cấu hình để cài lên màn hình chính
 ├── service-worker.js  cho phép chạy offline + tự cập nhật
 ├── icon-192.png, icon-512.png    icon app
-├── katex/                   thư viện vẽ công thức toán (katex.min.js/css, auto-render.min.js, fonts/)
+├── (không cần thư mục katex/ nữa — KaTeX được tải qua CDN, xem index.html)
 ├── sync-server/          worker.js + schema.sql — máy chủ tài khoản & đồng bộ (tuỳ chọn)
 ├── push-server/          worker.js — máy chủ nhắc đúng giờ (tuỳ chọn, xem mục bên dưới)
 └── HUONG-DAN.md        file này
@@ -285,10 +285,11 @@ Khi lưu thẻ, các khối căn/phân số/số mũ này được tự động 
 công thức LaTeX (đặt trong `$...$`) để lưu vào nội dung thẻ dưới dạng
 văn bản thường — không cần thay đổi gì ở chỗ lưu trữ hay đồng bộ — và
 tự hiển thị đúng ở mọi nơi thẻ xuất hiện sau đó (ôn tập, danh sách quản
-lý, xem trước khi xoá...). Việc vẽ công thức dùng thư viện KaTeX chạy
-hoàn toàn trên máy (không cần mạng), các file cần thiết nằm trong thư
-mục `katex/` và đã được thêm vào danh sách cache offline trong
-`service-worker.js`.
+lý, xem trước khi xoá...). Việc vẽ công thức dùng thư viện KaTeX, tải
+qua CDN (jsdelivr) — không cần tự tải file KaTeX nào về máy hay để
+trong thư mục dự án. Cần có mạng ở lần đầu mở app (hoặc từ lần cập nhật
+mới nhất) để tải KaTeX; sau đó trình duyệt tự lưu lại để dùng offline
+những lần sau.
 
 ## Điền vào chỗ trống (Cloze) — giúp nhớ lâu hơn nhờ "bắt não truy xuất"
 

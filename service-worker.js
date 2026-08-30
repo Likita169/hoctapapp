@@ -32,34 +32,29 @@ const SHELL = [
   './js/23-cap-nhat-va-giao-dien.js',
   './js/24-tro-choi-ghep-the.js',
   './js/25-khoi-dong.js',
-  './katex/katex.min.css',
-  './katex/katex.min.js',
-  './katex/auto-render.min.js',
-  './katex/fonts/KaTeX_AMS-Regular.woff2',
-  './katex/fonts/KaTeX_Caligraphic-Bold.woff2',
-  './katex/fonts/KaTeX_Caligraphic-Regular.woff2',
-  './katex/fonts/KaTeX_Fraktur-Bold.woff2',
-  './katex/fonts/KaTeX_Fraktur-Regular.woff2',
-  './katex/fonts/KaTeX_Main-Bold.woff2',
-  './katex/fonts/KaTeX_Main-BoldItalic.woff2',
-  './katex/fonts/KaTeX_Main-Italic.woff2',
-  './katex/fonts/KaTeX_Main-Regular.woff2',
-  './katex/fonts/KaTeX_Math-BoldItalic.woff2',
-  './katex/fonts/KaTeX_Math-Italic.woff2',
-  './katex/fonts/KaTeX_SansSerif-Bold.woff2',
-  './katex/fonts/KaTeX_SansSerif-Italic.woff2',
-  './katex/fonts/KaTeX_SansSerif-Regular.woff2',
-  './katex/fonts/KaTeX_Script-Regular.woff2',
-  './katex/fonts/KaTeX_Size1-Regular.woff2',
-  './katex/fonts/KaTeX_Size2-Regular.woff2',
-  './katex/fonts/KaTeX_Size3-Regular.woff2',
-  './katex/fonts/KaTeX_Size4-Regular.woff2',
-  './katex/fonts/KaTeX_Typewriter-Regular.woff2'
+  'https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.css',
+  'https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.js',
+  'https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/contrib/auto-render.min.js'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL))
+    caches.open(CACHE_NAME).then((cache) => {
+      // Cố tải TỪNG file một, không dùng cache.addAll(SHELL) — vì addAll là
+      // "được ăn cả, ngã về không": chỉ cần 1 URL trong danh sách bị lỗi/thiếu
+      // (404, đổi tên nhầm, thư mục katex/ chưa có...) là toàn bộ việc cài
+      // Service Worker mới THẤT BẠI, kẹt lại ở bản cache cũ mãi mãi — dù có
+      // xoá cache/cài lại app cũng không lên được vì lần cài nào cũng lỗi y
+      // hệt. Tải riêng từng file: 1 file lỗi chỉ mất riêng file đó (sẽ tự
+      // tải qua mạng bình thường lúc dùng), không kéo sập cả bản cập nhật.
+      return Promise.all(
+        SHELL.map((url) =>
+          cache.add(url).catch((err) => {
+            console.warn('[SW] Không cache được (bỏ qua, không chặn cài đặt):', url, err);
+          })
+        )
+      );
+    })
   );
 });
 
