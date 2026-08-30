@@ -541,58 +541,33 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .math-btn.math-btn-wide{min-width:32px; font-size:12px;}
 .math-btn:active{background:var(--violet); border-color:transparent; color:#14151f; transform:scale(0.93);}
 
-/* Vùng nhập kiểu WYSIWYG: gõ chữ bình thường, chèn công thức là hiện đúng
-   hình dạng (căn, phân số, số mũ...) ngay tại chỗ, không cần xem trước riêng. */
+/* Ô soạn công thức: gõ mã bình thường (như 1 ô nhập văn bản thường, con
+   trỏ hoạt động tự nhiên, không có gì "đặc biệt" để trình duyệt phải đoán) —
+   hình dạng chuẩn (căn, phân số...) chỉ hiện ở khung "Xem trước" ngay bên
+   dưới, vẽ bằng chính KaTeX nên luôn đúng, không tự vẽ tay bằng CSS nữa. */
 .card-input{
   width:100%; min-height:80px; background:var(--bg-elev); border:1px solid var(--line); color:var(--white);
   border-radius:var(--radius-sm); padding:13px 14px; font-size:15px; font-family:'Inter',sans-serif;
-  line-height:1.6; transition: border-color .15s ease, box-shadow .15s ease; outline:none; white-space:pre-wrap;
-  word-break:break-word;
+  line-height:1.6; transition: border-color .15s ease, box-shadow .15s ease; outline:none;
+  resize:vertical; display:block;
 }
+.card-input::placeholder{color:var(--ink-faint); opacity:1;}
 .card-input:focus{outline:none; border-color:var(--violet); box-shadow:0 0 0 3px rgba(157,142,242,0.2);}
-.card-input.is-empty::before{content:attr(data-placeholder); color:var(--ink-faint); pointer-events:none;}
 
-/* Các "khối" công thức hiện ngay trong ô nhập.
-   Quan trọng: dùng inline-block + overflow:hidden (không phải inline-flex)
-   cho khối ngoài cùng — đây là mẹo CSS kinh điển để "đường baseline" của
-   khối luôn là mép dưới của nó, CỐ ĐỊNH và giống nhau trên mọi trình
-   duyệt. Nếu để inline-flex, trình duyệt tự tính baseline theo flexbox —
-   cách tính này không đồng nhất giữa các trình duyệt/nội dung bên trong,
-   gây ra hiện tượng chữ gõ trước/sau khối bị lệch lên xuống thất thường.
-   Layout dạng flex (dấu căn nằm ngang, phân số xếp chồng) vẫn dùng bên
-   TRONG (.sqrt-body, .frac-col) — chỉ khối ngoài cùng đổi sang inline-block. */
-.math-widget{display:inline-block; overflow:hidden; user-select:none; vertical-align:baseline;}
-.math-slot{
-  display:inline-block; min-width:0.65em; outline:none; border-bottom:1px dotted transparent;
-  padding:0 1px;
+.math-preview{
+  margin-top:8px; padding:12px 14px; border-radius:var(--radius-sm); border:1px dashed var(--line);
+  background:var(--bg-elev-2); color:var(--white); font-size:15px; line-height:1.6;
+  white-space:pre-wrap; word-break:break-word; min-height:1.6em;
 }
-.math-slot:focus{border-bottom-color:var(--violet);}
-.math-slot:empty::before{content:attr(data-placeholder); color:var(--ink-faint); opacity:0.65;}
-
-.math-sqrt{margin:0 1px; white-space:nowrap;}
-.math-sqrt .sqrt-sign{font-size:1.15em; line-height:1; display:inline-block; position:relative; top:1px; margin-right:-1px;}
-.math-sqrt .sqrt-body{border-top:1.5px solid currentColor; padding:1px 4px 0 3px; display:inline-block; vertical-align:top;}
-
-.math-frac{margin:0 3px; vertical-align:-0.08em;}
-.math-frac .frac-col{display:inline-flex; flex-direction:column; align-items:center; font-size:0.85em; line-height:1.15;}
-.math-frac .frac-num{border-bottom:1.5px solid currentColor; padding:0 4px 2px; text-align:center;}
-.math-frac .frac-den{padding:2px 4px 0; text-align:center;}
-
-.math-sup, .math-sub{margin:0 1px;}
-.math-sup .math-slot{font-size:0.7em; vertical-align:super;}
-.math-sub .math-slot{font-size:0.7em; vertical-align:sub;}
+.math-preview.is-empty{color:var(--ink-faint); font-style:italic;}
+.math-preview .katex{font-size:1.05em;}
 
 .content .katex, .answer .katex, .mi-front .katex, .mi-back .katex{font-size:1em;}
 
-/* Điền vào chỗ trống (Cloze): nút "Ẩn từ" nổi bật riêng + chỗ đã đánh dấu
-   trong ô soạn thẻ, và cách hiện chỗ trống/đáp án khi ôn tập hoặc xem lại. */
+/* Điền vào chỗ trống (Cloze): nút "Ẩn từ" nổi bật riêng ở thanh công cụ,
+   và cách hiện chỗ trống/đáp án khi ôn tập, xem trước hoặc xem lại. */
 .math-btn-cloze{background:rgba(221,148,207,0.16); border-color:var(--pink); color:var(--pink); font-family:'Inter',sans-serif; font-weight:600;}
 .math-btn-cloze:active{background:var(--pink); color:#2b0f27;}
-.cloze-mark{
-  background:rgba(221,148,207,0.22); border:1px dashed var(--pink); border-radius:5px;
-  padding:0 4px; cursor:pointer; color:var(--pink); font-weight:600;
-}
-.cloze-mark:active{background:rgba(221,148,207,0.4);}
 .cloze-gap{
   display:inline-block; min-width:2.4em; border-bottom:2px solid var(--violet);
   color:transparent; text-align:center;

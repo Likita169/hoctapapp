@@ -264,32 +264,37 @@ làm mới thủ công. Cần chạy thêm phần cuối `schema.sql` (bảng
 
 ## Công thức toán học
 
-Khi tạo thẻ mới, dưới mỗi ô "Mặt trước" / "Mặt sau" có một thanh công cụ
-gọn, chia thành từng nhóm:
+Khi tạo thẻ mới, dưới mỗi ô "Mặt trước" / "Mặt sau" là 1 ô soạn bình
+thường (gõ tới đâu, con trỏ chạy tới đó — như mọi ô nhập chữ khác, không
+có gì "đặc biệt" để trình duyệt phải đoán), cùng thanh công cụ chèn ký
+hiệu ngay phía trên và khung **"Xem trước"** ngay phía dưới:
 - Nhóm cấu trúc: `√` (căn bậc hai), `a/b` (phân số), `x²` (số mũ), `x₁`
-  (chỉ số dưới) — bấm vào là **hiện ra đúng hình dạng thật** (dấu căn,
-  vạch phân số, số nhỏ nâng lên/hạ xuống) ngay tại chỗ đang gõ, không
-  phải mã LaTeX thô. Gõ trực tiếp vào phần trống của khối đó (vd số bên
-  trong dấu căn, tử số/mẫu số của phân số) rồi bấm ra ngoài để gõ tiếp
-  chữ bình thường.
+  (chỉ số dưới) — bấm vào là chèn thẳng đoạn mã tương ứng vào đúng vị
+  trí con trỏ (giống gõ 1 phím), con trỏ tự nằm vào đúng chỗ cần điền.
+  Với phân số: gõ tử số trước, rồi **chạm tay vào giữa cặp `{ }` tiếp
+  theo** để gõ mẫu số.
+  Nếu đang bôi đen sẵn 1 đoạn rồi mới bấm nút, đoạn đó tự động trở thành
+  "phần bên trong" (vd bôi đen "4" rồi bấm `√` ra thẳng đúng dấu căn của 4).
 - Nhóm chữ Hy Lạp: α β γ θ π Δ λ ω φ.
 - Nhóm hàm số: sin cos tan log ln.
 - Nhóm phép toán: ≤ ≥ ≠ ± × ÷ → ⇌ ∞ °.
 
-Các ký hiệu ở 3 nhóm sau chỉ là chữ/ký tự thường, chèn vào là hiện đúng
-luôn, không cần bọc gì thêm. Ví dụ gõ "sin", bấm `x²`, gõ "2", bấm ra
-ngoài gõ tiếp "α" sẽ ra đúng "sin²α" với số 2 nhỏ nâng lên như sách giáo
-khoa — không còn hiện mã `$...$` rối mắt khi đang soạn thẻ nữa.
+Khung **"Xem trước"** hiện đúng ký tự toán học chuẩn (vẽ bằng chính
+KaTeX — dấu căn, vạch phân số, số mũ đều là ký tự thật, không phải hình
+vẽ tay), y hệt cách thẻ sẽ hiển thị khi ôn tập sau này — gõ tới đâu,
+xem trước cập nhật tới đó. Cách làm này (ô soạn = mã nguồn thuần tuý,
+khung xem trước = kết quả hiển thị) giống hệt cách soạn Markdown, giúp
+tránh hẳn các lỗi lệch dòng/con trỏ kẹt từng gặp phải khi thử "vẽ hình
+khối" trực tiếp ngay trong ô soạn.
 
-Khi lưu thẻ, các khối căn/phân số/số mũ này được tự động chuyển thành
-công thức LaTeX (đặt trong `$...$`) để lưu vào nội dung thẻ dưới dạng
-văn bản thường — không cần thay đổi gì ở chỗ lưu trữ hay đồng bộ — và
-tự hiển thị đúng ở mọi nơi thẻ xuất hiện sau đó (ôn tập, danh sách quản
-lý, xem trước khi xoá...). Việc vẽ công thức dùng thư viện KaTeX, tải
-qua CDN (jsdelivr) — không cần tự tải file KaTeX nào về máy hay để
-trong thư mục dự án. Cần có mạng ở lần đầu mở app (hoặc từ lần cập nhật
-mới nhất) để tải KaTeX; sau đó trình duyệt tự lưu lại để dùng offline
-những lần sau.
+Nội dung lưu vào thẻ chính là văn bản gõ trong ô soạn, với công thức đặt
+trong `$...$` (vd `$\\sqrt{4}$`, `$\\frac{1}{2}$`) — không cần thay đổi
+gì ở chỗ lưu trữ hay đồng bộ — và tự hiển thị đúng ở mọi nơi thẻ xuất
+hiện sau đó (ôn tập, danh sách quản lý, xem trước khi xoá...). Việc vẽ
+công thức dùng thư viện KaTeX, tải qua CDN (jsdelivr) — không cần tự
+tải file KaTeX nào về máy hay để trong thư mục dự án. Cần có mạng ở lần
+đầu mở app (hoặc từ lần cập nhật mới nhất) để tải KaTeX; sau đó trình
+duyệt tự lưu lại để dùng offline những lần sau.
 
 ## Điền vào chỗ trống (Cloze) — giúp nhớ lâu hơn nhờ "bắt não truy xuất"
 
