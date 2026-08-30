@@ -41,13 +41,17 @@ const MATH_TEXT_GROUPS = [
   ],
 ];
 // Các khối công thức có cấu trúc (căn, phân số, số mũ, chỉ số) — bấm vào là
-// hiện ra đúng hình dạng ngay tại chỗ đang gõ (không phải mã LaTeX thô),
-// gõ trực tiếp vào phần trống của khối đó rồi gõ tiếp chữ bình thường.
+// chèn thẳng đoạn mã LaTeX tương ứng (đặt trong $...$) vào đúng vị trí con
+// trỏ trong ô soạn (giống gõ 1 phím bình thường), con trỏ tự nằm vào đúng
+// chỗ cần điền — không dựng hình khối riêng trong lúc gõ nữa. Hình dáng
+// chuẩn (căn, phân số...) chỉ hiện ở khung "Xem trước" ngay bên dưới và ở
+// mọi nơi thẻ hiển thị sau này, vẽ bằng chính KaTeX nên luôn đúng chuẩn,
+// không còn bị lệch dòng hay "lòi" lên như cách vẽ tay bằng CSS trước đây.
 const MATH_STRUCT_BUTTONS = [
-  {label:'√', type:'sqrt', title:'Căn bậc hai'},
-  {label:'a/b', type:'frac', title:'Phân số'},
-  {label:'x²', type:'sup', title:'Số mũ (lũy thừa)'},
-  {label:'x₁', type:'sub', title:'Chỉ số dưới'},
+  {label:'√', before:'$\\sqrt{', after:'}$', title:'Căn bậc hai'},
+  {label:'a/b', before:'$\\frac{', after:'}{ }$', title:'Phân số — gõ tử số trước, rồi chạm vào giữa cặp { } tiếp theo để gõ mẫu số'},
+  {label:'x²', before:'${}^{', after:'}$', title:'Số mũ (lũy thừa)'},
+  {label:'x₁', before:'${}_{', after:'}$', title:'Chỉ số dưới'},
 ];
 
 /* ---------------- Điền vào chỗ trống (Cloze) ----------------
@@ -58,55 +62,29 @@ const MATH_STRUCT_BUTTONS = [
    này buộc não phải "nhớ ra" thay vì chỉ "nhận ra" — hiệu quả ghi nhớ cao
    hơn hẳn so với lật thẻ thông thường. Được lưu ngay trong chuỗi văn bản
    (như công thức toán) bằng cú pháp {{c1::từ bị ẩn}}. */
-function nextClozeIndex(fieldEl){
-  let max = 0;
-  fieldEl.querySelectorAll('.cloze-mark').forEach(m=>{
-    const n = parseInt(m.dataset.c, 10) || 0;
-    if(n > max) max = n;
-  });
-  return max + 1;
+function nextClozeIndex(text){
+  const indices = clozeIndicesOf(text);
+  return indices.length ? Math.max(...indices) + 1 : 1;
 }
-function wrapSelectionAsCloze(fieldEl){
-  const sel = window.getSelection();
-  if(!sel || sel.rangeCount===0 || sel.isCollapsed){
+// field ở đây là 1 <textarea> thường — dùng selectionStart/selectionEnd
+// (API chuẩn của textarea) thay vì Range/Selection của contenteditable,
+// nên hoạt động ổn định như nhau trên mọi trình duyệt/điện thoại.
+function wrapSelectionAsCloze(field){
+  const start = field.selectionStart, end = field.selectionEnd;
+  if(start === end){
     toast('Hãy bôi đen từ/cụm từ cần ẩn trước, rồi bấm nút này');
     return;
   }
-  const range = sel.getRangeAt(0);
-  if(!fieldEl.contains(range.commonAncestorContainer)){
-    toast('Hãy bôi đen từ/cụm từ ngay trong ô câu văn bên dưới');
-    return;
-  }
-  const text = range.toString();
-  if(!text.trim()){
+  const selected = field.value.slice(start, end);
+  if(!selected.trim()){
     toast('Hãy bôi đen từ/cụm từ cần ẩn trước, rồi bấm nút này');
     return;
   }
-  const span = document.createElement('span');
-  span.className = 'cloze-mark';
-  span.contentEditable = 'false';
-  span.dataset.type = 'cloze';
-  span.dataset.c = String(nextClozeIndex(fieldEl));
-  span.textContent = text;
-  range.deleteContents();
-  range.insertNode(span);
-  const anchor = document.createTextNode('\u200b');
-  span.after(anchor);
-  const r2 = document.createRange();
-  r2.setStartAfter(anchor); r2.collapse(true);
-  sel.removeAllRanges(); sel.addRange(r2);
-  fieldEl.focus();
-  markFieldEmptyState(fieldEl);
-}
-// Chạm vào 1 chỗ đã ẩn để bỏ đánh dấu (trả lại thành chữ thường) — sửa nhầm dễ dàng.
-function attachClozeUnwrap(fieldEl){
-  fieldEl.addEventListener('click', (e)=>{
-    const mark = e.target.closest && e.target.closest('.cloze-mark');
-    if(!mark || !fieldEl.contains(mark)) return;
-    const text = document.createTextNode(mark.textContent);
-    mark.replaceWith(text);
-    markFieldEmptyState(fieldEl);
-  });
+  const snippet = '{{c' + nextClozeIndex(field.value) + '::' + selected + '}}';
+  field.value = field.value.slice(0, start) + snippet + field.value.slice(end);
+  const cursor = start + snippet.length;
+  field.focus();
+  field.setSelectionRange(cursor, cursor);
 }
 
 // Tách 1 chuỗi có chứa {{cN::đáp án}} thành từng đoạn — dùng chung cho mọi
@@ -172,133 +150,27 @@ function correctAnswerText(card){
   return (card.type==='cloze') ? clozeAnswerAt(card.front, card.clozeIndex) : card.back;
 }
 
-function makeMathSlot(placeholder){
-  const s = document.createElement('span');
-  s.className = 'math-slot';
-  s.contentEditable = 'true';
-  if(placeholder) s.dataset.placeholder = placeholder;
-  return s;
+// Chèn 1 đoạn mã vào đúng vị trí con trỏ trong <textarea>, giống hệt như
+// vừa gõ nó vào bàn phím — dùng cho các nút ký hiệu ở thanh công cụ.
+// Nếu đang bôi đen sẵn 1 đoạn thì đoạn đó được coi là "phần bên trong"
+// (vd bôi đen "4" rồi bấm √ ra thẳng "$\sqrt{4}$" thay vì phải gõ lại số 4).
+function insertMathSnippet(field, before, after){
+  const start = field.selectionStart, end = field.selectionEnd;
+  const selected = field.value.slice(start, end);
+  field.value = field.value.slice(0, start) + before + selected + after + field.value.slice(end);
+  // Không bôi đen gì trước đó: đặt con trỏ ngay sau "before" để gõ tiếp
+  // vào giữa (vd giữa 2 dấu ngoặc { }). Có bôi đen: đặt con trỏ ngay sau
+  // toàn bộ đoạn vừa chèn, để gõ tiếp chữ theo sau như bình thường.
+  const cursor = selected ? (start + before.length + selected.length + after.length) : (start + before.length);
+  field.focus();
+  field.setSelectionRange(cursor, cursor);
 }
 
-// Dựng DOM cho 1 khối công thức; trả về {el, focusSlot} — focusSlot là ô
-// trống sẽ được đưa con trỏ vào ngay sau khi chèn, để gõ tiếp luôn.
-function buildMathWidget(type){
-  const w = document.createElement('span');
-  w.className = 'math-widget math-' + type;
-  w.contentEditable = 'false';
-  w.dataset.type = type;
-  if(type === 'sqrt'){
-    const sign = document.createElement('span'); sign.className = 'sqrt-sign'; sign.textContent = '√';
-    const body = document.createElement('span'); body.className = 'sqrt-body';
-    const slot = makeMathSlot(''); slot.classList.add('sqrt-slot');
-    body.appendChild(slot);
-    w.appendChild(sign); w.appendChild(body);
-    return {el:w, focusSlot:slot};
-  }
-  if(type === 'frac'){
-    const col = document.createElement('span'); col.className = 'frac-col';
-    const num = makeMathSlot(''); num.classList.add('frac-num');
-    const den = makeMathSlot(''); den.classList.add('frac-den');
-    col.appendChild(num); col.appendChild(den);
-    w.appendChild(col);
-    return {el:w, focusSlot:num};
-  }
-  // sup / sub — chỉ 1 ô nhỏ nâng lên/hạ xuống, chèn ngay sau chữ đã gõ
-  // trước đó (không cần chọn "cơ số" riêng, đỡ rắc rối khi thao tác).
-  const slot = makeMathSlot(type==='sup' ? '2' : '1');
-  w.appendChild(slot);
-  return {el:w, focusSlot:slot};
-}
-
-// Lấy vị trí con trỏ hiện tại bên trong 1 ô nhập cụ thể; nếu con trỏ
-// không nằm trong ô đó (vd chưa từng bấm vào), đưa con trỏ về cuối ô.
-function getFieldRange(fieldEl){
-  const sel = window.getSelection();
-  if(sel && sel.rangeCount > 0){
-    const r = sel.getRangeAt(0);
-    if(fieldEl.contains(r.startContainer)) return r;
-  }
-  fieldEl.focus();
-  const r = document.createRange();
-  r.selectNodeContents(fieldEl);
-  r.collapse(false);
-  sel.removeAllRanges();
-  sel.addRange(r);
-  return r;
-}
-
-function markFieldEmptyState(fieldEl){
-  const empty = fieldEl.childNodes.length===0 ||
-    (fieldEl.childNodes.length===1 && fieldEl.firstChild.nodeType===3 && fieldEl.firstChild.textContent==='') ||
-    fieldEl.innerHTML === '<br>';
-  fieldEl.classList.toggle('is-empty', !!empty);
-}
-
-function insertPlainText(fieldEl, text){
-  const range = getFieldRange(fieldEl);
-  range.deleteContents();
-  const node = document.createTextNode(text);
-  range.insertNode(node);
-  range.setStartAfter(node); range.setEndAfter(node);
-  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
-  fieldEl.focus();
-  markFieldEmptyState(fieldEl);
-}
-
-function insertMathWidget(fieldEl, type){
-  const range = getFieldRange(fieldEl);
-  // Không lồng khối công thức vào bên trong 1 ô trống của khối khác —
-  // nếu con trỏ đang ở trong 1 ô như vậy thì chỉ chèn ký tự thường tương ứng.
-  const inSlot = range.startContainer.nodeType===1
-    ? range.startContainer.closest && range.startContainer.closest('.math-slot')
-    : range.startContainer.parentElement && range.startContainer.parentElement.closest('.math-slot');
-  if(inSlot){
-    const fallback = {sqrt:'√', frac:'/', sup:'^', sub:'_'}[type] || '';
-    insertPlainText(fieldEl, fallback);
-    return;
-  }
-  range.deleteContents();
-  const {el, focusSlot} = buildMathWidget(type);
-  range.insertNode(el);
-  // Neo con trỏ ngay sau khối vừa chèn bằng 1 ký tự rỗng, để gõ tiếp chữ
-  // thường sau công thức luôn hoạt động bình thường trên mọi trình duyệt.
-  const anchor = document.createTextNode('\u200b');
-  el.after(anchor);
-  fieldEl.focus();
-  const r2 = document.createRange();
-  r2.selectNodeContents(focusSlot); r2.collapse(true);
-  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r2);
-  markFieldEmptyState(fieldEl);
-}
-
-// Chuyển nội dung đã gõ (chữ thường + các khối công thức + các chỗ đã ẩn
-// kiểu cloze) thành 1 chuỗi văn bản để lưu vào thẻ — mỗi khối công thức
-// trở thành 1 đoạn $...$, mỗi chỗ ẩn trở thành 1 đoạn {{cN::...}} mà các
-// hàm renderMathIn()/clozeDisplayHtml() ở trên sẽ vẽ lại đúng như vậy.
-function serializeMathInput(root){
-  function textOf(slot){ return slot ? slot.textContent.replace(/\u200b/g,'').trim() : ''; }
-  function serializeNode(node){
-    if(node.nodeType === Node.TEXT_NODE) return node.textContent.replace(/\u200b/g,'');
-    if(node.nodeType !== Node.ELEMENT_NODE) return '';
-    if(node.tagName === 'BR') return '\n';
-    const type = node.dataset && node.dataset.type;
-    if(type === 'sqrt') return '$\\sqrt{' + textOf(node.querySelector('.sqrt-slot')) + '}$';
-    if(type === 'frac') return '$\\frac{' + textOf(node.querySelector('.frac-num')) + '}{' + textOf(node.querySelector('.frac-den')) + '}$';
-    if(type === 'sup') return '${}^{' + textOf(node.querySelector('.math-slot')) + '}$';
-    if(type === 'sub') return '${}_{' + textOf(node.querySelector('.math-slot')) + '}$';
-    if(type === 'cloze'){
-      const inner = Array.from(node.childNodes).map(serializeNode).join('').replace(/\u200b/g,'').trim();
-      return '{{c' + (node.dataset.c||'1') + '::' + inner + '}}';
-    }
-    return Array.from(node.childNodes).map(serializeNode).join('');
-  }
-  return Array.from(root.childNodes).map(serializeNode).join('').trim();
-}
-
-// Xây 1 ô nhập kiểu WYSIWYG (thay cho <textarea> thường) cùng thanh công
-// cụ chèn công thức ngay phía trên — trả về {wrap, field} để gắn vào form.
-// opts.clozeButton=true → thêm nút "🕳 Ẩn từ" để đánh dấu chỗ trống (dùng
-// cho thẻ kiểu Điền từ) và cho phép chạm vào 1 chỗ đã ẩn để bỏ đánh dấu.
+// Xây 1 ô soạn công thức: 1 <textarea> gõ mã bình thường (con trỏ hoạt
+// động tự nhiên như mọi ô nhập khác) + thanh công cụ chèn ký hiệu phía
+// trên + khung "Xem trước" phía dưới hiện đúng ký tự toán học chuẩn bằng
+// KaTeX — y hệt cách thẻ sẽ hiển thị khi ôn tập. Trả về {wrap, field}.
+// opts.clozeButton=true → thêm nút "🕳 Ẩn từ" để đánh dấu chỗ trống.
 function buildMathCardInput(fieldId, placeholder, opts){
   opts = opts || {};
   const wrap = document.createElement('div');
@@ -306,12 +178,29 @@ function buildMathCardInput(fieldId, placeholder, opts){
   const toolbar = document.createElement('div');
   toolbar.className = 'math-toolbar';
 
-  const field = document.createElement('div');
+  const field = document.createElement('textarea');
   field.id = fieldId;
-  field.className = 'card-input is-empty';
-  field.contentEditable = 'true';
-  field.dataset.placeholder = placeholder || '';
+  field.className = 'card-input';
+  field.placeholder = placeholder || '';
+  field.rows = 3;
   field.setAttribute('translate', 'no');
+
+  const preview = document.createElement('div');
+  preview.className = 'math-preview is-empty';
+  preview.id = fieldId + 'Preview';
+  preview.textContent = 'Xem trước sẽ hiện ở đây...';
+
+  const updatePreview = ()=>{
+    const val = field.value;
+    if(!val.trim()){
+      preview.classList.add('is-empty');
+      preview.textContent = 'Xem trước sẽ hiện ở đây...';
+      return;
+    }
+    preview.classList.remove('is-empty');
+    preview.innerHTML = escapeHtml(val);
+    renderMathIn(preview);
+  };
 
   const addBtn = (label, title, onClick)=>{
     const btn = document.createElement('button');
@@ -322,7 +211,7 @@ function buildMathCardInput(fieldId, placeholder, opts){
     // preventDefault ở mousedown để ô nhập không bị mất focus/con trỏ
     // trước khi kịp chèn ký hiệu vào đúng vị trí đang gõ.
     btn.onmousedown = (e)=> e.preventDefault();
-    btn.onclick = (e)=>{ e.preventDefault(); onClick(); };
+    btn.onclick = (e)=>{ e.preventDefault(); onClick(); updatePreview(); };
     return btn;
   };
 
@@ -338,22 +227,22 @@ function buildMathCardInput(fieldId, placeholder, opts){
   const structGroup = document.createElement('div');
   structGroup.className = 'math-tgroup';
   MATH_STRUCT_BUTTONS.forEach(s=>{
-    structGroup.appendChild(addBtn(s.label, s.title, ()=> insertMathWidget(field, s.type)));
+    structGroup.appendChild(addBtn(s.label, s.title, ()=> insertMathSnippet(field, s.before, s.after)));
   });
   toolbar.appendChild(structGroup);
 
   MATH_TEXT_GROUPS.forEach(group=>{
     const g = document.createElement('div');
     g.className = 'math-tgroup';
-    group.forEach(s=> g.appendChild(addBtn(s.label, 'Chèn ' + s.label, ()=> insertPlainText(field, s.text))));
+    group.forEach(s=> g.appendChild(addBtn(s.label, 'Chèn ' + s.label, ()=> insertMathSnippet(field, s.text, ''))));
     toolbar.appendChild(g);
   });
 
-  field.addEventListener('input', ()=> markFieldEmptyState(field));
-  if(opts.clozeButton) attachClozeUnwrap(field);
+  field.addEventListener('input', updatePreview);
 
   wrap.appendChild(toolbar);
   wrap.appendChild(field);
+  wrap.appendChild(preview);
   return {wrap, field};
 }
 
@@ -387,4 +276,5 @@ function formatDeadline(ms){
   const pad = n => String(n).padStart(2,'0');
   return `${pad(d.getHours())}:${pad(d.getMinutes())} ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}`;
 }
+
 

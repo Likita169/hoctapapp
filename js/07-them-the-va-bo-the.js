@@ -84,10 +84,10 @@ function renderAdd(){
     saveBtn.textContent = 'Lưu thẻ điền từ';
     saveBtn.onclick = async ()=>{
       const field = document.getElementById('clozeInput');
-      const text = serializeMathInput(field);
+      const text = field.value.trim();
       if(!addSubjectChoice){ toast('Hãy chọn hoặc tạo một bộ thẻ'); return; }
       const indices = clozeIndicesOf(text);
-      if(!text.trim() || indices.length===0){
+      if(!text || indices.length===0){
         toast('Hãy bôi đen ít nhất 1 từ/cụm từ để ẩn trước khi lưu');
         return;
       }
@@ -96,8 +96,6 @@ function renderAdd(){
       });
       await saveData();
       toast(indices.length>1 ? `Đã lưu ${indices.length} thẻ điền từ ✓` : 'Đã lưu thẻ điền từ ✓');
-      field.innerHTML = '';
-      markFieldEmptyState(field);
       render();
     };
     main.appendChild(saveBtn);
@@ -125,17 +123,13 @@ function renderAdd(){
   saveBtn.className='save-btn';
   saveBtn.textContent = 'Lưu thẻ';
   saveBtn.onclick = async ()=>{
-    const front = serializeMathInput(document.getElementById('frontInput'));
-    const back = serializeMathInput(document.getElementById('backInput'));
+    const front = document.getElementById('frontInput').value.trim();
+    const back = document.getElementById('backInput').value.trim();
     if(!addSubjectChoice){ toast('Hãy chọn hoặc tạo một bộ thẻ'); return; }
     if(!front || !back){ toast('Hãy điền cả hai mặt của thẻ'); return; }
     DATA.cards.push({id:uid(), subjectId:addSubjectChoice, type:'basic', front, back, ease:2.5, interval:0, reps:0, due:Date.now()});
     await saveData();
     toast('Đã lưu thẻ ✓');
-    document.getElementById('frontInput').innerHTML = '';
-    document.getElementById('backInput').innerHTML = '';
-    markFieldEmptyState(document.getElementById('frontInput'));
-    markFieldEmptyState(document.getElementById('backInput'));
     render();
   };
   main.appendChild(saveBtn);
