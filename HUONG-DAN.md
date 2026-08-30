@@ -38,7 +38,7 @@ nghìn dòng nữa:
 | `03-thuat-toan-on-tap.js` | Thuật toán ôn tập ngắt quãng, XP/cấp độ, streak, huy hiệu |
 | `04-khung-giao-dien.js` | Khung giao diện dùng chung: menu bấm giữ, thanh tab, hàm vẽ lại màn hình |
 | `05-trang-chu-bo-the.js` | Tab Trang chủ — cây bộ thẻ lồng nhau (mở/thu gọn) |
-| `06-cong-thuc-toan.js` | Vẽ và soạn công thức toán (KaTeX) |
+| `06-cong-thuc-toan.js` | Điền vào chỗ trống (Cloze) và các hàm tiện ích nhỏ dùng chung |
 | `07-them-the-va-bo-the.js` | Màn Thêm thẻ (thẻ Lật thẻ hoặc Điền từ/cloze), modal tạo/đổi tên/xoá bộ thẻ, xoá thẻ |
 | `08-hen-gio-va-on-tap.js` | Modal chọn giờ, màn hình Ôn tập — 3 kiểu trả lời: Lật thẻ / Gõ đáp án / Trắc nghiệm nhanh |
 | `09-quan-ly-va-thong-ke.js` | Tab Thẻ ghi nhớ và tab Thống kê |
@@ -262,54 +262,35 @@ App tự tải lại thông báo mỗi 60 giây và mỗi khi quay lại app —
 làm mới thủ công. Cần chạy thêm phần cuối `schema.sql` (bảng
 `notifications`) rồi deploy `worker.js` + các file mới trong `js/` mới.
 
-## Công thức toán học
+## Đếm ngược cho Trắc nghiệm nhanh
 
-Khi tạo thẻ mới, dưới mỗi ô "Mặt trước" / "Mặt sau" là 1 ô soạn bình
-thường (gõ tới đâu, con trỏ chạy tới đó — như mọi ô nhập chữ khác, không
-có gì "đặc biệt" để trình duyệt phải đoán), cùng thanh công cụ chèn ký
-hiệu ngay phía trên và khung **"Xem trước"** ngay phía dưới:
-- Nhóm cấu trúc: `√` (căn bậc hai), `a/b` (phân số), `x²` (số mũ), `x₁`
-  (chỉ số dưới) — bấm vào là chèn thẳng đoạn mã tương ứng vào đúng vị
-  trí con trỏ (giống gõ 1 phím), con trỏ tự nằm vào đúng chỗ cần điền.
-  Với phân số: gõ tử số trước, rồi **chạm tay vào giữa cặp `{ }` tiếp
-  theo** để gõ mẫu số.
-  Nếu đang bôi đen sẵn 1 đoạn rồi mới bấm nút, đoạn đó tự động trở thành
-  "phần bên trong" (vd bôi đen "4" rồi bấm `√` ra thẳng đúng dấu căn của 4).
-- Nhóm chữ Hy Lạp: α β γ θ π Δ λ ω φ.
-- Nhóm hàm số: sin cos tan log ln.
-- Nhóm phép toán: ≤ ≥ ≠ ± × ÷ → ⇌ ∞ °.
+Mở modal Tạo/Đổi bộ thẻ (bấm nút **+** ở Trang chủ, hoặc bấm giữ vào 1
+bộ thẻ có sẵn → "Đổi tên bộ thẻ") — có mục **"⏱ Bật đếm ngược"**: bật
+lên rồi chọn số giây cho mỗi câu (10s/15s/20s/30s). Có thể bật/tắt và
+chỉnh số giây **riêng cho từng bộ thẻ** — bộ nào không bật thì ôn bình
+thường, không giới hạn giờ.
 
-Khung **"Xem trước"** hiện đúng ký tự toán học chuẩn (vẽ bằng chính
-KaTeX — dấu căn, vạch phân số, số mũ đều là ký tự thật, không phải hình
-vẽ tay), y hệt cách thẻ sẽ hiển thị khi ôn tập sau này — gõ tới đâu,
-xem trước cập nhật tới đó. Cách làm này (ô soạn = mã nguồn thuần tuý,
-khung xem trước = kết quả hiển thị) giống hệt cách soạn Markdown, giúp
-tránh hẳn các lỗi lệch dòng/con trỏ kẹt từng gặp phải khi thử "vẽ hình
-khối" trực tiếp ngay trong ô soạn.
-
-Nội dung lưu vào thẻ chính là văn bản gõ trong ô soạn, với công thức đặt
-trong `$...$` (vd `$\\sqrt{4}$`, `$\\frac{1}{2}$`) — không cần thay đổi
-gì ở chỗ lưu trữ hay đồng bộ — và tự hiển thị đúng ở mọi nơi thẻ xuất
-hiện sau đó (ôn tập, danh sách quản lý, xem trước khi xoá...). Việc vẽ
-công thức dùng thư viện KaTeX, tải qua CDN (jsdelivr) — không cần tự
-tải file KaTeX nào về máy hay để trong thư mục dự án. Cần có mạng ở lần
-đầu mở app (hoặc từ lần cập nhật mới nhất) để tải KaTeX; sau đó trình
-duyệt tự lưu lại để dùng offline những lần sau.
+Đếm ngược **chỉ áp dụng cho chế độ 🧠 Trắc nghiệm nhanh** lúc ôn tập
+(chọn ở nút ⋮ trong màn Ôn tập) — Lật thẻ và Gõ đáp án không bị giới
+hạn giờ, dù bộ thẻ đó có bật đếm ngược hay không. Hết giờ mà chưa kịp
+chọn đáp án thì thẻ tự lật ra, coi như chưa trả lời được, và bạn vẫn tự
+chấm mức nhớ (Quên/Khó/Nhớ/Dễ) như bình thường. Không đổi lịch ôn tập
+hay công thức tính điểm gì khác — chỉ thêm áp lực thời gian để luyện
+phản xạ nhanh hơn nếu bạn muốn.
 
 ## Điền vào chỗ trống (Cloze) — giúp nhớ lâu hơn nhờ "bắt não truy xuất"
 
 Ở màn Thêm thẻ, chọn loại thẻ **🕳 Điền từ** thay vì **🔄 Lật thẻ** mặc
 định. Gõ 1 câu hoàn chỉnh, bôi đen từ/cụm từ cần ẩn rồi bấm nút **"🕳 Ẩn
-từ"** trên thanh công cụ — chỗ đó sẽ được đánh dấu (viền đứt màu hồng).
-Có thể ẩn nhiều chỗ trong cùng 1 câu; mỗi chỗ ẩn khi lưu sẽ trở thành
-**1 thẻ ôn tập riêng** (giống Anki): thẻ đó chỉ hỏi đúng chỗ của nó, các
-chỗ ẩn khác trong câu vẫn hiện chữ thật để làm ngữ cảnh. Bấm vào 1 chỗ
-đã ẩn để bỏ đánh dấu nếu lỡ tay.
+từ"** trên thanh công cụ — chỗ đó sẽ được thay bằng cú pháp `{{c1::...}}`
+ngay trong ô soạn. Có thể ẩn nhiều chỗ trong cùng 1 câu; mỗi chỗ ẩn khi
+lưu sẽ trở thành **1 thẻ ôn tập riêng** (giống Anki): thẻ đó chỉ hỏi
+đúng chỗ của nó, các chỗ ẩn khác trong câu vẫn hiện chữ thật để làm
+ngữ cảnh.
 
-Về mặt lưu trữ, câu cloze vẫn chỉ là text thường với cú pháp
+Về mặt lưu trữ, câu cloze chỉ là text thường với cú pháp
 `{{c1::từ bị ẩn}}` lồng trong nội dung thẻ (`front`), không cần bảng dữ
-liệu hay cơ chế đồng bộ riêng — cùng cơ chế với công thức toán `$...$`
-ở trên. Logic đọc/ghi nằm trong `js/06-cong-thuc-toan.js`.
+liệu hay cơ chế đồng bộ riêng. Logic đọc/ghi nằm trong `js/06-cong-thuc-toan.js`.
 
 ## 3 kiểu trả lời khi ôn tập: Lật thẻ / Gõ đáp án / Trắc nghiệm nhanh
 
@@ -319,12 +300,13 @@ cho phiên ôn hiện tại (được nhớ lại cho các lần ôn sau):
   đáp án", tự chấm mức nhớ.
 - **⌨️ Gõ đáp án** — gõ hẳn câu trả lời ra rồi bấm "Kiểm tra" (hoặc nhấn
   Enter); app so khớp (không phân biệt hoa/thường, bỏ qua khoảng trắng
-  thừa và công thức toán) và báo đúng/sai trước khi hiện đáp án đúng.
+  thừa) và báo đúng/sai trước khi hiện đáp án đúng.
   Việc *chủ động nhớ ra* thay vì chỉ *nhận ra* giúp ghi nhớ chắc hơn hẳn.
 - **🧠 Trắc nghiệm nhanh** — hiện 4 lựa chọn (đáp án đúng + 3 phương án
   nhiễu lấy từ các thẻ khác, ưu tiên cùng bộ thẻ), chạm 1 lựa chọn để trả
   lời ngay. Ôn theo kiểu này nhẹ nhàng, phù hợp lúc mới học hoặc ôn
-  nhanh nhiều thẻ.
+  nhanh nhiều thẻ. Có thể bật thêm đếm ngược cho từng bộ thẻ — xem mục
+  "Đếm ngược cho Trắc nghiệm nhanh" bên dưới.
 
 Dù chọn kiểu nào, sau khi trả lời vẫn hiện đủ 4 nút chấm mức nhớ (Quên/
 Khó/Nhớ/Dễ) như cũ — thuật toán ôn tập ngắt quãng không đổi. Thẻ Điền

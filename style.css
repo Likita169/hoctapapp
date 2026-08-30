@@ -525,13 +525,11 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .chip.active{border-color:transparent; color:#14151f; font-weight:700; box-shadow:var(--shadow-sm); animation:popIn .22s var(--ease-spring);}
 .chip-new{border-style:dashed;}
 
-/* ---------- Công cụ chèn ký hiệu toán học (nhập trực tiếp, hiện đúng dạng) ---------- */
+/* ---------- Nút "Ẩn từ" (chỉ dùng cho thẻ Điền từ) ---------- */
 .math-toolbar{
   display:flex; flex-wrap:wrap; gap:4px; padding:8px; margin-bottom:6px;
   background:var(--bg-elev-2); border:1px solid var(--line); border-radius:var(--radius-sm);
 }
-.math-tgroup{display:flex; flex-wrap:wrap; gap:4px; padding-right:6px; margin-right:2px; border-right:1px solid var(--line);}
-.math-tgroup:last-child{border-right:none; padding-right:0; margin-right:0;}
 .math-btn{
   flex-shrink:0; min-width:26px; height:26px; padding:0 7px; border-radius:7px; border:1px solid var(--line);
   background:var(--bg-elev); color:var(--ink-soft); font-size:13px; font-family:'IBM Plex Mono',monospace;
@@ -541,10 +539,8 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .math-btn.math-btn-wide{min-width:32px; font-size:12px;}
 .math-btn:active{background:var(--violet); border-color:transparent; color:#14151f; transform:scale(0.93);}
 
-/* Ô soạn công thức: gõ mã bình thường (như 1 ô nhập văn bản thường, con
-   trỏ hoạt động tự nhiên, không có gì "đặc biệt" để trình duyệt phải đoán) —
-   hình dạng chuẩn (căn, phân số...) chỉ hiện ở khung "Xem trước" ngay bên
-   dưới, vẽ bằng chính KaTeX nên luôn đúng, không tự vẽ tay bằng CSS nữa. */
+/* Ô nhập nội dung thẻ — 1 <textarea> gõ chữ bình thường, không có gì
+   "đặc biệt", con trỏ hoạt động tự nhiên như mọi ô nhập khác. */
 .card-input{
   width:100%; min-height:80px; background:var(--bg-elev); border:1px solid var(--line); color:var(--white);
   border-radius:var(--radius-sm); padding:13px 14px; font-size:15px; font-family:'Inter',sans-serif;
@@ -553,14 +549,6 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 }
 .card-input::placeholder{color:var(--ink-faint); opacity:1;}
 .card-input:focus{outline:none; border-color:var(--violet); box-shadow:0 0 0 3px rgba(157,142,242,0.2);}
-
-.math-preview{
-  margin-top:8px; padding:12px 14px; border-radius:var(--radius-sm); border:1px dashed var(--line);
-  background:var(--bg-elev-2); color:var(--white); font-size:15px; line-height:1.6;
-  white-space:pre-wrap; word-break:break-word; min-height:1.6em;
-}
-.math-preview.is-empty{color:var(--ink-faint); font-style:italic;}
-.math-preview .katex{font-size:1.05em;}
 
 .content .katex, .answer .katex, .mi-front .katex, .mi-back .katex{font-size:1em;}
 
@@ -676,6 +664,13 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
 .type-feedback.wrong{color:var(--coral);}
 
 /* Chế độ "Trắc nghiệm nhanh" — 4 lựa chọn thay cho nút "Hiện đáp án" */
+.quiz-countdown{
+  text-align:center; font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:15px;
+  color:var(--teal); margin:0 16px 14px; padding:8px; border-radius:var(--radius-sm);
+  background:rgba(71,185,165,0.14); animation: riseSm .25s var(--ease-out) both;
+}
+.quiz-countdown.low{color:var(--coral); background:rgba(239,91,115,0.16); animation: riseSm .25s var(--ease-out) both, pulseLow 1s ease-in-out infinite;}
+@keyframes pulseLow{ 0%,100%{opacity:1;} 50%{opacity:0.55;} }
 .quiz-choices{padding:0 16px 26px; display:grid; grid-template-columns:1fr 1fr; gap:8px; animation: riseSm .3s var(--ease-out) both;}
 .quiz-choice{
   padding:13px 10px; border-radius:var(--radius-sm); border:1px solid var(--line);
