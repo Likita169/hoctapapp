@@ -201,6 +201,18 @@ học sinh trong lớp bắt đầu thấy và làm được. Có thể chọn "
 xong khoá lại, không làm lại được) hoặc "Không giới hạn" (làm lại bao
 nhiêu lần cũng được, mỗi lần nộp ghi đè điểm/bài làm bằng lần gần nhất).
 
+**Giới hạn thời gian làm bài:** trong trang soạn bài, mục "Giới hạn thời
+gian làm bài" — chọn "Có giới hạn" rồi chọn số phút (15/30/45/60/90).
+Khác với "Hạn chót làm bài" ở trên (1 mốc giờ CHUNG cho cả lớp, ví dụ
+"phải nộp trước 22h hôm nay"), đây là số phút RIÊNG cho từng học sinh,
+tính từ lúc người đó bấm vào bắt đầu làm bài — 2 học sinh mở bài lúc khác
+nhau thì hết giờ vào lúc khác nhau. Học sinh thấy đồng hồ đếm ngược ngay
+trên màn làm bài; hết giờ thì bài **tự động nộp luôn**, không cần bấm gì
+thêm và không thể trả lời tiếp. Việc đếm giờ và tự nộp xử lý ở phía trình
+duyệt của học sinh — máy chủ chỉ lưu và trả lại đúng số phút giáo viên đã
+chọn, không tự chặn nộp trễ ở phía server (khác với "Hạn chót làm bài",
+vốn được kiểm tra cả ở server).
+
 **Học sinh:** bấm vào thẻ lớp trong tab Lớp học → thấy danh sách bài kiểm
 tra đã được giao → làm bài → nộp. Với bài trắc nghiệm, thấy điểm tổng
 ngay, bấm "Xem chi tiết" để biết câu nào đúng/sai và đáp án đúng là gì.
@@ -212,8 +224,8 @@ làm" để theo dõi từng câu đã được chấm Đạt/Chưa đạt hay c
 luận hiện số câu còn chờ chấm).
 
 Chỉ cần chạy lại `schema.sql` mới nhất (thêm bảng `test_submissions`, cột
-`published`/`max_attempts`/`test_type` cho bảng `tests`) rồi deploy
-`worker.js` + các file mới trong `js/` mới là dùng được ngay. Nếu D1 báo lỗi "duplicate
+`published`/`max_attempts`/`test_type`/`time_limit_minutes` cho bảng
+`tests`) rồi deploy `worker.js` + các file mới trong `js/` mới là dùng được ngay. Nếu D1 báo lỗi "duplicate
 column name" khi chạy `schema.sql`, đó là vì cột đã có sẵn — bỏ qua lỗi
 đó là được.
 
