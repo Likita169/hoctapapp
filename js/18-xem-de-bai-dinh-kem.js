@@ -335,16 +335,21 @@ async function removeTestAttachment(){
   testAttachmentBusy = false; render();
 }
 
-async function publishTest(published, maxAttempts, deadlineAt){
+async function publishTest(published, maxAttempts, deadlineAt, timeLimitMinutes){
   if(deadlineAt === undefined) deadlineAt = testEditorOpen.deadlineAt || null;
+  if(timeLimitMinutes === undefined) timeLimitMinutes = testEditorOpen.timeLimitMinutes || null;
   publishBusy = true; render();
   try{
-    const res = await authorizedRequest('/tests/publish', { testId: testEditorOpen.id, published, maxAttempts, deadlineAt });
+    const res = await authorizedRequest('/tests/publish', { testId: testEditorOpen.id, published, maxAttempts, deadlineAt, timeLimitMinutes });
     testEditorOpen.published = res.published;
     testEditorOpen.maxAttempts = res.maxAttempts;
     testEditorOpen.deadlineAt = res.deadlineAt || null;
+    testEditorOpen.timeLimitMinutes = res.timeLimitMinutes || null;
     const idx = TESTS.findIndex(t=>t.id===testEditorOpen.id);
-    if(idx>=0){ TESTS[idx].published = res.published; TESTS[idx].maxAttempts = res.maxAttempts; TESTS[idx].deadlineAt = res.deadlineAt || null; }
+    if(idx>=0){
+      TESTS[idx].published = res.published; TESTS[idx].maxAttempts = res.maxAttempts;
+      TESTS[idx].deadlineAt = res.deadlineAt || null; TESTS[idx].timeLimitMinutes = res.timeLimitMinutes || null;
+    }
     toast(res.published ? 'Đã giao bài cho học sinh ✓' : 'Đã chuyển về bản nháp');
   }catch(e){
     toast('Lỗi: ' + (e.message||''));

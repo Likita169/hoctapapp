@@ -1,6 +1,37 @@
 /* 21-lam-bai-kiem-tra.js — Học sinh: giao diện đang làm bài kiểm tra (từng câu hỏi, thanh tiến độ, thêm ảnh bài tự luận, xác nhận nộp bài)
    (Phần 5500-5757 của app.js gốc, tách ra để dễ tìm & dễ sửa.) */
 
+// Đồng hồ đếm ngược cho bài có giới hạn thời gian (giáo viên đặt trong lúc
+// soạn bài) — bắt đầu chạy ngay khi học sinh bấm vào làm bài, hết giờ thì
+// tự động nộp bài luôn (không cần xác nhận), khoá không cho làm tiếp.
+function stopTakeTestCountdown(){
+  if(takeTestCountdownHandle){ clearInterval(takeTestCountdownHandle); takeTestCountdownHandle = null; }
+}
+function startTakeTestCountdown(){
+  stopTakeTestCountdown();
+  if(!takeTestDeadline) return;
+  takeTestCountdownHandle = setInterval(()=>{
+    const remaining = Math.max(0, Math.ceil((takeTestDeadline - Date.now())/1000));
+    const el = document.getElementById('takeTestCountdownDisplay');
+    if(el){
+      el.textContent = '⏱ ' + fmtTestCountdown(remaining);
+      el.classList.toggle('low', remaining <= 60);
+    }
+    if(remaining <= 0){
+      stopTakeTestCountdown();
+      if(takeTestLocked || !takeTestOpen) return;
+      takeTestLocked = true;
+      toast('⏱ Hết giờ! Bài đã được tự động nộp');
+      submitTest();
+      render();
+    }
+  }, 1000);
+}
+function fmtTestCountdown(totalSeconds){
+  const m = Math.floor(totalSeconds/60), s = totalSeconds%60;
+  return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+}
+
 function renderTakeTest(){
   const wrap = document.createElement('div');
   wrap.style.display = 'contents';
@@ -16,6 +47,7 @@ function renderTakeTest(){
   const topSubmitBtn = document.createElement('button');
   topSubmitBtn.className = 'top-submit-btn';
   topSubmitBtn.textContent = 'Nộp bài';
+  topSubmitBtn.disabled = takeTestLocked;
   topSubmitBtn.onclick = showSubmitConfirm;
   header.appendChild(topSubmitBtn);
   wrap.appendChild(header);
@@ -26,8 +58,19 @@ function renderTakeTest(){
   backLink.className = 'back-link';
   backLink.textContent = '← Thoát (không lưu)';
   backLink.style.marginBottom = '16px';
-  backLink.onclick = ()=>{ takeTestOpen = null; render(); };
+  backLink.disabled = takeTestLocked;
+  backLink.onclick = ()=>{ stopTakeTestCountdown(); takeTestOpen = null; render(); };
   main.appendChild(backLink);
+
+  if(takeTestOpen.timeLimitMinutes){
+    const remaining = takeTestDeadline ? Math.max(0, Math.ceil((takeTestDeadline - Date.now())/1000)) : takeTestOpen.timeLimitMinutes*60;
+    const cd = document.createElement('div');
+    cd.id = 'takeTestCountdownDisplay';
+    cd.className = 'quiz-countdown' + (remaining<=60 ? ' low' : '');
+    cd.style.marginBottom = '18px';
+    cd.textContent = '⏱ ' + fmtTestCountdown(remaining);
+    main.appendChild(cd);
+  }
 
   const total = takeTestOpen.questions.length;
   const progressWrap = document.createElement('div');

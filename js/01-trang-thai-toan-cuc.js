@@ -107,6 +107,9 @@ let testReviewOpen = false;                     // true while the dedicated "Xem
 
 let takeTestOpen = null;                        // {id,title,questions} while actively taking a test
 let takeTestAnswers = {};                       // {questionId: answer}
+let takeTestDeadline = null;      // epoch ms — mốc hết giờ nếu bài có giới hạn thời gian, null = không giới hạn
+let takeTestCountdownHandle = null; // setInterval id của đồng hồ đếm ngược làm bài, dọn dẹp khi nộp/thoát
+let takeTestLocked = false;       // true khi đã hết giờ và đang tự động nộp — khoá không cho bấm gì thêm
 let essayPhotoProcessing = null;                // questionId whose photo is currently being compressed/added, or null
 let reviewQueue = [];
 let sessionHadMiss = false;          // có thẻ nào bị chấm "Quên" trong phiên hiện tại không (huy hiệu Phiên hoàn hảo)

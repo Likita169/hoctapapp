@@ -143,6 +143,62 @@ function renderTestEditor(){
     publishBox.appendChild(dlHint);
   }
 
+  // --- giới hạn thời gian làm bài: học sinh bấm vào làm là đồng hồ đếm
+  // ngược bắt đầu chạy, hết giờ tự động nộp bài luôn, không cần xác nhận ---
+  const timeLimitLabel = document.createElement('div');
+  timeLimitLabel.className = 'tr-sub';
+  timeLimitLabel.style.fontWeight = '600';
+  timeLimitLabel.style.margin = '2px 0 -2px';
+  timeLimitLabel.textContent = 'Giới hạn thời gian làm bài';
+  publishBox.appendChild(timeLimitLabel);
+
+  const timeLimitRow = document.createElement('div');
+  timeLimitRow.style.display = 'flex'; timeLimitRow.style.gap = '8px';
+  [[false,'Không giới hạn'],[true,'Có giới hạn']].forEach(([wantsLimit,label])=>{
+    const b = document.createElement('button');
+    b.type='button'; b.textContent=label;
+    b.style.flex='1'; b.style.padding='9px'; b.style.borderRadius='9px'; b.style.fontSize='12.5px'; b.style.fontWeight='600';
+    const active = !!testEditorOpen._timeLimitDraftOn === wantsLimit;
+    b.style.border = active ? '1px solid var(--coral)' : '1px solid var(--line)';
+    b.style.background = active ? 'var(--coral)' : 'var(--bg-elev)';
+    b.style.color = active ? 'var(--bg)' : 'var(--white)';
+    b.disabled = publishBusy;
+    b.onclick = ()=>{
+      if(wantsLimit){
+        testEditorOpen._timeLimitDraftOn = true;
+        render();
+      } else {
+        testEditorOpen._timeLimitDraftOn = false;
+        publishTest(!!testEditorOpen.published, testEditorOpen.maxAttempts, undefined, null);
+      }
+    };
+    timeLimitRow.appendChild(b);
+  });
+  publishBox.appendChild(timeLimitRow);
+
+  if(testEditorOpen._timeLimitDraftOn){
+    const tlField = document.createElement('div');
+    tlField.style.display = 'flex'; tlField.style.flexWrap = 'wrap'; tlField.style.gap = '8px';
+    [15, 30, 45, 60, 90].forEach(mins=>{
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chip' + (testEditorOpen.timeLimitMinutes===mins ? ' active' : '');
+      chip.textContent = mins + ' phút';
+      chip.disabled = publishBusy;
+      chip.onclick = ()=> publishTest(!!testEditorOpen.published, testEditorOpen.maxAttempts, undefined, mins);
+      tlField.appendChild(chip);
+    });
+    publishBox.appendChild(tlField);
+
+    const tlHint = document.createElement('div');
+    tlHint.className = 'tr-sub';
+    tlHint.style.margin = '2px 0 0';
+    tlHint.textContent = testEditorOpen.timeLimitMinutes
+      ? `Học sinh bấm vào làm bài là đồng hồ ${testEditorOpen.timeLimitMinutes} phút bắt đầu chạy — hết giờ tự động nộp, không kịp làm tiếp.`
+      : 'Chọn số phút ở trên.';
+    publishBox.appendChild(tlHint);
+  }
+
   const scoresBtn = document.createElement('button');
   scoresBtn.className = 'save-btn';
   scoresBtn.style.background = 'var(--bg-elev)'; scoresBtn.style.color = 'var(--white)'; scoresBtn.style.border = '1px solid var(--line)';

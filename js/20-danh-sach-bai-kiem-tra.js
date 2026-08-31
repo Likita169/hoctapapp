@@ -24,6 +24,7 @@ function closeStudentTestList(){
   studentTestDetailOpen = null;
   testReviewOpen = false;
   takeTestOpen = null;
+  stopTakeTestCountdown();
   render();
 }
 
@@ -59,11 +60,19 @@ function startTakeTest(){
   takeTestOpen = {
     id: studentTestDetailOpen.id, title: studentTestDetailOpen.title, questions,
     testType: studentTestDetailOpen.testType,
-    attachmentName: studentTestDetailOpen.attachmentName, attachmentMime: studentTestDetailOpen.attachmentMime, attachmentData: studentTestDetailOpen.attachmentData
+    attachmentName: studentTestDetailOpen.attachmentName, attachmentMime: studentTestDetailOpen.attachmentMime, attachmentData: studentTestDetailOpen.attachmentData,
+    timeLimitMinutes: studentTestDetailOpen.timeLimitMinutes || null,
   };
   takeTestAnswers = {};
   questions.forEach(q=>{ if(q.type==='essay') takeTestAnswers[q.id] = []; });
   testReviewOpen = false;
+  takeTestLocked = false;
+  if(takeTestOpen.timeLimitMinutes){
+    takeTestDeadline = Date.now() + takeTestOpen.timeLimitMinutes * 60000;
+    startTakeTestCountdown();
+  } else {
+    takeTestDeadline = null;
+  }
   render();
 }
 
@@ -81,6 +90,7 @@ async function submitTest(){
     const idx = studentTests.findIndex(t=>t.id===takeTestOpen.id);
     if(idx>=0) studentTests[idx].mySubmission = studentTestDetailOpen.mySubmission;
     const wasEssay = takeTestOpen.testType === 'essay';
+    stopTakeTestCountdown();
     takeTestOpen = null;
     toast(wasEssay ? 'Đã nộp bài ✓ Chờ giáo viên chấm' : 'Đã nộp bài ✓ Điểm: ' + res.score + '/' + res.total);
     render();

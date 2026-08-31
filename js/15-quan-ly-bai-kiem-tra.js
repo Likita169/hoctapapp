@@ -70,6 +70,7 @@ async function openTestEditor(testId){
   try{
     const detail = await authorizedGet('/tests/get?testId=' + encodeURIComponent(testId));
     detail._deadlineDraftOn = !!detail.deadlineAt;   // UI-only flag, not sent to server
+    detail._timeLimitDraftOn = !!detail.timeLimitMinutes;  // UI-only flag, not sent to server
     testEditorOpen = detail;
     testEditorFresh = true;
     testTitleEditing = false;
