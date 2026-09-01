@@ -6015,12 +6015,17 @@ function renderTakeTest(){
 
   if(takeTestOpen.timeLimitMinutes){
     const remaining = takeTestDeadline ? Math.max(0, Math.ceil((takeTestDeadline - Date.now())/1000)) : takeTestOpen.timeLimitMinutes*60;
+    // Bọc trong 1 thanh "dính" (position:sticky) để đồng hồ luôn hiện ở đầu
+    // màn hình dù học sinh cuộn xuống xem câu hỏi bên dưới — trước đây đồng
+    // hồ chỉ nằm trong luồng cuộn bình thường nên cuộn xuống là mất hút.
+    const cdBar = document.createElement('div');
+    cdBar.className = 'take-test-timer-bar';
     const cd = document.createElement('div');
     cd.id = 'takeTestCountdownDisplay';
     cd.className = 'quiz-countdown' + (remaining<=60 ? ' low' : '');
-    cd.style.marginBottom = '18px';
     cd.textContent = '⏱ ' + fmtTestCountdown(remaining);
-    main.appendChild(cd);
+    cdBar.appendChild(cd);
+    main.appendChild(cdBar);
   }
 
   const total = takeTestOpen.questions.length;
