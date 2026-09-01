@@ -671,6 +671,16 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
 }
 .quiz-countdown.low{color:var(--coral); background:rgba(239,91,115,0.16); animation: riseSm .25s var(--ease-out) both, pulseLow 1s ease-in-out infinite;}
 @keyframes pulseLow{ 0%,100%{opacity:1;} 50%{opacity:0.55;} }
+/* Thanh chứa đồng hồ đếm ngược lúc học sinh làm bài kiểm tra có giới hạn
+   thời gian — "dính" ở đầu khu vực cuộn (main) bằng position:sticky, nền
+   đặc (var(--bg)) để che chữ câu hỏi cuộn qua bên dưới, nhờ vậy học sinh
+   luôn thấy còn bao nhiêu thời gian dù đang cuộn xem câu nào. */
+.take-test-timer-bar{
+  position:sticky; top:0; z-index:5;
+  margin:0 -20px 18px; padding:10px 20px 14px;
+  background:var(--bg); border-bottom:1px solid var(--line);
+}
+.take-test-timer-bar .quiz-countdown{margin:0;}
 .quiz-choices{padding:0 16px 26px; display:grid; grid-template-columns:1fr 1fr; gap:8px; animation: riseSm .3s var(--ease-out) both;}
 .quiz-choice{
   padding:13px 10px; border-radius:var(--radius-sm); border:1px solid var(--line);
