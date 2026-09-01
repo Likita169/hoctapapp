@@ -443,3 +443,51 @@ báo kiểu này.
 
 **Lưu ý bảo mật:** cặp khoá VAPID ở trên chỉ dùng cho riêng app của bạn,
 không chia sẻ cho ai khác dùng chung Worker này.
+
+## Thông báo giao bài (báo học sinh ngay khi có bài mới)
+
+Ngoài chuông 🔔 trong app (đã có sẵn, không cần cài gì thêm), giáo viên
+giao bài xong app còn **đẩy thông báo tới điện thoại/trình duyệt của học
+sinh ngay lập tức, kể cả khi học sinh đã đóng app** — dùng chung máy chủ
+`on-tap-push` ở phần "Cài máy chủ nhắc đúng giờ" bên trên, nên bạn **phải
+làm xong phần đó trước**, rồi làm thêm 2 bước dưới đây.
+
+**Điều kiện:** học sinh phải từng bật **"Nhắc đúng giờ mỗi ngày"** ở Cài
+đặt của app (chỉ cần bật 1 lần, không cần đúng giờ nhắc) — vì hệ thống
+"nhận thiết bị nào của tài khoản nào" dùng chung với tính năng nhắc ôn tập
+đó. Học sinh chưa bật thì vẫn thấy bài mới ở chuông 🔔 khi mở app, chỉ là
+không có thông báo đẩy ngay lúc đó.
+
+**Bước 1 — Thêm 1 khoá bí mật dùng chung giữa 2 Worker:**
+
+Đây là "mật khẩu" để Worker đồng bộ (`on-tap-sync`) được phép nhờ Worker
+nhắc nhở (`on-tap-push`) gửi thông báo hộ — nghĩ ra 1 chuỗi ký tự ngẫu
+nhiên dài (ví dụ bấm lung tung trên bàn phím ra khoảng 32 ký tự), rồi thêm
+**cùng 1 giá trị đó** ở cả 2 nơi:
+
+1. Worker `on-tap-push` → tab **Settings** → **Variables and Secrets** →
+   **Add** → tên `INTERNAL_SECRET`, kiểu **Secret**, dán chuỗi bạn vừa nghĩ
+   ra → **Save and deploy**
+2. Worker `on-tap-sync` (Worker đồng bộ tài khoản, xem mục "Tài khoản &
+   đồng bộ") → cũng vào **Settings** → **Variables and Secrets** → **Add**
+   → tên `PUSH_INTERNAL_SECRET`, kiểu **Secret**, dán **y hệt** chuỗi ở
+   bước 1 (2 tên biến khác nhau nhưng giá trị phải giống nhau) → **Save and
+   deploy**
+
+**Bước 2 — Dán lại code mới cho cả 2 Worker:**
+1. Worker `on-tap-push` → **Edit code** → xoá hết → dán lại toàn bộ nội
+   dung file `push-server/worker.js` (bản mới) → **Deploy**
+2. Worker `on-tap-sync` → **Edit code** → xoá hết → dán lại toàn bộ nội
+   dung file `sync-server/worker.js` (bản mới) → **Deploy**
+3. Mở `version.js`, tăng `APP_VERSION` lên 1 bậc, deploy lại `srs-app` như
+   bình thường (bước này cho `app.js` biết gửi kèm tài khoản khi đăng ký
+   nhắc, không đụng gì tới 2 Worker ở trên)
+
+Xong — lần tới giáo viên giao bài (bấm "Giao bài" chuyển bài từ nháp sang
+đã giao), mọi học sinh trong lớp đã từng bật "Nhắc đúng giờ mỗi ngày" sẽ
+nhận được thông báo kiểu "Bài kiểm tra mới: ..." gần như ngay lập tức. Bài
+tự luận chấm xong cũng báo tương tự.
+
+**Nếu bỏ qua phần này:** không sao cả — chuông 🔔 trong app vẫn hoạt động
+bình thường như trước giờ, chỉ là học sinh phải tự mở app lên mới thấy có
+bài mới, không có thông báo đẩy ngay lúc giáo viên giao bài.

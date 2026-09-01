@@ -35,7 +35,7 @@ const DEFAULT_PROGRESS = {
 let DATA = { cards: [], subjects: [], settings: Object.assign({}, DEFAULT_SETTINGS), progress: Object.assign({}, DEFAULT_PROGRESS), updatedAt: 0 };
 let VIEW = 'home';
 /* ---- account / cross-device sync state ---- */
-let AUTH = { token: null, email: null, role: null, name: null }; // loaded from localStorage in loadAuth()
+let AUTH = { token: null, email: null, role: null, name: null, userId: null }; // loaded from localStorage in loadAuth()
 let authMode = 'login';                       // 'login' | 'register'
 let authBusy = false;
 let authError = '';
@@ -2554,7 +2554,7 @@ async function doRegister(email, password, name, role){
   authBusy = true; authError = ''; render();
   try{
     const res = await authRequest('/register', {email, password, name, role});
-    AUTH = {token: res.token, email: res.email, role: res.role, name: res.name};
+    AUTH = {token: res.token, email: res.email, role: res.role, name: res.name, userId: res.userId||null};
     saveAuth();
     authModalOpen = false;
     const roleLabel = res.role === 'teacher' ? 'Giáo viên' : 'Học sinh';
@@ -2571,7 +2571,7 @@ async function doLogin(email, password){
   authBusy = true; authError = ''; render();
   try{
     const res = await authRequest('/login', {email, password});
-    AUTH = {token: res.token, email: res.email, role: res.role, name: res.name};
+    AUTH = {token: res.token, email: res.email, role: res.role, name: res.name, userId: res.userId||null};
     saveAuth();
     authModalOpen = false;
     await afterLogin();
@@ -2586,6 +2586,13 @@ async function doLogin(email, password){
 async function afterLogin(suffix){
   suffix = suffix || '';
   loadNotifications();
+  // Nếu thiết bị này đã bật "nhắc nhở đúng giờ" từ trước (lúc chưa đăng
+  // nhập, hoặc đăng nhập tài khoản khác), đăng ký lại ngay để gắn subscription
+  // hiện có với userId vừa đăng nhập — nếu không, giáo viên giao bài xong
+  // học sinh sẽ không nhận được thông báo đẩy dù app đã có quyền thông báo.
+  if(DATA.settings.pushEnabled){
+    subscribePush(DATA.settings.pushHour ?? 20, DATA.settings.pushMinute ?? 0).catch(()=>{});
+  }
   try{
     const remote = await fetchSync();
     const localHasContent = DATA.cards.length>0 || DATA.subjects.length>0;
@@ -2694,7 +2701,7 @@ async function silentInitialSync(){
 }
 
 async function logout(silent){
-  AUTH = {token:null, email:null, role:null, name:null};
+  AUTH = {token:null, email:null, role:null, name:null, userId:null};
   saveAuth();
   syncStatus = 'idle';
   clearTimeout(_pushDebounce);
@@ -6058,13 +6065,30 @@ function renderTakeTest(){
     main.appendChild(attachCard);
   }
 
-  takeTestOpen.questions.forEach((q,i)=>{
+  // Nhóm câu hỏi theo từng phần (Trắc nghiệm / Đúng-Sai / Trả lời ngắn / Tự luận) —
+  // chỉ hiện 1 tiêu đề đầu mỗi phần (giống cách đề thi giấy vẫn ghi), thay vì dán
+  // nhãn loại câu lên từng câu một. Phần nào không có câu nào thì không hiện.
+  const TYPE_ORDER = ['mcq','true_false','short_answer','essay'];
+  const ROMAN = ['I','II','III','IV'];
+  const groups = TYPE_ORDER
+    .map(type => ({ type, list: takeTestOpen.questions.filter(q=>q.type===type) }))
+    .filter(g => g.list.length>0);
+
+  groups.forEach((g, gi)=>{
+    if(groups.length>1){
+      const sectionHead = document.createElement('div');
+      sectionHead.className = 'section-head';
+      sectionHead.innerHTML = `<div class="section-title">${ROMAN[gi]}. ${typeLabel[g.type]||g.type}</div>`;
+      main.appendChild(sectionHead);
+    }
+
+    g.list.forEach((q,i)=>{
     const qcard = document.createElement('div');
     qcard.className = 'qcard';
 
     const promptEl = document.createElement('div');
     promptEl.className = 'qcard-prompt';
-    promptEl.innerHTML = `<span class="question-type-tag ${q.type}" style="margin-right:2px;">${typeLabel[q.type]||q.type}</span><br>Câu ${i+1}: ${escapeHtml(q.prompt)}`;
+    promptEl.innerHTML = `Câu ${i+1}: ${escapeHtml(q.prompt)}`;
     qcard.appendChild(promptEl);
 
     if(q.imageData){
@@ -6194,6 +6218,7 @@ function renderTakeTest(){
     }
 
     main.appendChild(qcard);
+    });
   });
 
   wrap.appendChild(main);
@@ -6291,7 +6316,8 @@ async function subscribePush(hour, minute){
         subscription: sub.toJSON(),
         hour, minute,
         tzOffsetMinutes: -new Date().getTimezoneOffset(),
-        label: 'on-tap'
+        label: 'on-tap',
+        userId: AUTH.userId || null
       })
     });
     if(!subRes.ok){
