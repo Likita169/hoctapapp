@@ -1044,56 +1044,74 @@ function renderAdd(){
   back.onclick = ()=> setView('home');
   main.appendChild(back);
 
-  // subject field
-  const fSub = document.createElement('div');
-  fSub.className='field';
-  fSub.innerHTML = `<label>Bộ thẻ</label>`;
-  const picker = document.createElement('div');
-  picker.className='subject-picker';
-  DATA.subjects.forEach(s=>{
-    const chip = document.createElement('div');
-    chip.className='chip' + (addSubjectChoice===s.id ? ' active':'');
-    chip.style.background = addSubjectChoice===s.id ? s.color : 'var(--bg-elev)';
-    chip.style.borderColor = s.color;
-    chip.textContent = subjectPath(s.id).map(x=>x.name).join(' › ');
-    chip.onclick = ()=>{ addSubjectChoice = s.id; render(); };
-    picker.appendChild(chip);
-  });
-  const newChip = document.createElement('div');
-  newChip.className='chip chip-new';
-  newChip.textContent = '+ Bộ thẻ mới';
-  newChip.onclick = ()=>{
-    newSubjectParentId = null;
-    subjectModalColor = COLORS[DATA.subjects.length % COLORS.length];
-    subjectModalCountdownEnabled = false;
-    subjectModalCountdownSeconds = 15;
-    subjectModalOpen = true;
-    render();
-  };
-  picker.appendChild(newChip);
-  fSub.appendChild(picker);
-  main.appendChild(fSub);
+  // Loại thẻ + Bộ thẻ — 2 hàng chọn gọn, gộp chung 1 khối (giống kiểu
+  // "Loại: ... / Bộ: ..." của AnkiDroid) thay cho dãy chip xuống dòng dài.
+  const group = document.createElement('div');
+  group.className = 'select-row-group';
 
-  // Loại thẻ: Lật thẻ (mặc định) hay Điền từ (cloze)
-  const fType = document.createElement('div');
-  fType.className = 'field';
-  fType.innerHTML = `<label>Loại thẻ</label>`;
-  const typeToggle = document.createElement('div');
-  typeToggle.className = 'card-type-toggle';
-  const typeBtns = [
+  // -- Loại thẻ --
+  const rowType = document.createElement('label');
+  rowType.className = 'select-row';
+  const typeOptions = [
     {id:'basic', label:'🔄 Lật thẻ'},
     {id:'cloze', label:'🕳 Điền từ'},
   ];
-  typeBtns.forEach(t=>{
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'card-type-btn' + (addCardType===t.id ? ' active' : '');
-    btn.textContent = t.label;
-    btn.onclick = ()=>{ addCardType = t.id; render(); };
-    typeToggle.appendChild(btn);
+  rowType.innerHTML = `
+    <span class="select-row-label">Loại</span>
+    <span class="select-row-value">${typeOptions.find(t=>t.id===addCardType).label}</span>
+  `;
+  const typeSelect = document.createElement('select');
+  typeSelect.className = 'select-row-input';
+  typeOptions.forEach(t=>{
+    const opt = document.createElement('option');
+    opt.value = t.id; opt.textContent = t.label;
+    if(t.id===addCardType) opt.selected = true;
+    typeSelect.appendChild(opt);
   });
-  fType.appendChild(typeToggle);
-  main.appendChild(fType);
+  typeSelect.onchange = ()=>{ addCardType = typeSelect.value; render(); };
+  rowType.appendChild(typeSelect);
+  group.appendChild(rowType);
+
+  // -- Bộ thẻ --
+  const rowSub = document.createElement('label');
+  rowSub.className = 'select-row';
+  const currentSubject = addSubjectChoice ? subjectById(addSubjectChoice) : null;
+  rowSub.innerHTML = `
+    <span class="select-row-label">Bộ</span>
+    <span class="select-row-value">${currentSubject ? escapeHtml(subjectPath(currentSubject.id).map(x=>x.name).join(' › ')) : 'Chọn bộ thẻ…'}</span>
+  `;
+  const subSelect = document.createElement('select');
+  subSelect.className = 'select-row-input';
+  if(!DATA.subjects.length){
+    const placeholder = document.createElement('option');
+    placeholder.value=''; placeholder.textContent='(Chưa có bộ thẻ nào)'; placeholder.disabled=true; placeholder.selected=true;
+    subSelect.appendChild(placeholder);
+  }
+  DATA.subjects.forEach(s=>{
+    const opt = document.createElement('option');
+    opt.value = s.id; opt.textContent = subjectPath(s.id).map(x=>x.name).join(' › ');
+    if(s.id===addSubjectChoice) opt.selected = true;
+    subSelect.appendChild(opt);
+  });
+  const newOpt = document.createElement('option');
+  newOpt.value = '__new__'; newOpt.textContent = '+ Bộ thẻ mới…';
+  subSelect.appendChild(newOpt);
+  subSelect.onchange = ()=>{
+    if(subSelect.value==='__new__'){
+      newSubjectParentId = null;
+      subjectModalColor = COLORS[DATA.subjects.length % COLORS.length];
+      subjectModalCountdownEnabled = false;
+      subjectModalCountdownSeconds = 15;
+      subjectModalOpen = true;
+      render();
+      return;
+    }
+    addSubjectChoice = subSelect.value; render();
+  };
+  rowSub.appendChild(subSelect);
+  group.appendChild(rowSub);
+
+  main.appendChild(group);
 
   if(addCardType === 'cloze'){
     const fCloze = document.createElement('div');
