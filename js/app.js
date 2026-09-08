@@ -598,6 +598,32 @@ function attachDeckLongPress(row, subject){
 
 function setView(v){ VIEW = v; render(); }
 
+// Vài nơi chạy NỀN (tải thông báo mỗi 60s, đồng bộ ngầm lúc mới mở app...)
+// muốn vẽ lại giao diện để hiện dữ liệu mới, nhưng render() luôn xoá sạch
+// $app rồi dựng lại từ đầu (xem hàm render() bên dưới) — gọi thẳng render()
+// ngay lúc người dùng đang gõ dở thẻ mới thì cái <textarea> đang gõ bị huỷ
+// và tạo lại mới tinh: chữ vẫn còn (nhờ addCardDraft) nhưng ô nhập bị mất
+// focus, và trên điện thoại nghĩa là bàn phím ảo tự đóng lại — đúng kiểu
+// "gõ được một lúc lại mất bàn phím" dù không mất chữ. Hàm này hoãn việc
+// vẽ lại tới khi người dùng gõ xong (rời ô đang gõ) hoặc rời hẳn màn Thêm
+// thẻ, thay vì ngắt ngang — dùng chung cách kiểm tra "đang gõ" như
+// applyUpdate() (xem phần cập nhật Service Worker phía dưới).
+let _renderPendingAfterTyping = false;
+function renderUnlessTyping(){
+  const active = document.activeElement;
+  const isTyping = active && (active.tagName==='TEXTAREA' || active.tagName==='INPUT') && document.body.contains(active);
+  const isComposingCard = VIEW === 'add' && addCardDraftHasContent();
+  if(isTyping || isComposingCard){
+    if(_renderPendingAfterTyping) return; // đã xếp hàng chờ 1 lượt rồi
+    _renderPendingAfterTyping = true;
+    const retry = ()=>{ _renderPendingAfterTyping = false; renderUnlessTyping(); };
+    if(isTyping) active.addEventListener('blur', retry, {once:true});
+    else setTimeout(retry, 5000);
+    return;
+  }
+  render();
+}
+
 let _prevRenderSig = null; // used to decide whether to preserve scroll position across a re-render
 
 function currentRenderSig(){
@@ -2777,7 +2803,7 @@ async function silentInitialSync(){
     if(remote && remote.data && remote.updatedAt > (DATA.updatedAt||0)){
       applyRemoteData(remote);
       syncStatus = 'synced';
-      render();
+      renderUnlessTyping();
     } else {
       schedulePush();
     }
@@ -3327,7 +3353,7 @@ function renderClassroomConfirmModal(){
 function loadNotifications(){
   if(!AUTH.token) return;
   authorizedGet('/notifications/list')
-    .then(res=>{ NOTIFICATIONS = res.notifications||[]; notificationsUnreadCount = res.unreadCount||0; notificationsLoadedOnce = true; render(); })
+    .then(res=>{ NOTIFICATIONS = res.notifications||[]; notificationsUnreadCount = res.unreadCount||0; notificationsLoadedOnce = true; renderUnlessTyping(); })
     .catch(()=>{ /* im lặng — chuông không quan trọng bằng nội dung chính của app */ });
 }
 
