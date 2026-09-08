@@ -177,6 +177,43 @@ let quizCountdownCardId = null;     // id thẻ mà bộ đếm đang chạy ứ
 /* ---- soạn thẻ: loại "Lật thẻ" (mặc định) hay "Điền từ" (cloze) ---- */
 let addCardType = 'basic';       // 'basic' | 'cloze' — chọn ở màn Thêm thẻ
 
+/* ---- bản nháp thẻ đang soạn dở (màn Thêm thẻ) ----
+   Vì sao cần: các ô nhập ở màn Thêm thẻ (front/back/cloze) là <textarea>
+   "thường" — chữ gõ vào chỉ nằm trong chính cái DOM node đó, KHÔNG được lưu
+   vào biến state nào cả. Mà render() thì luôn xoá sạch $app.innerHTML rồi
+   vẽ lại từ đầu (xem hàm render()) — bất cứ thứ gì gọi render() trong lúc
+   đang gõ dở (tải thông báo mỗi 60s, mở lại app sau khi rời sang ứng dụng
+   khác, bản cập nhật app mới cài xong...) đều xoá bay toàn bộ chữ đang gõ
+   vì textarea bị tạo lại từ con số 0. Đây chính là nguyên nhân gây ra lỗi
+   "gõ được một lúc là mất hết chữ".
+   Cách sửa: mọi lần gõ đều đồng bộ ngay vào addCardDraft (và ghi nhẹ xuống
+   localStorage), rồi mỗi lần vẽ lại màn Thêm thẻ đều lấy chữ từ đây ra điền
+   lại vào textarea — kể cả khi app phải khởi động lại hẳn (ví dụ do cập
+   nhật service worker) thì mở app lên vẫn thấy đúng chữ đang soạn dở. */
+let addCardDraft = { front:'', back:'', cloze:'', type:null, subjectId:null };
+try{
+  const _rawAddDraft = localStorage.getItem('srs_add_draft');
+  if(_rawAddDraft) addCardDraft = Object.assign(addCardDraft, JSON.parse(_rawAddDraft));
+}catch(e){ /* ignore */ }
+function addCardDraftHasContent(){
+  return !!((addCardDraft.front||'').trim() || (addCardDraft.back||'').trim() || (addCardDraft.cloze||'').trim());
+}
+let _addCardDraftSaveDebounce = null;
+function saveAddCardDraft(){
+  clearTimeout(_addCardDraftSaveDebounce);
+  _addCardDraftSaveDebounce = setTimeout(()=>{
+    try{
+      if(addCardDraftHasContent()) localStorage.setItem('srs_add_draft', JSON.stringify(addCardDraft));
+      else localStorage.removeItem('srs_add_draft');
+    }catch(e){ /* ignore */ }
+  }, 250);
+}
+function clearAddCardDraft(){
+  addCardDraft = { front:'', back:'', cloze:'', type:null, subjectId:null };
+  clearTimeout(_addCardDraftSaveDebounce);
+  try{ localStorage.removeItem('srs_add_draft'); }catch(e){ /* ignore */ }
+}
+
 /* ---- trò chơi Ghép thẻ — chỉ để luyện vui, không ảnh hưởng lịch ôn tập ---- */
 let matchGameSubjectId = null;
 let matchGamePairs = [];         // [{cardId, front, back}] các cặp trong ván đang chơi
@@ -972,6 +1009,22 @@ function buildCardTextarea(fieldId, placeholder, opts){
   field.placeholder = placeholder || '';
   field.rows = 3;
 
+  // draftKey: gắn ô nhập này với addCardDraft.<draftKey> để chữ đang gõ
+  // sống sót qua mọi lần render() lại (xem giải thích ở khai báo addCardDraft
+  // phía trên) — điền lại chữ cũ ngay khi tạo textarea, và lưu lại mỗi khi
+  // người dùng gõ thêm.
+  if(opts.draftKey){
+    field.value = addCardDraft[opts.draftKey] || '';
+    const syncDraft = ()=>{
+      addCardDraft[opts.draftKey] = field.value;
+      addCardDraft.type = addCardType;
+      addCardDraft.subjectId = addSubjectChoice;
+      saveAddCardDraft();
+    };
+    field.addEventListener('input', syncDraft);
+    opts._syncDraft = syncDraft; // dùng lại bên dưới cho nút "Ẩn từ"
+  }
+
   if(opts.clozeButton){
     const toolbar = document.createElement('div');
     toolbar.className = 'math-toolbar';
@@ -983,7 +1036,13 @@ function buildCardTextarea(fieldId, placeholder, opts){
     // preventDefault ở mousedown để ô nhập không bị mất focus/vị trí con
     // trỏ trước khi kịp đánh dấu chỗ trống.
     btn.onmousedown = (e)=> e.preventDefault();
-    btn.onclick = (e)=>{ e.preventDefault(); wrapSelectionAsCloze(field); };
+    btn.onclick = (e)=>{
+      e.preventDefault();
+      wrapSelectionAsCloze(field);
+      // wrapSelectionAsCloze gán thẳng field.value nên không tự nổ sự kiện
+      // 'input' — đồng bộ tay vào draft để không mất phần vừa đánh dấu.
+      if(opts._syncDraft) opts._syncDraft();
+    };
     toolbar.appendChild(btn);
     wrap.appendChild(toolbar);
   }
@@ -1041,7 +1100,12 @@ function renderAdd(){
 
   const back = document.createElement('button');
   back.className='back-link'; back.textContent='← Quay lại';
-  back.onclick = ()=> setView('home');
+  back.onclick = ()=>{
+    // Bấm "Quay lại" là chủ động huỷ — khác với việc bị mất chữ ngoài ý
+    // muốn mà bản sửa này đang chặn, nên ở đây vẫn dọn bản nháp như cũ.
+    clearAddCardDraft();
+    setView('home');
+  };
   main.appendChild(back);
 
   // Loại thẻ + Bộ thẻ — 2 hàng chọn gọn, gộp chung 1 khối (giống kiểu
@@ -1118,7 +1182,7 @@ function renderAdd(){
     fCloze.className = 'field';
     fCloze.innerHTML = `<label>Câu văn — bôi đen từ/cụm từ cần ẩn rồi bấm "🕳 Ẩn từ"</label>`;
     main.appendChild(fCloze);
-    const clozeBuilt = buildCardTextarea('clozeInput', 'Ví dụ: Nước sôi ở 100 độ C.', {clozeButton:true});
+    const clozeBuilt = buildCardTextarea('clozeInput', 'Ví dụ: Nước sôi ở 100 độ C.', {clozeButton:true, draftKey:'cloze'});
     fCloze.appendChild(clozeBuilt.wrap);
     const clozeHint = document.createElement('p');
     clozeHint.style.cssText = 'color:var(--ink-faint); font-size:12px; margin:8px 2px 0; line-height:1.5;';
@@ -1141,6 +1205,7 @@ function renderAdd(){
         DATA.cards.push({id:uid(), subjectId:addSubjectChoice, type:'cloze', front:text, back:'', clozeIndex:idx, ease:2.5, interval:0, reps:0, due:Date.now()});
       });
       await saveData();
+      clearAddCardDraft();
       toast(indices.length>1 ? `Đã lưu ${indices.length} thẻ điền từ ✓` : 'Đã lưu thẻ điền từ ✓');
       render();
     };
@@ -1155,14 +1220,14 @@ function renderAdd(){
   fFront.className='field';
   fFront.innerHTML = `<label>Mặt trước — Câu hỏi / công thức</label>`;
   main.appendChild(fFront);
-  const frontBuilt = buildCardTextarea('frontInput', 'Ví dụ: Định luật II Newton là gì?');
+  const frontBuilt = buildCardTextarea('frontInput', 'Ví dụ: Định luật II Newton là gì?', {draftKey:'front'});
   fFront.appendChild(frontBuilt.wrap);
 
   const fBack = document.createElement('div');
   fBack.className='field';
   fBack.innerHTML = `<label>Mặt sau — Đáp án / giải thích</label>`;
   main.appendChild(fBack);
-  const backBuilt = buildCardTextarea('backInput', 'Ví dụ: F = m.a  (Lực = khối lượng × gia tốc)');
+  const backBuilt = buildCardTextarea('backInput', 'Ví dụ: F = m.a  (Lực = khối lượng × gia tốc)', {draftKey:'back'});
   fBack.appendChild(backBuilt.wrap);
 
   const saveBtn = document.createElement('button');
@@ -1175,6 +1240,7 @@ function renderAdd(){
     if(!front || !back){ toast('Hãy điền cả hai mặt của thẻ'); return; }
     DATA.cards.push({id:uid(), subjectId:addSubjectChoice, type:'basic', front, back, ease:2.5, interval:0, reps:0, due:Date.now()});
     await saveData();
+    clearAddCardDraft();
     toast('Đã lưu thẻ ✓');
     render();
   };
@@ -6444,9 +6510,15 @@ function applyUpdate(worker){
   // they're done instead of yanking the page out from under them.
   const active = document.activeElement;
   const isTyping = active && (active.tagName==='TEXTAREA' || active.tagName==='INPUT') && document.body.contains(active);
-  if(isTyping){
-    const retry = ()=>{ active.removeEventListener('blur', retry); applyUpdate(worker); };
-    active.addEventListener('blur', retry, {once:true});
+  // Riêng màn "Thêm thẻ" còn dở (còn chữ chưa lưu): đừng chỉ dựa vào việc
+  // đang gõ trong Ô NÀO — người dùng bấm sang ô khác (Mặt trước -> Mặt sau)
+  // vẫn tính là blur nhưng họ CHƯA soạn xong thẻ. Đợi tới khi lưu xong/huỷ
+  // (addCardDraft rỗng) hoặc rời màn này hẳn rồi mới khởi động lại.
+  const isComposingCard = VIEW === 'add' && addCardDraftHasContent();
+  if(isTyping || isComposingCard){
+    const retry = ()=> applyUpdate(worker);
+    if(isTyping) active.addEventListener('blur', retry, {once:true});
+    if(isComposingCard) setTimeout(retry, 5000);
     return;
   }
 
@@ -6683,7 +6755,17 @@ function renderMatchGame(){
   await loadData();
   applyTheme();
   watchSystemTheme();
+  // Nếu có bản nháp thẻ đang soạn dở còn sót lại (kể cả sau khi app phải
+  // khởi động lại hẳn để cập nhật), mở thẳng vào màn Thêm thẻ với đúng chữ
+  // đó thay vì để mất — xem giải thích ở khai báo addCardDraft phía trên.
+  const _restoringDraft = addCardDraftHasContent();
+  if(_restoringDraft){
+    VIEW = 'add';
+    if(addCardDraft.type) addCardType = addCardDraft.type;
+    if(addCardDraft.subjectId) addSubjectChoice = addCardDraft.subjectId;
+  }
   render();
+  if(_restoringDraft) toast('Đã khôi phục thẻ bạn đang soạn dở');
   initServiceWorkerUpdates();
   silentInitialSync();
   if(AUTH.token){
