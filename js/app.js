@@ -30,7 +30,8 @@ const DEFAULT_PROGRESS = {
   xp: 0, totalReviews: 0,
   streak: 0, bestStreak: 0, lastStudyDate: null,
   streakFreezes: 1,      // số lượt "đóng băng" chuỗi ngày còn lại (bù 1 ngày lỡ quên ôn)
-  badges: []             // id các huy hiệu đã mở khoá, xem BADGE_DEFS
+  badges: [],            // id các huy hiệu đã mở khoá, xem BADGE_DEFS
+  reviewLog: {}          // {"YYYY-MM-DD": số lượt chấm điểm trong ngày đó} — dùng cho ô "Đã học hôm nay"
 };
 let DATA = { cards: [], subjects: [], settings: Object.assign({}, DEFAULT_SETTINGS), progress: Object.assign({}, DEFAULT_PROGRESS), updatedAt: 0 };
 let VIEW = 'home';
@@ -337,6 +338,34 @@ function dueCards(subjectId){
   const set = new Set(subtreeIds(subjectId));
   return DATA.cards.filter(c => c.due <= now && set.has(c.subjectId));
 }
+// Số lượt thẻ đã chấm điểm (Quên/Khó/Nhớ/Dễ) trong ngày hôm nay — dùng cho
+// ô thống kê "Đã học hôm nay". Đếm theo lượt chấm, không phải theo thẻ, nên
+// 1 thẻ ôn lại nhiều lần trong ngày (ví dụ bấm "Quên" rồi gặp lại) vẫn được
+// tính đủ mỗi lần.
+function reviewsToday(){
+  normalizeProgress();
+  return DATA.progress.reviewLog[todayKey()] || 0;
+}
+// Dự báo số thẻ đến hạn ôn mỗi ngày trong `days` ngày tới (mặc định 30).
+// Ngày đầu tiên (hôm nay) gộp cả thẻ đã quá hạn từ trước, để khớp với số ở
+// ô "Đến hạn hôm nay"; các ngày sau chỉ tính thẻ rơi đúng vào ngày đó.
+function forecastDueByDay(days, subjectId){
+  days = days || 30;
+  const cards = subjectId ? subjectCards(subjectId) : DATA.cards;
+  const startOfToday = new Date();
+  startOfToday.setHours(0,0,0,0);
+  const startMs = startOfToday.getTime();
+  const buckets = [];
+  for(let i=0;i<days;i++){
+    const dayStart = startMs + i*86400000;
+    const dayEnd = dayStart + 86400000;
+    const count = i===0
+      ? cards.filter(c => c.due < dayEnd).length
+      : cards.filter(c => c.due >= dayStart && c.due < dayEnd).length;
+    buckets.push({ date: new Date(dayStart), count });
+  }
+  return buckets;
+}
 // Toàn bộ thẻ trong 1 bộ + các bộ thẻ phụ bên trong nó, KHÔNG lọc theo hạn ôn
 // — dùng cho trò chơi Ghép thẻ (luyện tự do, không theo lịch ôn tập).
 function subjectCards(subjectId){
@@ -369,6 +398,16 @@ function normalizeSubjects(){
 function normalizeProgress(){
   DATA.progress = Object.assign({}, DEFAULT_PROGRESS, DATA.progress || {});
   if(!Array.isArray(DATA.progress.badges)) DATA.progress.badges = [];
+  if(!DATA.progress.reviewLog || typeof DATA.progress.reviewLog !== 'object') DATA.progress.reviewLog = {};
+}
+
+// Xoá bớt các ngày quá cũ trong reviewLog (chỉ ô "Đã học hôm nay" cần dữ
+// liệu gần đây) để tránh dữ liệu phình to dần theo thời gian dùng app.
+function pruneReviewLog(){
+  const log = DATA.progress.reviewLog;
+  const keys = Object.keys(log);
+  if(keys.length <= 60) return;
+  keys.sort().slice(0, keys.length-60).forEach(k=>delete log[k]);
 }
 
 /* 03-thuat-toan-on-tap.js — Thuật toán ôn tập ngắt quãng (grade), tính XP/cấp độ, chuỗi ngày streak, huy hiệu, và hàm toast() hiện thông báo nhỏ ở góc màn hình
@@ -422,6 +461,7 @@ function computeLevel(xp){
 function pad2(n){ return String(n).padStart(2,'0'); }
 function dateKey(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
 function todayKey(){ return dateKey(new Date()); }
+function weekdayLabelVi(d){ return ['CN','T2','T3','T4','T5','T6','T7'][d.getDay()]; }
 // Số ngày lịch chênh lệch giữa 2 khoá "YYYY-MM-DD" (so theo ngày, không theo giờ).
 function daysBetweenKeys(a, b){
   const [ay,am,ad] = a.split('-').map(Number);
@@ -503,6 +543,9 @@ function recordXpAndStreak(quality){
   const beforeLevel = computeLevel(p.xp).level;
   p.xp += XP_PER_GRADE[quality] || 0;
   p.totalReviews += 1;
+  const tKey = todayKey();
+  p.reviewLog[tKey] = (p.reviewLog[tKey] || 0) + 1;
+  pruneReviewLog();
   if(quality === 0) sessionHadMiss = true;
   sessionXpEarned += XP_PER_GRADE[quality] || 0;
   recordStudyDay();
@@ -1717,6 +1760,9 @@ function undoReview(){
     DATA.progress.xp = entry.xpBefore;
     DATA.progress.totalReviews = entry.reviewsBefore;
   }
+  if(entry.reviewLogKey){
+    DATA.progress.reviewLog[entry.reviewLogKey] = entry.reviewLogCountBefore;
+  }
   reviewIdx = entry.idx;
   flipped = false;
   resetAnswerInputState();
@@ -2001,7 +2047,8 @@ function renderReview(){
     row.querySelectorAll('.grade-btn').forEach((btn,i)=>{
       btn.onclick = async ()=>{
         const xpBefore = DATA.progress.xp, reviewsBefore = DATA.progress.totalReviews;
-        reviewHistory.push({cardId: card.id, snapshot: {...card}, idx: reviewIdx, xpBefore, reviewsBefore});
+        const reviewLogKey = todayKey(), reviewLogCountBefore = DATA.progress.reviewLog[reviewLogKey] || 0;
+        reviewHistory.push({cardId: card.id, snapshot: {...card}, idx: reviewIdx, xpBefore, reviewsBefore, reviewLogKey, reviewLogCountBefore});
         grade(card, qualities[i]);
         recordXpAndStreak(qualities[i]);
         await saveData();
@@ -2094,6 +2141,47 @@ function renderManageList(list){
   });
 }
 
+/* ---------------- STATS: biểu đồ dự báo ôn tập ---------------- */
+function renderForecastChart(subjectId){
+  const FORECAST_DAYS = 30;
+  const buckets = forecastDueByDay(FORECAST_DAYS, subjectId);
+  const max = Math.max(1, ...buckets.map(b=>b.count));
+  const next7 = buckets.slice(0,7).reduce((s,b)=>s+b.count,0);
+  const next30 = buckets.reduce((s,b)=>s+b.count,0);
+  const tKey = todayKey();
+
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+
+  const summary = document.createElement('div');
+  summary.className = 'forecast-summary';
+  summary.innerHTML = `<b>${next7}</b> thẻ trong 7 ngày tới · <b>${next30}</b> thẻ trong 30 ngày tới`;
+  wrap.appendChild(summary);
+
+  const chart = document.createElement('div');
+  chart.className = 'forecast-chart';
+  const bars = document.createElement('div');
+  bars.className = 'forecast-bars';
+
+  buckets.forEach(b=>{
+    const isToday = dateKey(b.date) === tKey;
+    const pct = Math.max(4, Math.round((b.count / max) * 100));
+    const col = document.createElement('div');
+    col.className = 'forecast-col' + (isToday ? ' today' : '');
+    col.title = `${weekdayLabelVi(b.date)} ${b.date.getDate()}/${b.date.getMonth()+1}: ${b.count} thẻ`;
+    col.innerHTML = `
+      <div class="forecast-count">${b.count>0 ? b.count : ''}</div>
+      <div class="forecast-track"><div class="forecast-bar" style="height:${pct}%"></div></div>
+      <div class="forecast-daylabel">${weekdayLabelVi(b.date)}<br>${b.date.getDate()}</div>
+    `;
+    bars.appendChild(col);
+  });
+
+  chart.appendChild(bars);
+  wrap.appendChild(chart);
+  return wrap;
+}
+
 /* ---------------- STATS ---------------- */
 function renderStats(){
   const wrap = document.createElement('div');
@@ -2119,6 +2207,7 @@ function renderStats(){
   const due = dueCards().length;
   const mastered = DATA.cards.filter(c=>c.interval>=21).length;
   const learning = DATA.cards.filter(c=>c.reps>0 && c.interval<21).length;
+  const learnedToday = reviewsToday();
 
   main.appendChild(buildProgressBar());
 
@@ -2151,8 +2240,15 @@ function renderStats(){
     <div class="stat-box"><div class="val">${due}</div><div class="lab">Đến hạn hôm nay</div></div>
     <div class="stat-box"><div class="val">${mastered}</div><div class="lab">Đã thuộc lâu (≥21 ngày)</div></div>
     <div class="stat-box"><div class="val">${learning}</div><div class="lab">Đang học</div></div>
+    <div class="stat-box" style="grid-column:1 / -1;"><div class="val">${learnedToday}</div><div class="lab">Thẻ đã học hôm nay</div></div>
   `;
   main.appendChild(grid);
+
+  const forecastLabel = document.createElement('div');
+  forecastLabel.className = 'section-label';
+  forecastLabel.textContent = 'Dự báo ôn tập';
+  main.appendChild(forecastLabel);
+  main.appendChild(renderForecastChart());
 
   const label = document.createElement('div');
   label.className='section-label';

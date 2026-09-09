@@ -801,6 +801,23 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
 .stat-box .val{font-family:'Fraunces',serif; font-size:29px; font-weight:600; font-variant-numeric: tabular-nums; letter-spacing:-0.01em;}
 .stat-box .lab{font-size:12px; color:var(--ink-faint); margin-top:5px;}
 
+/* ---- Dự báo ôn tập (biểu đồ cột trong tab Thống kê) ---- */
+.forecast-summary{font-size:12.5px; color:var(--ink-soft); margin:-4px 0 12px;}
+.forecast-summary b{color:var(--white); font-family:'IBM Plex Mono',monospace; font-weight:700;}
+.forecast-chart{
+  background:var(--bg-elev); border:1px solid var(--line); border-radius:var(--radius-sm);
+  padding:16px 8px 12px; box-shadow:var(--shadow-sm); overflow-x:auto; -webkit-overflow-scrolling:touch;
+}
+.forecast-bars{display:flex; align-items:flex-end; gap:5px; min-width:max-content; padding:0 6px;}
+.forecast-col{display:flex; flex-direction:column; align-items:center; width:24px; flex-shrink:0;}
+.forecast-count{font-size:10px; font-family:'IBM Plex Mono',monospace; color:var(--ink-faint); margin-bottom:4px; height:12px; line-height:12px;}
+.forecast-track{width:100%; height:72px; display:flex; align-items:flex-end;}
+.forecast-bar{width:100%; min-height:3px; border-radius:4px 4px 2px 2px; background:var(--teal); transition:height .3s var(--ease-out);}
+.forecast-daylabel{font-size:9.5px; color:var(--ink-faint); margin-top:6px; text-align:center; line-height:1.25; font-family:'IBM Plex Mono',monospace;}
+.forecast-col.today .forecast-bar{background:var(--amber);}
+.forecast-col.today .forecast-count{color:var(--amber); font-weight:700;}
+.forecast-col.today .forecast-daylabel{color:var(--amber); font-weight:700;}
+
 /* ---------- Nav ---------- */
 nav.tabbar{
   position:absolute; bottom:0; left:0; right:0; max-width:480px; margin:0 auto;
