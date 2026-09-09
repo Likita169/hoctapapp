@@ -1764,6 +1764,12 @@ function undoReview(){
   const entry = reviewHistory.pop();
   const c = DATA.cards.find(x=>x.id===entry.cardId);
   if(c) Object.assign(c, entry.snapshot);
+  // Nếu lượt vừa hoàn tác là "Quên" — lúc chấm đã đẩy thêm 1 bản của thẻ
+  // này xuống cuối hàng đợi để học lại trong phiên; gỡ bản đó ra, nếu
+  // không hoàn tác xong hàng đợi vẫn còn dư 1 lượt gặp lại thẻ này.
+  if(entry.requeued && reviewQueue.length>0 && reviewQueue[reviewQueue.length-1].id===entry.cardId){
+    reviewQueue.pop();
+  }
   // Hoàn lại XP/lượt ôn vừa cộng — tránh việc chấm rồi hoàn tác lặp lại để "cày" XP khống.
   if(typeof entry.xpBefore === 'number'){
     const xpAwarded = DATA.progress.xp - entry.xpBefore;
@@ -2053,7 +2059,7 @@ function renderReview(){
     const row = document.createElement('div');
     row.className='grade-row';
     row.innerHTML = `
-      <button class="grade-btn grade-again"><span class="label">Quên</span><span class="interval">${fmtInterval(preview.again)}</span></button>
+      <button class="grade-btn grade-again"><span class="label">Quên</span><span class="interval">&lt;10p</span></button>
       <button class="grade-btn grade-hard"><span class="label">Khó</span><span class="interval">${fmtInterval(preview.hard)}</span></button>
       <button class="grade-btn grade-good"><span class="label">Nhớ</span><span class="interval">${fmtInterval(preview.good)}</span></button>
       <button class="grade-btn grade-easy"><span class="label">Dễ</span><span class="interval">${fmtInterval(preview.easy)}</span></button>
@@ -2061,12 +2067,21 @@ function renderReview(){
     const qualities = [0,1,2,3];
     row.querySelectorAll('.grade-btn').forEach((btn,i)=>{
       btn.onclick = async ()=>{
+        const quality = qualities[i];
+        const isAgain = quality === 0;
         const xpBefore = DATA.progress.xp, reviewsBefore = DATA.progress.totalReviews;
         const reviewLogKey = todayKey(), reviewLogCountBefore = DATA.progress.reviewLog[reviewLogKey] || 0;
-        reviewHistory.push({cardId: card.id, snapshot: {...card}, idx: reviewIdx, xpBefore, reviewsBefore, reviewLogKey, reviewLogCountBefore});
-        grade(card, qualities[i]);
-        recordXpAndStreak(qualities[i]);
+        reviewHistory.push({cardId: card.id, snapshot: {...card}, idx: reviewIdx, xpBefore, reviewsBefore, reviewLogKey, reviewLogCountBefore, requeued: isAgain});
+        grade(card, quality);
+        recordXpAndStreak(quality);
         await saveData();
+        if(isAgain){
+          // Kiểu Anki: thẻ bấm "Quên" học lại NGAY trong phiên này — đẩy
+          // xuống cuối hàng đợi để gặp lại sau khi ôn hết các thẻ còn lại,
+          // thay vì phải rời màn hình rồi đợi đủ 10 phút (card.due) mới
+          // xuất hiện lại ở phiên ôn sau.
+          reviewQueue.push(card);
+        }
         reviewIdx += 1;
         flipped = false;
         resetAnswerInputState();
