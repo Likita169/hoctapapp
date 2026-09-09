@@ -418,7 +418,10 @@ function grade(card, quality){
   let {ease, interval, reps} = card;
   if(quality===0){
     reps = 0;
-    interval = 10/1440;
+    // Không còn độ trễ 10 phút nữa — thẻ "Quên" đến hạn NGAY, để nếu người
+    // dùng thoát phiên ôn trước khi kịp gặp lại thẻ này (do quay vòng
+    // trong phiên), nó vẫn hiện đúng trong tổng số thẻ đến hạn ở trang chủ.
+    interval = 0;
     ease = Math.max(1.3, ease-0.2);
   } else {
     if(reps===0){
