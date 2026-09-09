@@ -1051,6 +1051,17 @@ function clozeQuestionPlainText(text, idx){
   }).join('').trim();
 }
 
+// Nội dung càng dài thì chữ trong thẻ ôn tập càng nhỏ lại, để một đoạn dài
+// không chiếm hết chỗ của thẻ (KaTeX $...$ được trừ bớt độ dài vì phần lớn
+// là mã nguồn, không phải chữ hiển thị thật).
+function reviewSizeClass(text){
+  const len = (text||'').replace(/\$[^$]*\$/g, (m)=>m.slice(0, Math.ceil(m.length/3))).length;
+  if(len > 200) return 'size-xs';
+  if(len > 110) return 'size-sm';
+  if(len > 55) return 'size-md';
+  return '';
+}
+
 // Chuẩn hoá 1 chuỗi để so khớp khi chấm "Gõ đáp án"/trắc nghiệm — viết
 // thường, gộp khoảng trắng thừa, bỏ khoảng trắng 2 đầu.
 function normalizeForCompare(s){
@@ -1931,12 +1942,16 @@ function renderReview(){
   const fc = document.createElement('div');
   fc.className='flashcard flashcard-plain';
   const questionHtml = cardType==='cloze' ? clozeDisplayHtml(card.front, card.clozeIndex, false) : escapeHtml(card.front);
+  const questionPlain = cardType==='cloze' ? clozeQuestionPlainText(card.front, card.clozeIndex) : card.front;
   const answerHtml = flipped
     ? (cardType==='cloze' ? escapeHtml(clozeAnswerAt(card.front, card.clozeIndex)) : escapeHtml(card.back))
     : '';
+  const answerPlain = cardType==='cloze' ? clozeAnswerAt(card.front, card.clozeIndex) : card.back;
+  const contentSizeClass = reviewSizeClass(questionPlain);
+  const answerSizeClass = flipped ? reviewSizeClass(answerPlain) : '';
   fc.innerHTML = `
-    <div class="content">${questionHtml}</div>
-    ${flipped ? `<hr class="answer-divider"><div class="answer">${answerHtml}</div>` : ''}
+    <div class="content ${contentSizeClass}">${questionHtml}</div>
+    ${flipped ? `<hr class="answer-divider"><div class="answer ${answerSizeClass}">${answerHtml}</div>` : ''}
   `;
   stage.appendChild(fc);
   wrap.appendChild(stage);

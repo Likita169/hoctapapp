@@ -634,7 +634,7 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
 .review-menu-item:active{background:var(--bg);}
 .review-menu-item + .review-menu-item{border-top:1px solid var(--line);}
 
-.card-stage{flex:1; display:flex; align-items:center; justify-content:center; padding: 10px 20px 20px; perspective:1200px; position:relative;}
+.card-stage{flex:1; min-height:0; display:flex; align-items:center; justify-content:center; padding: 10px 20px 20px; perspective:1200px; position:relative;}
 .card-stage::before{
   content:""; position:absolute; inset:6% 8%; z-index:0; pointer-events:none;
   background: var(--glow-amber); filter:blur(6px); opacity:.6;
@@ -652,8 +652,9 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
   animation: cardSettle .42s var(--ease-out);
 }
 .flashcard-plain{
-  max-width:none; height:100%; min-height:0; justify-content:center; align-items:center;
+  max-width:none; max-height:100%; height:auto; min-height:0; justify-content:center; align-items:center;
   text-align:center; cursor:default; border-radius:24px;
+  padding:24px 22px; overflow-y:auto; -webkit-overflow-scrolling:touch;
 }
 .flashcard .tag{
   align-self:flex-start; font-size:11px; font-weight:700; padding:4px 11px; border-radius:20px;
@@ -661,10 +662,16 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
 }
 .flashcard .side-label{font-size:11px; color:#9c977f; font-weight:600; letter-spacing:0.09em; text-transform:uppercase; margin-bottom:11px;}
 .flashcard .content{font-family:'Fraunces',serif; font-size:21px; line-height:1.42; font-weight:500; flex:1; white-space:pre-wrap; word-break:break-word; letter-spacing:-0.005em;}
-.flashcard-plain .content{flex:none; font-size:26px; text-align:center;}
-.flashcard .answer-divider{border:none; border-top:1px dashed #c9c2a8; margin:18px 0; width:100%; animation: riseSm .3s var(--ease-out) both;}
-.flashcard .answer{font-family:'Inter',sans-serif; font-size:16px; line-height:1.55; color:#3d3a2f; white-space:pre-wrap; word-break:break-word; text-align:center;
-  animation: rise .38s .05s var(--ease-out) both;}
+.flashcard-plain .content{flex:none; width:100%; font-size:26px; text-align:center; transition:font-size .15s ease;}
+/* Nội dung càng dài, chữ càng nhỏ lại — để thẻ luôn gọn, không bị tràn hết chỗ */
+.flashcard-plain .content.size-md{font-size:19px; line-height:1.4;}
+.flashcard-plain .content.size-sm{font-size:16px; line-height:1.4;}
+.flashcard-plain .content.size-xs{font-size:14px; line-height:1.42; text-align:left;}
+.flashcard .answer-divider{border:none; border-top:1px dashed #c9c2a8; margin:16px 0; width:100%; flex-shrink:0; animation: riseSm .3s var(--ease-out) both;}
+.flashcard .answer{font-family:'Inter',sans-serif; font-size:16px; line-height:1.55; color:#3d3a2f; white-space:pre-wrap; word-break:break-word; text-align:center; width:100%;
+  animation: rise .38s .05s var(--ease-out) both; transition:font-size .15s ease;}
+.flashcard .answer.size-sm{font-size:14px; line-height:1.48;}
+.flashcard .answer.size-xs{font-size:13px; line-height:1.46; text-align:left;}
 .flashcard .hint{position:absolute; bottom:14px; right:20px; font-size:11px; color:#a39c7e; font-family:'IBM Plex Mono',monospace;}
 
 .reveal-btn{margin:0 16px 26px; padding:16px; border:none; border-radius:var(--radius-sm);
