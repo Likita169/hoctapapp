@@ -7,7 +7,7 @@ const SHELL = [
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
-  './js/app.js',
+  './app.js',
   'https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.css',
   'https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.js',
   'https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/contrib/auto-render.min.js',
