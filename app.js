@@ -8162,13 +8162,11 @@ function renderVocabAdd(){
   ipaAutoRow.appendChild(ipaAutoBtn);
   main.appendChild(ipaAutoRow);
 
-  field('Nghĩa', 'vocabMeaningInput', 'Ví dụ: có mặt khắp nơi', editing ? editing.meaning : '', true);
+  const meaningEl = field('Nghĩa', 'vocabMeaningInput', 'Ví dụ: có mặt khắp nơi', editing ? editing.meaning : '', true);
 
-  // Tự động điền nghĩa tiếng Việt: dịch từ/cụm tiếng Anh sang tiếng Việt qua
-  // MyMemory (API dịch miễn phí, không cần khoá, có hỗ trợ CORS). Đây là bản
-  // dịch máy nên chỉ mang tính gợi ý — người dùng nên xem lại và sửa cho sát
-  // nghĩa/văn cảnh mình cần trước khi lưu.
-  const meaningEl = document.getElementById('vocabMeaningInput');
+  // Tự động điền nghĩa tiếng Việt: dịch từ/cụm tiếng Anh sang tiếng Việt.
+  // Đây là bản dịch máy nên chỉ mang tính gợi ý — người dùng nên xem lại và
+  // sửa cho sát nghĩa/văn cảnh mình cần trước khi lưu.
   const meaningAutoRow = document.createElement('div');
   meaningAutoRow.style.cssText = 'margin:-10px 0 4px;';
   const meaningAutoBtn = document.createElement('button');
