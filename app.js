@@ -33,7 +33,7 @@ const DEFAULT_PROGRESS = {
   badges: [],            // id các huy hiệu đã mở khoá, xem BADGE_DEFS
   reviewLog: {}          // {"YYYY-MM-DD": số lượt chấm điểm trong ngày đó} — dùng cho ô "Đã học hôm nay"
 };
-let DATA = { cards: [], subjects: [], vocab: [], settings: Object.assign({}, DEFAULT_SETTINGS), progress: Object.assign({}, DEFAULT_PROGRESS), updatedAt: 0 };
+let DATA = { cards: [], subjects: [], vocab: [], vocabTopics: [], settings: Object.assign({}, DEFAULT_SETTINGS), progress: Object.assign({}, DEFAULT_PROGRESS), updatedAt: 0 };
 let VIEW = 'home';
 /* ---- account / cross-device sync state ---- */
 let AUTH = { token: null, email: null, role: null, name: null, userId: null }; // loaded from localStorage in loadAuth()
@@ -309,6 +309,7 @@ async function loadData(){
     subjects: [],
     cards: [],
     vocab: [],
+    vocabTopics: [],
     updatedAt: 0
   };
   await saveData();
@@ -723,6 +724,7 @@ function render(){
   if(deleteSubjectId) $app.appendChild(renderDeleteSubjectModal());
   if(deleteCardId) $app.appendChild(renderDeleteCardModal());
   if(deleteVocabId) $app.appendChild(renderDeleteVocabModal());
+  if(vocabTopicModalOpen) $app.appendChild(renderVocabTopicModal());
   if(timeModalOpen) $app.appendChild(renderTimeModal());
   if(themeModalOpen) $app.appendChild(renderThemeModal());
   if(settingsPanelOpen) $app.appendChild(renderSettingsPanel());
@@ -7378,6 +7380,7 @@ function renderFileImportModal(){
 // dữ liệu cũ (trước khi tính năng này tồn tại) hoặc dữ liệu đồng bộ từ máy khác.
 function normalizeVocab(){
   if(!Array.isArray(DATA.vocab)) DATA.vocab = [];
+  if(!Array.isArray(DATA.vocabTopics)) DATA.vocabTopics = [];
   DATA.vocab.forEach(w=>{
     if(w.ease===undefined) w.ease = 2.5;
     if(w.interval===undefined) w.interval = 0;
@@ -7386,6 +7389,7 @@ function normalizeVocab(){
     if(w.ipa===undefined) w.ipa = '';
     if(w.pos===undefined) w.pos = '';
     if(w.example===undefined) w.example = '';
+    if(w.topicId===undefined) w.topicId = null;
   });
 }
 function dueVocab(){
@@ -7393,6 +7397,13 @@ function dueVocab(){
   return DATA.vocab.filter(w=>w.due<=now);
 }
 function vocabById(id){ return DATA.vocab.find(w=>w.id===id); }
+function vocabTopicById(id){ return DATA.vocabTopics.find(t=>t.id===id); }
+// Xoá 1 chủ đề từ vựng — KHÔNG xoá các từ đang gắn chủ đề đó, chỉ gỡ nhãn
+// (chuyển về "Chưa phân loại") vì xoá nhầm chủ đề không nên làm mất từ đã học.
+function deleteVocabTopic(id){
+  DATA.vocabTopics = DATA.vocabTopics.filter(t=>t.id!==id);
+  DATA.vocab.forEach(w=>{ if(w.topicId===id) w.topicId = null; });
+}
 
 /* ---------------- state ---------------- */
 let vocabSearch = '';
@@ -7403,6 +7414,10 @@ let vocabReviewIdx = 0;
 let vocabFlipped = false;
 let vocabSessionXpEarned = 0;
 let vocabSessionCompletionHandled = false;
+let vocabTopicFilter = null;       // lọc danh sách theo chủ đề ở Trang chủ Từ vựng (null = Tất cả)
+let addVocabTopicChoice = null;    // chủ đề đang chọn ở màn Thêm/Sửa từ vựng
+let vocabTopicModalOpen = false;   // modal tạo/đổi tên chủ đề
+let editVocabTopicId = null;       // đang đổi tên chủ đề này (null = đang tạo mới)
 
 const POS_QUICK_PICKS = ['n.','v.','adj.','adv.'];
 
@@ -7450,6 +7465,40 @@ function renderVocabHome(){
   search.oninput = (e)=>{ vocabSearch = e.target.value; renderVocabList(list); };
   main.appendChild(search);
 
+  // Không còn chủ đề đang lọc (vừa bị xoá ở nơi khác) → quay về "Tất cả".
+  if(vocabTopicFilter && !vocabTopicById(vocabTopicFilter)) vocabTopicFilter = null;
+
+  if(DATA.vocabTopics.length > 0){
+    const topicRow = document.createElement('div');
+    topicRow.style.cssText = 'display:flex; gap:8px; overflow-x:auto; padding:2px 2px 4px; margin-bottom:2px;';
+
+    const allChip = document.createElement('button');
+    allChip.type = 'button';
+    allChip.className = 'chip' + (vocabTopicFilter===null ? ' active' : '');
+    allChip.textContent = 'Tất cả';
+    allChip.onclick = ()=>{ vocabTopicFilter = null; renderVocabHomeRefresh(); };
+    topicRow.appendChild(allChip);
+
+    DATA.vocabTopics.forEach(t=>{
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chip' + (vocabTopicFilter===t.id ? ' active' : '');
+      chip.textContent = t.name;
+      chip.onclick = ()=>{ vocabTopicFilter = t.id; renderVocabHomeRefresh(); };
+      attachVocabTopicLongPress(chip, t);
+      topicRow.appendChild(chip);
+    });
+
+    const newChip = document.createElement('button');
+    newChip.type = 'button';
+    newChip.className = 'chip chip-new';
+    newChip.textContent = '+ Chủ đề mới';
+    newChip.onclick = ()=>{ editVocabTopicId = null; vocabTopicModalOpen = true; render(); };
+    topicRow.appendChild(newChip);
+
+    main.appendChild(topicRow);
+  }
+
   const list = document.createElement('div');
   main.appendChild(list);
   renderVocabList(list);
@@ -7458,10 +7507,46 @@ function renderVocabHome(){
   return wrap;
 }
 
+// Bấm chip "Tất cả"/chủ đề đổi cả bộ lọc lẫn hàng chip đang active → vẽ lại
+// nguyên màn hình (đơn giản hơn vá từng phần), giữ nguyên chữ đang tìm.
+function renderVocabHomeRefresh(){ render(); }
+
+// Bấm giữ 1 chip chủ đề (không áp dụng cho "Tất cả"/"+ Chủ đề mới") →
+// mở menu Đổi tên / Xoá chủ đề, dùng chung action sheet với bộ thẻ thường.
+function attachVocabTopicLongPress(chip, topic){
+  let timer = null, fired = false;
+  chip.addEventListener('pointerdown', ()=>{
+    fired = false;
+    timer = setTimeout(()=>{
+      fired = true;
+      if(navigator.vibrate) navigator.vibrate(12);
+      actionSheetItems = [
+        { icon:'✏️', label:'Đổi tên chủ đề', onClick: ()=>{
+            editVocabTopicId = topic.id; vocabTopicModalOpen = true; render();
+          } },
+        { icon:'🗑', label:'Xoá chủ đề', danger:true, onClick: async ()=>{
+            deleteVocabTopic(topic.id);
+            if(vocabTopicFilter===topic.id) vocabTopicFilter = null;
+            await saveData();
+            toast('Đã xoá chủ đề ✓');
+            render();
+          } },
+      ];
+      render();
+    }, 480);
+  });
+  const cancel = ()=>{ if(timer){ clearTimeout(timer); timer=null; } };
+  chip.addEventListener('pointerup', cancel);
+  chip.addEventListener('pointerleave', cancel);
+  chip.addEventListener('pointercancel', cancel);
+  chip.addEventListener('click', (e)=>{ if(fired){ e.preventDefault(); e.stopPropagation(); } });
+}
+
 function renderVocabList(list){
   list.innerHTML = '';
   const q = vocabSearch.trim().toLowerCase();
   let words = DATA.vocab.slice().sort((a,b)=>a.due-b.due);
+  if(vocabTopicFilter) words = words.filter(w => w.topicId === vocabTopicFilter);
   if(q) words = words.filter(w =>
     w.word.toLowerCase().includes(q) || w.meaning.toLowerCase().includes(q)
   );
@@ -7474,7 +7559,8 @@ function renderVocabList(list){
   words.forEach(w=>{
     const item = document.createElement('div');
     item.className = 'manage-item';
-    const subInfo = [w.ipa, w.pos].filter(Boolean).join('  ·  ');
+    const topic = w.topicId ? vocabTopicById(w.topicId) : null;
+    const subInfo = [w.ipa, w.pos, topic ? topic.name : ''].filter(Boolean).join('  ·  ');
     item.innerHTML = `
       <div class="mi-top">
         <div>
@@ -7493,11 +7579,44 @@ function renderVocabList(list){
 }
 
 /* ---------------- màn Thêm/Sửa từ vựng ---------------- */
+// Tự động tra phiên âm IPA cho 1 từ tiếng Anh qua API từ điển mở miễn phí
+// (dictionaryapi.dev, không cần khoá API). Trả về chuỗi phiên âm đầu tiên
+// tìm được (thường đã có sẵn dấu /.../), hoặc null nếu không tra được
+// (từ không có trong từ điển, mất mạng...) — lỗi thì bỏ qua lặng lẽ, để
+// người dùng tự gõ tay như trước giờ, không chặn việc lưu từ.
+async function fetchIpaFor(word){
+  const w = (word||'').trim();
+  if(!w) return null;
+  try{
+    const res = await fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(w));
+    if(!res.ok) return null;
+    const data = await res.json();
+    if(!Array.isArray(data)) return null;
+    for(const entry of data){
+      if(entry.phonetic) return entry.phonetic;
+      if(Array.isArray(entry.phonetics)){
+        const withText = entry.phonetics.find(p=>p.text);
+        if(withText) return withText.text;
+      }
+    }
+  }catch(e){ /* offline hoặc lỗi mạng — im lặng bỏ qua */ }
+  return null;
+}
+
 function renderVocabAdd(){
   const wrap = document.createElement('div');
   wrap.style.display = 'contents';
 
   const editing = editVocabId ? vocabById(editVocabId) : null;
+
+  // Đang sửa từ có sẵn → luôn hiện đúng chủ đề của từ đó. Đang thêm từ mới →
+  // giữ nguyên lựa chọn lần trước (thêm nhiều từ liền cùng 1 chủ đề cho
+  // nhanh), trừ khi chủ đề đó vừa bị xoá ở nơi khác.
+  if(editing){
+    addVocabTopicChoice = editing.topicId || null;
+  } else if(addVocabTopicChoice && !vocabTopicById(addVocabTopicChoice)){
+    addVocabTopicChoice = null;
+  }
 
   const header = document.createElement('header');
   header.className = 'topbar';
@@ -7525,7 +7644,7 @@ function renderVocabAdd(){
     return el;
   }
 
-  field('Từ (tiếng Anh)', 'vocabWordInput', 'Ví dụ: ubiquitous', editing ? editing.word : '');
+  const wordEl = field('Từ (tiếng Anh)', 'vocabWordInput', 'Ví dụ: ubiquitous', editing ? editing.word : '');
   const posEl = field('Loại từ (tuỳ chọn)', 'vocabPosInput', 'n. / v. / adj. / adv. ...', editing ? editing.pos : '');
   const posChips = document.createElement('div');
   posChips.style.cssText = 'display:flex; gap:8px; margin:-10px 0 4px;';
@@ -7542,7 +7661,84 @@ function renderVocabAdd(){
     posChips.appendChild(chip);
   });
   main.appendChild(posChips);
-  field('Phiên âm IPA (tuỳ chọn)', 'vocabIpaInput', 'Ví dụ: /juːˈbɪkwɪtəs/', editing ? editing.ipa : '');
+
+  // -- Chủ đề (giống kiểu chọn "Bộ" bên màn Thêm thẻ) --
+  const topicGroup = document.createElement('div');
+  topicGroup.className = 'select-row-group';
+  const topicRow = document.createElement('label');
+  topicRow.className = 'select-row';
+  const currentTopic = addVocabTopicChoice ? vocabTopicById(addVocabTopicChoice) : null;
+  topicRow.innerHTML = `
+    <span class="select-row-label">Chủ đề</span>
+    <span class="select-row-value">${currentTopic ? escapeHtml(currentTopic.name) : 'Chưa phân loại'}</span>
+  `;
+  const topicSelect = document.createElement('select');
+  topicSelect.className = 'select-row-input';
+  const noneOpt = document.createElement('option');
+  noneOpt.value = ''; noneOpt.textContent = 'Chưa phân loại';
+  if(!addVocabTopicChoice) noneOpt.selected = true;
+  topicSelect.appendChild(noneOpt);
+  DATA.vocabTopics.forEach(t=>{
+    const opt = document.createElement('option');
+    opt.value = t.id; opt.textContent = t.name;
+    if(t.id===addVocabTopicChoice) opt.selected = true;
+    topicSelect.appendChild(opt);
+  });
+  const newTopicOpt = document.createElement('option');
+  newTopicOpt.value = '__new__'; newTopicOpt.textContent = '+ Chủ đề mới…';
+  topicSelect.appendChild(newTopicOpt);
+  topicSelect.onchange = ()=>{
+    if(topicSelect.value==='__new__'){
+      editVocabTopicId = null;
+      vocabTopicModalOpen = true;
+      render();
+      return;
+    }
+    addVocabTopicChoice = topicSelect.value || null;
+    render();
+  };
+  topicRow.appendChild(topicSelect);
+  topicGroup.appendChild(topicRow);
+  main.appendChild(topicGroup);
+
+  const ipaEl = field('Phiên âm IPA (tuỳ chọn)', 'vocabIpaInput', 'Ví dụ: /juːˈbɪkwɪtəs/', editing ? editing.ipa : '');
+
+  // Tự động điền phiên âm: khi rời khỏi ô "Từ" mà ô IPA đang trống, tự tra
+  // và điền vào — không ghi đè nếu người dùng đã tự gõ (hoặc đã có sẵn lúc
+  // sửa từ cũ). Có thêm nút để chủ động tra lại/tra lần đầu.
+  let ipaFetchToken = 0;
+  wordEl.addEventListener('blur', async ()=>{
+    const w = wordEl.value.trim();
+    if(!w || ipaEl.value.trim()) return;
+    const myToken = ++ipaFetchToken;
+    const ipa = await fetchIpaFor(w);
+    if(myToken !== ipaFetchToken) return; // đã đổi từ khác trong lúc chờ
+    if(ipa && !ipaEl.value.trim()) ipaEl.value = ipa;
+  });
+
+  const ipaAutoRow = document.createElement('div');
+  ipaAutoRow.style.cssText = 'margin:-10px 0 4px;';
+  const ipaAutoBtn = document.createElement('button');
+  ipaAutoBtn.type = 'button';
+  ipaAutoBtn.className = 'chip';
+  ipaAutoBtn.textContent = '🔎 Tự động điền phiên âm';
+  ipaAutoBtn.onclick = async ()=>{
+    const w = wordEl.value.trim();
+    if(!w){ toast('Hãy nhập từ tiếng Anh trước'); return; }
+    const myToken = ++ipaFetchToken;
+    ipaAutoBtn.disabled = true;
+    ipaAutoBtn.textContent = 'Đang tra…';
+    const ipa = await fetchIpaFor(w);
+    if(myToken === ipaFetchToken){
+      ipaAutoBtn.disabled = false;
+      ipaAutoBtn.textContent = '🔎 Tự động điền phiên âm';
+      if(ipa) ipaEl.value = ipa;
+      else toast('Không tra được phiên âm cho từ này');
+    }
+  };
+  ipaAutoRow.appendChild(ipaAutoBtn);
+  main.appendChild(ipaAutoRow);
+
   field('Nghĩa', 'vocabMeaningInput', 'Ví dụ: có mặt khắp nơi', editing ? editing.meaning : '', true);
   field('Câu ví dụ (tuỳ chọn)', 'vocabExampleInput', 'Ví dụ: Smartphones have become ubiquitous.', editing ? editing.example : '', true);
 
@@ -7555,12 +7751,13 @@ function renderVocabAdd(){
     const ipa = document.getElementById('vocabIpaInput').value.trim();
     const pos = document.getElementById('vocabPosInput').value.trim();
     const example = document.getElementById('vocabExampleInput').value.trim();
+    const topicId = addVocabTopicChoice || null;
     if(!word || !meaning){ toast('Hãy điền ít nhất Từ và Nghĩa'); return; }
     if(editing){
-      Object.assign(editing, {word, meaning, ipa, pos, example});
+      Object.assign(editing, {word, meaning, ipa, pos, example, topicId});
       toast('Đã lưu thay đổi ✓');
     } else {
-      DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, ease:2.5, interval:0, reps:0, due:Date.now()});
+      DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, ease:2.5, interval:0, reps:0, due:Date.now()});
       toast('Đã thêm từ vựng ✓');
     }
     editVocabId = null;
@@ -7574,6 +7771,72 @@ function renderVocabAdd(){
 }
 
 /* ---------------- modal xoá từ vựng ---------------- */
+/* ---------------- modal tạo/đổi tên chủ đề từ vựng ---------------- */
+function renderVocabTopicModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-backdrop';
+  overlay.onclick = (e)=>{ if(e.target===overlay){ vocabTopicModalOpen=false; editVocabTopicId=null; render(); } };
+
+  const editing = editVocabTopicId ? vocabTopicById(editVocabTopicId) : null;
+
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+  card.innerHTML = `
+    <div class="modal-title display">${editing ? 'Đổi tên chủ đề' : 'Chủ đề mới'}</div>
+    <div class="field" style="margin-bottom:4px;">
+      <label>Tên chủ đề</label>
+      <input type="text" id="vocabTopicNameInput" placeholder="Ví dụ: Du lịch" value="${editing ? escapeHtml(editing.name) : ''}">
+    </div>
+  `;
+
+  const btnRow = document.createElement('div');
+  btnRow.style.display = 'flex';
+  btnRow.style.gap = '10px';
+  btnRow.style.marginTop = '22px';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'save-btn';
+  cancelBtn.style.background = 'var(--bg-elev)';
+  cancelBtn.style.color = 'var(--white)';
+  cancelBtn.style.border = '1px solid var(--line)';
+  cancelBtn.textContent = 'Huỷ';
+  cancelBtn.onclick = ()=>{ vocabTopicModalOpen=false; editVocabTopicId=null; render(); };
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'save-btn';
+  saveBtn.style.background = 'var(--teal)';
+  saveBtn.textContent = editing ? 'Lưu' : 'Tạo chủ đề';
+  saveBtn.onclick = async ()=>{
+    const name = card.querySelector('#vocabTopicNameInput').value.trim();
+    if(!name){ toast('Hãy nhập tên chủ đề'); return; }
+    if(editing){
+      editing.name = name;
+      editVocabTopicId = null;
+    } else {
+      const t = { id: uid(), name };
+      DATA.vocabTopics.push(t);
+      addVocabTopicChoice = t.id;
+    }
+    vocabTopicModalOpen = false;
+    await saveData();
+    toast(editing ? 'Đã lưu ✓' : 'Đã tạo chủ đề ✓');
+    render();
+  };
+
+  btnRow.appendChild(cancelBtn);
+  btnRow.appendChild(saveBtn);
+  card.appendChild(btnRow);
+  overlay.appendChild(card);
+
+  requestAnimationFrame(()=>{
+    const input = card.querySelector('#vocabTopicNameInput');
+    if(input) input.focus();
+    input.onkeydown = (e)=>{ if(e.key==='Enter') saveBtn.click(); };
+  });
+
+  return overlay;
+}
+
 function renderDeleteVocabModal(){
   const w = vocabById(deleteVocabId);
   const overlay = document.createElement('div');
