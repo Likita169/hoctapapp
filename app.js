@@ -143,6 +143,24 @@ function toggleSubjectExpanded(id){
   if(expandedSubjects.has(id)) expandedSubjects.delete(id); else expandedSubjects.add(id);
   saveExpandedSubjects();
 }
+// Tương tự expandedSubjects ở trên nhưng cho cây CHỦ ĐỀ trong tab Từ vựng
+// Anh — trước đây các chủ đề (kể cả chủ đề con) bị dồn hết vào 1 hàng chip
+// cuộn ngang, với chủ đề mẹ có hàng chục/hàng trăm chủ đề con thì cuộn
+// ngang để tìm rất khó. Đổi sang cây thu gọn/mở rộng theo chiều dọc, giống
+// hệt cách hiển thị Bộ thẻ, để chỉ hiện các chủ đề con khi mẹ của nó đang
+// mở — vừa gọn vừa dễ định vị hơn nhiều so với hàng chục item nằm ngang.
+let expandedVocabTopics = new Set();
+try{
+  const _expandedVtRaw = localStorage.getItem('srs_vocab_topic_expanded');
+  if(_expandedVtRaw) JSON.parse(_expandedVtRaw).forEach(id=>expandedVocabTopics.add(id));
+}catch(e){ /* ignore */ }
+function saveExpandedVocabTopics(){
+  try{ localStorage.setItem('srs_vocab_topic_expanded', JSON.stringify(Array.from(expandedVocabTopics))); }catch(e){ /* ignore */ }
+}
+function toggleVocabTopicExpanded(id){
+  if(expandedVocabTopics.has(id)) expandedVocabTopics.delete(id); else expandedVocabTopics.add(id);
+  saveExpandedVocabTopics();
+}
 let actionSheetItems = null;     // array of {icon,label,onClick,danger} — drives the bottom action sheet
 let manageFilterSubjectId = null; // if set, "Thẻ ghi nhớ" tab only shows cards from this subject's subtree
 let deleteSubjectId = null;
@@ -7589,34 +7607,34 @@ function renderVocabHome(){
   if(vocabTopicFilter && !vocabTopicById(vocabTopicFilter)) vocabTopicFilter = null;
 
   if(DATA.vocabTopics.length > 0){
-    const topicRow = document.createElement('div');
-    topicRow.style.cssText = 'display:flex; gap:8px; overflow-x:auto; padding:2px 2px 4px; margin-bottom:2px;';
+    const topicSection = document.createElement('div');
+    topicSection.style.cssText = 'margin-bottom:6px;';
 
-    const allChip = document.createElement('button');
-    allChip.type = 'button';
-    allChip.className = 'chip' + (vocabTopicFilter===null ? ' active' : '');
-    allChip.textContent = 'Tất cả';
-    allChip.onclick = ()=>{ vocabTopicFilter = null; renderVocabHomeRefresh(); };
-    topicRow.appendChild(allChip);
+    // "Tất cả" vẫn là 1 chip đơn, bấm 1 phát bỏ mọi bộ lọc chủ đề.
+    const allRow = document.createElement('button');
+    allRow.type = 'button';
+    allRow.className = 'chip' + (vocabTopicFilter===null ? ' active' : '');
+    allRow.style.cssText = 'margin-bottom:8px;';
+    allRow.textContent = 'Tất cả';
+    allRow.onclick = ()=>{ vocabTopicFilter = null; renderVocabHomeRefresh(); };
+    topicSection.appendChild(allRow);
 
-    flattenVocabTopics(null).forEach(({topic:t, depth})=>{
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'chip' + (vocabTopicFilter===t.id ? ' active' : '');
-      chip.textContent = (depth>0 ? '↳ '.repeat(depth) : '') + t.name;
-      chip.onclick = ()=>{ vocabTopicFilter = t.id; renderVocabHomeRefresh(); };
-      attachVocabTopicLongPress(chip, t);
-      topicRow.appendChild(chip);
-    });
+    // Cây chủ đề: chỉ hiện chủ đề gốc trước, chủ đề con nào cũng phải bấm
+    // mũi tên ▶ của chủ đề mẹ mới lộ ra — nên dù 1 chủ đề mẹ có 100 chủ đề
+    // con thì màn hình cũng không bị rối, chỉ dài ra khi thực sự mở xem.
+    const treeWrap = document.createElement('div');
+    renderVocabTopicTree(treeWrap, null, 0);
+    topicSection.appendChild(treeWrap);
 
-    const newChip = document.createElement('button');
-    newChip.type = 'button';
-    newChip.className = 'chip chip-new';
-    newChip.textContent = '+ Chủ đề mới';
-    newChip.onclick = ()=>{ editVocabTopicId = null; newVocabTopicParentId = null; vocabTopicModalOpen = true; render(); };
-    topicRow.appendChild(newChip);
+    const newBtn = document.createElement('button');
+    newBtn.type = 'button';
+    newBtn.className = 'chip chip-new';
+    newBtn.style.cssText = 'margin-top:8px;';
+    newBtn.textContent = '+ Chủ đề mới';
+    newBtn.onclick = ()=>{ editVocabTopicId = null; newVocabTopicParentId = null; vocabTopicModalOpen = true; render(); };
+    topicSection.appendChild(newBtn);
 
-    main.appendChild(topicRow);
+    main.appendChild(topicSection);
   }
 
   const list = document.createElement('div');
@@ -7630,6 +7648,64 @@ function renderVocabHome(){
 // Bấm chip "Tất cả"/chủ đề đổi cả bộ lọc lẫn hàng chip đang active → vẽ lại
 // nguyên màn hình (đơn giản hơn vá từng phần), giữ nguyên chữ đang tìm.
 function renderVocabHomeRefresh(){ render(); }
+
+// Vẽ cây chủ đề (chủ đề mẹ → chủ đề con) dạng thu gọn/mở rộng theo chiều
+// dọc — giống hệt cách vẽ cây Bộ thẻ (renderSubjectTree) — thay cho cách
+// dồn hết vào 1 hàng chip cuộn ngang trước đây. Mỗi chủ đề có con sẽ có
+// mũi tên ▶ để mở/thu; bấm vào TÊN chủ đề là chọn lọc theo chủ đề đó (và
+// tiện thể mở luôn chủ đề con bên trong nếu có, đỡ phải bấm 2 lần).
+function renderVocabTopicTree(main, parentId, depth){
+  const children = childVocabTopics(parentId).slice().sort((a,b)=>a.name.localeCompare(b.name, 'vi'));
+  children.forEach(t=>{
+    const kids = childVocabTopics(t.id).length;
+    const isOpen = expandedVocabTopics.has(t.id);
+    const isSelected = vocabTopicFilter === t.id;
+    const wordCount = DATA.vocab.filter(w=>w.topicId && vocabTopicSubtreeIds(t.id).includes(w.topicId)).length;
+
+    const row = document.createElement('div');
+    row.className = 'subject-row' + (isSelected ? ' topic-selected' : '');
+    row.style.paddingLeft = (6 + depth*20) + 'px';
+
+    const expandBtn = document.createElement('button');
+    expandBtn.type = 'button';
+    if(kids>0){
+      expandBtn.className = 'subject-expand' + (isOpen ? ' open' : '');
+      expandBtn.textContent = '▶';
+      expandBtn.setAttribute('aria-label', isOpen ? 'Thu gọn chủ đề con' : 'Mở chủ đề con');
+      expandBtn.onclick = (e)=>{
+        e.stopPropagation();
+        toggleVocabTopicExpanded(t.id);
+        render();
+      };
+    } else {
+      expandBtn.className = 'subject-expand-spacer';
+      expandBtn.tabIndex = -1;
+      expandBtn.disabled = true;
+    }
+    row.appendChild(expandBtn);
+
+    const info = document.createElement('div');
+    info.className = 'subject-info';
+    info.innerHTML = `
+      <div class="subject-name">${escapeHtml(t.name)}</div>
+      <div class="subject-meta">${wordCount} từ${kids>0 ? ' · '+kids+' chủ đề con' : ''}</div>
+    `;
+    row.appendChild(info);
+
+    row.onclick = ()=>{
+      vocabTopicFilter = t.id;
+      if(kids>0 && !isOpen) expandedVocabTopics.add(t.id), saveExpandedVocabTopics();
+      render();
+    };
+    attachVocabTopicLongPress(row, t);
+
+    main.appendChild(row);
+
+    if(kids>0 && isOpen){
+      renderVocabTopicTree(main, t.id, depth+1);
+    }
+  });
+}
 
 // Bấm giữ 1 chip chủ đề (không áp dụng cho "Tất cả"/"+ Chủ đề mới") →
 // mở menu Tạo chủ đề con / Đổi tên / Xoá chủ đề, dùng chung action sheet
@@ -7652,6 +7728,8 @@ function attachVocabTopicLongPress(chip, topic){
             const removedIds = new Set(vocabTopicSubtreeIds(topic.id));
             deleteVocabTopic(topic.id);
             if(vocabTopicFilter && removedIds.has(vocabTopicFilter)) vocabTopicFilter = null;
+            removedIds.forEach(id=>expandedVocabTopics.delete(id));
+            saveExpandedVocabTopics();
             await saveData();
             toast('Đã xoá chủ đề ✓');
             render();
@@ -7833,31 +7911,60 @@ async function fetchIpaFor(word){
   return null;
 }
 
-// Tự động dịch nghĩa tiếng Việt cho 1 từ/cụm từ tiếng Anh qua MyMemory
-// (dịch vụ dịch máy miễn phí, không cần khoá API, có hỗ trợ CORS —
-// https://mymemory.translated.net). Đây là bản dịch máy (không phải từ
-// điển có định nghĩa/nhiều nghĩa như "Nghĩa" người dùng tự gõ), nên chỉ
-// dùng để GỢI Ý điền nhanh — người dùng vẫn nên xem/sửa lại cho sát nghĩa.
-// MyMemory giới hạn ~5000 ký tự/ngày cho người dùng ẩn danh (theo IP), với
-// một app học từ vựng cá nhân thì mức này thường thoải mái đủ dùng.
+// Tự động dịch nghĩa tiếng Việt cho 1 từ/cụm từ tiếng Anh. Đây là bản dịch
+// MÁY (không phải từ điển có định nghĩa/nhiều nghĩa như "Nghĩa" người dùng
+// tự gõ), nên chỉ dùng để GỢI Ý điền nhanh — vẫn nên xem/sửa lại cho sát
+// nghĩa/văn cảnh, nhất là với từ đa nghĩa.
+//
+// Có 2 nguồn, ưu tiên nguồn 1:
+// 1) Endpoint dịch không chính thức của Google Translate (client=gtx) —
+//    dùng chung với tiện ích mở rộng "Google Dịch" trên Chrome, không cần
+//    khoá API, có hỗ trợ CORS gọi thẳng từ trình duyệt, hạn mức dùng
+//    thoải mái hơn nhiều so với nguồn 2 nên ưu tiên dùng trước.
+// 2) MyMemory (dự phòng khi nguồn 1 lỗi) — dịch vụ dịch miễn phí, không
+//    cần khoá, nhưng người dùng ẩn danh chỉ được ~5.000 ký tự/NGÀY, tính
+//    theo địa chỉ IP. Ở Việt Nam nhiều nhà mạng di động dùng chung 1 địa
+//    chỉ IP cho rất nhiều người dùng (CGNAT) nên hạn mức này có thể bị
+//    người khác dùng hết từ trước — lúc đó MyMemory trả lỗi (HTTP 403 hoặc
+//    kèm dòng "MYMEMORY WARNING..."), không liên quan gì đến việc từ đó
+//    có đơn giản hay không.
 async function fetchMeaningFor(word){
   const w = (word||'').trim();
   if(!w) return null;
+
+  // Nguồn 1: Google Translate (endpoint không chính thức, client=gtx).
+  try{
+    const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=vi&dt=t&q=' + encodeURIComponent(w);
+    const res = await fetchWithTimeout(url, 8000);
+    if(res.ok){
+      const data = await res.json();
+      // Dạng trả về: [[["Xin chào","hello",null,null,1]], null, "en"]
+      // — ghép các đoạn dịch lại (câu dài Google có thể tách nhiều đoạn).
+      if(Array.isArray(data) && Array.isArray(data[0])){
+        const joined = data[0].map(seg => (Array.isArray(seg) ? seg[0] : '')).join('').trim();
+        if(joined && joined.toLowerCase() !== w.toLowerCase()) return joined;
+      }
+    }
+  }catch(e){ /* lỗi mạng/CORS/timeout — thử nguồn dự phòng bên dưới */ }
+
+  // Nguồn 2 (dự phòng): MyMemory.
   try{
     const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(w) + '&langpair=en|vi';
     const res = await fetchWithTimeout(url, 8000);
-    if(!res.ok) return null;
-    const data = await res.json();
-    const translated = data && data.responseData && data.responseData.translatedText;
-    if(!translated) return null;
-    const cleaned = translated.trim();
-    // Bỏ qua các kết quả rõ ràng là lỗi/không dịch được (API trả nguyên
-    // văn từ gốc, hoặc thông báo lỗi thay vì bản dịch thật).
-    if(!cleaned) return null;
-    if(cleaned.toLowerCase() === w.toLowerCase()) return null;
-    if(/no translation|invalid|query length limit/i.test(cleaned)) return null;
-    return cleaned;
-  }catch(e){ /* offline hoặc lỗi mạng — im lặng bỏ qua */ }
+    if(res.ok){
+      const data = await res.json();
+      const translated = data && data.responseData && data.responseData.translatedText;
+      const cleaned = (translated || '').trim();
+      // Bỏ qua các kết quả rõ ràng là lỗi/không dịch được (API trả nguyên
+      // văn từ gốc, hoặc thông báo lỗi/hết hạn mức thay vì bản dịch thật).
+      const looksLikeError = !cleaned
+        || cleaned.toLowerCase() === w.toLowerCase()
+        || /no translation|invalid|query length limit|mymemory warning|quota/i.test(cleaned)
+        || (data.responseStatus && Number(data.responseStatus) !== 200);
+      if(!looksLikeError) return cleaned;
+    }
+  }catch(e){ /* offline hoặc cả hai nguồn đều lỗi — im lặng bỏ qua */ }
+
   return null;
 }
 
@@ -8166,6 +8273,9 @@ function renderVocabTopicModal(){
       const t = { id: uid(), name, parentId: newVocabTopicParentId || null };
       DATA.vocabTopics.push(t);
       addVocabTopicChoice = t.id;
+      // Mở sẵn chủ đề mẹ (nếu tạo chủ đề con) để thấy ngay chủ đề vừa tạo,
+      // đỡ phải tự bấm ▶ tìm lại.
+      if(newVocabTopicParentId){ expandedVocabTopics.add(newVocabTopicParentId); saveExpandedVocabTopics(); }
       newVocabTopicParentId = null;
     }
     vocabTopicModalOpen = false;

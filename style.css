@@ -259,6 +259,7 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .subject-expand.open{transform:rotate(90deg); color:var(--ink-soft);}
 .subject-expand:active{background:var(--bg-elev);}
 .subject-expand-spacer{width:24px; height:24px; flex-shrink:0; background:none; border:none;}
+.subject-row.topic-selected{background:rgba(235,165,62,0.12); box-shadow:inset 3px 0 0 var(--amber);}
 .subject-del{background:none; border:none; color:var(--ink-faint); font-size:16px; cursor:pointer;
   padding:6px; flex-shrink:0; line-height:1; border-radius:8px;}
 .subject-del:hover, .subject-del:active{color:var(--coral); background:rgba(239,91,115,0.12);}
