@@ -82,6 +82,15 @@ self.addEventListener('fetch', (event) => {
   const isShellFile = event.request.mode === 'navigate' ||
     SHELL.some((f) => event.request.url.endsWith(f.replace('./', '')));
 
+  // Các request sang origin khác mà KHÔNG thuộc SHELL (vd: gọi API tra từ
+  // điển để tự động điền phiên âm IPA) thì bỏ qua hoàn toàn, không can
+  // thiệp — để trình duyệt tự xử lý thẳng như một fetch bình thường. Trước
+  // đây SW "nuốt" các request này vào nhánh cache-first rồi tự fetch lại,
+  // khiến phản hồi CORS hợp lệ của server bị biến thành lỗi mạng dù API
+  // vẫn hoạt động tốt.
+  const isCrossOrigin = !event.request.url.startsWith(self.location.origin);
+  if (isCrossOrigin && !isShellFile) return;
+
   if (isShellFile) {
     // network-first so users get new content as soon as it's deployed,
     // falling back to cache when offline
@@ -95,9 +104,12 @@ self.addEventListener('fetch', (event) => {
         .catch(() => caches.match(event.request))
     );
   } else {
-    // cache-first for static assets
+    // cache-first for static assets — có catch để lỗi mạng (vd. offline)
+    // không biến thành "Uncaught (in promise)" trong console của SW
     event.respondWith(
-      caches.match(event.request).then((cached) => cached || fetch(event.request))
+      caches.match(event.request).then((cached) =>
+        cached || fetch(event.request).catch(() => cached)
+      )
     );
   }
 });

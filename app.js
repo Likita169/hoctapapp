@@ -23,7 +23,7 @@ const PUSH_SERVER_URL = 'https://on-tap-push.nguyenngochuy8816.workers.dev';
 // (xem mục "Tài khoản & đồng bộ" trong HUONG-DAN.md) — thay bằng URL thật
 // sau khi deploy worker trong thư mục sync-server/
 const SYNC_SERVER_URL = 'https://on-tap-sync.nguyenngochuy8816.workers.dev/';
-const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system' };
+const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true };
 // Streak + XP + huy hiệu — tiến trình học tập lâu dài, tách riêng khỏi từng
 // thẻ để không ảnh hưởng thuật toán ôn tập ngắt quãng ở trên.
 const DEFAULT_PROGRESS = {
@@ -33,7 +33,7 @@ const DEFAULT_PROGRESS = {
   badges: [],            // id các huy hiệu đã mở khoá, xem BADGE_DEFS
   reviewLog: {}          // {"YYYY-MM-DD": số lượt chấm điểm trong ngày đó} — dùng cho ô "Đã học hôm nay"
 };
-let DATA = { cards: [], subjects: [], vocab: [], vocabTopics: [], settings: Object.assign({}, DEFAULT_SETTINGS), progress: Object.assign({}, DEFAULT_PROGRESS), updatedAt: 0 };
+let DATA = { cards: [], subjects: [], vocab: [], vocabTopics: [], wordFamilies: [], settings: Object.assign({}, DEFAULT_SETTINGS), progress: Object.assign({}, DEFAULT_PROGRESS), updatedAt: 0 };
 let VIEW = 'home';
 /* ---- account / cross-device sync state ---- */
 let AUTH = { token: null, email: null, role: null, name: null, userId: null }; // loaded from localStorage in loadAuth()
@@ -310,6 +310,7 @@ async function loadData(){
     cards: [],
     vocab: [],
     vocabTopics: [],
+    wordFamilies: [],
     updatedAt: 0
   };
   await saveData();
@@ -720,25 +721,34 @@ function render(){
 
   $app.appendChild(main);
 
-  if(subjectModalOpen) $app.appendChild(renderSubjectModal());
-  if(deleteSubjectId) $app.appendChild(renderDeleteSubjectModal());
-  if(deleteCardId) $app.appendChild(renderDeleteCardModal());
-  if(deleteVocabId) $app.appendChild(renderDeleteVocabModal());
-  if(vocabTopicModalOpen) $app.appendChild(renderVocabTopicModal());
-  if(timeModalOpen) $app.appendChild(renderTimeModal());
-  if(themeModalOpen) $app.appendChild(renderThemeModal());
-  if(settingsPanelOpen) $app.appendChild(renderSettingsPanel());
-  if(pendingSyncChoice) $app.appendChild(renderSyncChoiceModal());
-  if(authModalOpen) $app.appendChild(renderAuthModal());
-  if(notificationsPanelOpen) $app.appendChild(renderNotificationsPanel());
-  if(renameModalOpen) $app.appendChild(renderRenameModal());
-  if(testConfirm) $app.appendChild(renderTestConfirmModal());
-  if(bulkImportOpen) $app.appendChild(renderBulkImportModal());
-  if(fileImportOpen) $app.appendChild(renderFileImportModal());
-  if(filePreviewOpen) $app.appendChild(renderFilePreviewModal());
-  if(classroomConfirm) $app.appendChild(renderClassroomConfirmModal());
-  if(classroomMembersView) $app.appendChild(renderClassroomMembersModal());
-  if(actionSheetItems) $app.appendChild(renderActionSheet());
+  // Các modal/lớp phủ (Cài đặt, xoá bộ thẻ, đổi giờ nhắc...) được bọc riêng
+  // trong try/catch: lỡ 1 modal nào đó bị lỗi (ví dụ thiếu 1 biến toàn cục)
+  // thì chỉ modal đó không hiện ra, KHÔNG kéo sập luôn thanh tab dưới cùng
+  // và nút + phía dưới (trước đây 1 lỗi ở đây làm mất trắng cả 2 thứ đó).
+  try{
+    if(subjectModalOpen) $app.appendChild(renderSubjectModal());
+    if(deleteSubjectId) $app.appendChild(renderDeleteSubjectModal());
+    if(deleteCardId) $app.appendChild(renderDeleteCardModal());
+    if(deleteVocabId) $app.appendChild(renderDeleteVocabModal());
+    if(vocabTopicModalOpen) $app.appendChild(renderVocabTopicModal());
+    if(vocabFamilyModalOpen) $app.appendChild(renderVocabFamilyModal());
+    if(timeModalOpen) $app.appendChild(renderTimeModal());
+    if(themeModalOpen) $app.appendChild(renderThemeModal());
+    if(settingsPanelOpen) $app.appendChild(renderSettingsPanel());
+    if(pendingSyncChoice) $app.appendChild(renderSyncChoiceModal());
+    if(authModalOpen) $app.appendChild(renderAuthModal());
+    if(notificationsPanelOpen) $app.appendChild(renderNotificationsPanel());
+    if(renameModalOpen) $app.appendChild(renderRenameModal());
+    if(testConfirm) $app.appendChild(renderTestConfirmModal());
+    if(bulkImportOpen) $app.appendChild(renderBulkImportModal());
+    if(fileImportOpen) $app.appendChild(renderFileImportModal());
+    if(filePreviewOpen) $app.appendChild(renderFilePreviewModal());
+    if(classroomConfirm) $app.appendChild(renderClassroomConfirmModal());
+    if(classroomMembersView) $app.appendChild(renderClassroomMembersModal());
+    if(actionSheetItems) $app.appendChild(renderActionSheet());
+  }catch(e){
+    console.error('Lỗi khi vẽ 1 lớp phủ (modal):', e);
+  }
 
   if(VIEW!=='review' && VIEW!=='match' && VIEW!=='vocab-review' && !takeTestOpen){
     $app.appendChild(renderTabbar());
@@ -2730,6 +2740,30 @@ function renderSettings(){
     timeField.appendChild(timeBtn);
     main.appendChild(timeField);
   }
+
+  const labelVocab = document.createElement('div');
+  labelVocab.className='section-label';
+  labelVocab.textContent = 'Từ vựng';
+  main.appendChild(labelVocab);
+
+  const autoSpeakOn = !!(DATA.settings && DATA.settings.autoSpeakVocab);
+  const speakRow = document.createElement('div');
+  speakRow.className='toggle-row';
+  speakRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">🔊 Tự động phát âm khi ôn tập</div>
+      <div class="tr-sub">Tự đọc to từ tiếng Anh mỗi khi sang thẻ mới lúc ôn từ vựng.</div>
+    </div>
+    <label class="switch">
+      <input type="checkbox" ${autoSpeakOn?'checked':''}>
+      <span class="track"></span>
+    </label>
+  `;
+  speakRow.querySelector('input').onchange = async (e)=>{
+    DATA.settings.autoSpeakVocab = e.target.checked;
+    await saveData();
+  };
+  main.appendChild(speakRow);
 
   const versionTag = document.createElement('div');
   versionTag.className='mono';
@@ -7381,6 +7415,7 @@ function renderFileImportModal(){
 function normalizeVocab(){
   if(!Array.isArray(DATA.vocab)) DATA.vocab = [];
   if(!Array.isArray(DATA.vocabTopics)) DATA.vocabTopics = [];
+  if(!Array.isArray(DATA.wordFamilies)) DATA.wordFamilies = [];
   DATA.vocab.forEach(w=>{
     if(w.ease===undefined) w.ease = 2.5;
     if(w.interval===undefined) w.interval = 0;
@@ -7390,7 +7425,11 @@ function normalizeVocab(){
     if(w.pos===undefined) w.pos = '';
     if(w.example===undefined) w.example = '';
     if(w.topicId===undefined) w.topicId = null;
+    if(w.familyId===undefined) w.familyId = null;
   });
+  // Đảm bảo mọi chủ đề đều có parentId (null = chủ đề gốc) — cho dữ liệu cũ
+  // lưu từ trước khi có chủ đề con.
+  DATA.vocabTopics.forEach(t=>{ if(t.parentId===undefined) t.parentId = null; });
 }
 function dueVocab(){
   const now = Date.now();
@@ -7398,11 +7437,72 @@ function dueVocab(){
 }
 function vocabById(id){ return DATA.vocab.find(w=>w.id===id); }
 function vocabTopicById(id){ return DATA.vocabTopics.find(t=>t.id===id); }
-// Xoá 1 chủ đề từ vựng — KHÔNG xoá các từ đang gắn chủ đề đó, chỉ gỡ nhãn
-// (chuyển về "Chưa phân loại") vì xoá nhầm chủ đề không nên làm mất từ đã học.
+function childVocabTopics(parentId){
+  return DATA.vocabTopics.filter(t => (t.parentId||null) === (parentId||null));
+}
+// Chính chủ đề này + toàn bộ chủ đề con/cháu bên trong nó — dùng để lọc
+// danh sách từ (chọn 1 chủ đề cha thì gồm luôn từ ở các chủ đề con) và để
+// xoá theo cả nhánh.
+function vocabTopicSubtreeIds(id){
+  const ids = [id];
+  childVocabTopics(id).forEach(c => ids.push(...vocabTopicSubtreeIds(c.id)));
+  return ids;
+}
+// Đường dẫn từ chủ đề gốc → chủ đề này, ví dụ ["Du lịch", "Khách sạn"] —
+// dùng để hiển thị breadcrumb trong danh sách từ.
+function vocabTopicPath(id){
+  const path = [];
+  let cur = vocabTopicById(id);
+  while(cur){ path.unshift(cur); cur = cur.parentId ? vocabTopicById(cur.parentId) : null; }
+  return path;
+}
+// Xoá 1 chủ đề TỪ VỰNG cùng toàn bộ chủ đề con bên trong nó — KHÔNG xoá các
+// từ đang gắn những chủ đề đó, chỉ gỡ nhãn (chuyển về "Chưa phân loại") vì
+// xoá nhầm chủ đề không nên làm mất từ đã học.
 function deleteVocabTopic(id){
-  DATA.vocabTopics = DATA.vocabTopics.filter(t=>t.id!==id);
-  DATA.vocab.forEach(w=>{ if(w.topicId===id) w.topicId = null; });
+  const set = new Set(vocabTopicSubtreeIds(id));
+  DATA.vocabTopics = DATA.vocabTopics.filter(t=>!set.has(t.id));
+  DATA.vocab.forEach(w=>{ if(w.topicId && set.has(w.topicId)) w.topicId = null; });
+}
+
+/* ---------------- họ từ (word family) ---------------- */
+// Một "họ từ" gom các dạng biến thể của cùng 1 gốc nghĩa (vd: beauty (n.) —
+// beautiful (adj.) — beautifully (adv.)) lại với nhau, để lúc ôn 1 từ trong
+// họ thì thấy được cả các dạng còn lại — mỗi từ vẫn là 1 thẻ SRS riêng
+// (lịch ôn riêng), chỉ dùng chung 1 familyId để nối với nhau, không phân
+// cấp cha/con như chủ đề.
+function wordFamilyById(id){ return DATA.wordFamilies.find(f=>f.id===id); }
+function allWordFamiliesSorted(){
+  return DATA.wordFamilies.slice().sort((a,b)=>a.name.localeCompare(b.name,'vi'));
+}
+// Các từ khác (không tính chính từ excludeId) đang cùng 1 họ, sắp theo loại
+// từ rồi theo thứ tự chữ cái cho dễ nhìn (danh từ trước, rồi động từ...).
+const POS_SORT_ORDER = {'n.':0,'v.':1,'adj.':2,'adv.':3};
+function wordsInFamily(familyId, excludeId){
+  return DATA.vocab
+    .filter(w=>w.familyId===familyId && w.id!==excludeId)
+    .sort((a,b)=>{
+      const pa = POS_SORT_ORDER[a.pos] ?? 9, pb = POS_SORT_ORDER[b.pos] ?? 9;
+      return pa!==pb ? pa-pb : a.word.localeCompare(b.word);
+    });
+}
+// Xoá 1 họ từ — KHÔNG xoá các từ đang thuộc họ đó, chỉ gỡ nhãn (familyId
+// về null) vì xoá nhầm họ từ không nên làm mất từ đã học, giống hệt cách
+// xoá chủ đề ở trên.
+function deleteWordFamily(id){
+  DATA.wordFamilies = DATA.wordFamilies.filter(f=>f.id!==id);
+  DATA.vocab.forEach(w=>{ if(w.familyId===id) w.familyId = null; });
+}
+// Danh sách phẳng toàn bộ cây chủ đề theo thứ tự duyệt trước (parent trước
+// con), kèm "độ sâu" để hiển thị thụt lề trong <select>/danh sách chip.
+function flattenVocabTopics(parentId, depth){
+  depth = depth || 0;
+  let out = [];
+  childVocabTopics(parentId).forEach(t=>{
+    out.push({ topic: t, depth });
+    out = out.concat(flattenVocabTopics(t.id, depth+1));
+  });
+  return out;
 }
 
 /* ---------------- state ---------------- */
@@ -7418,6 +7518,11 @@ let vocabTopicFilter = null;       // lọc danh sách theo chủ đề ở Tran
 let addVocabTopicChoice = null;    // chủ đề đang chọn ở màn Thêm/Sửa từ vựng
 let vocabTopicModalOpen = false;   // modal tạo/đổi tên chủ đề
 let editVocabTopicId = null;       // đang đổi tên chủ đề này (null = đang tạo mới)
+let newVocabTopicParentId = null;  // tạo chủ đề mới bên trong chủ đề này (null = chủ đề gốc)
+let addVocabFamilyChoice = null;   // họ từ đang chọn ở màn Thêm/Sửa từ vựng
+let vocabFamilyModalOpen = false;  // modal tạo/đổi tên/xoá họ từ
+let editVocabFamilyId = null;      // đang đổi tên họ từ này (null = đang tạo mới)
+let lastSpokenVocabIdx = -1;       // tránh đọc lại từ cũ mỗi lần render() lại màn ôn tập
 
 const POS_QUICK_PICKS = ['n.','v.','adj.','adv.'];
 
@@ -7479,11 +7584,11 @@ function renderVocabHome(){
     allChip.onclick = ()=>{ vocabTopicFilter = null; renderVocabHomeRefresh(); };
     topicRow.appendChild(allChip);
 
-    DATA.vocabTopics.forEach(t=>{
+    flattenVocabTopics(null).forEach(({topic:t, depth})=>{
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'chip' + (vocabTopicFilter===t.id ? ' active' : '');
-      chip.textContent = t.name;
+      chip.textContent = (depth>0 ? '↳ '.repeat(depth) : '') + t.name;
       chip.onclick = ()=>{ vocabTopicFilter = t.id; renderVocabHomeRefresh(); };
       attachVocabTopicLongPress(chip, t);
       topicRow.appendChild(chip);
@@ -7493,7 +7598,7 @@ function renderVocabHome(){
     newChip.type = 'button';
     newChip.className = 'chip chip-new';
     newChip.textContent = '+ Chủ đề mới';
-    newChip.onclick = ()=>{ editVocabTopicId = null; vocabTopicModalOpen = true; render(); };
+    newChip.onclick = ()=>{ editVocabTopicId = null; newVocabTopicParentId = null; vocabTopicModalOpen = true; render(); };
     topicRow.appendChild(newChip);
 
     main.appendChild(topicRow);
@@ -7512,7 +7617,8 @@ function renderVocabHome(){
 function renderVocabHomeRefresh(){ render(); }
 
 // Bấm giữ 1 chip chủ đề (không áp dụng cho "Tất cả"/"+ Chủ đề mới") →
-// mở menu Đổi tên / Xoá chủ đề, dùng chung action sheet với bộ thẻ thường.
+// mở menu Tạo chủ đề con / Đổi tên / Xoá chủ đề, dùng chung action sheet
+// với bộ thẻ thường.
 function attachVocabTopicLongPress(chip, topic){
   let timer = null, fired = false;
   chip.addEventListener('pointerdown', ()=>{
@@ -7521,12 +7627,16 @@ function attachVocabTopicLongPress(chip, topic){
       fired = true;
       if(navigator.vibrate) navigator.vibrate(12);
       actionSheetItems = [
+        { icon:'➕', label:'Tạo chủ đề con', onClick: ()=>{
+            newVocabTopicParentId = topic.id; editVocabTopicId = null; vocabTopicModalOpen = true; render();
+          } },
         { icon:'✏️', label:'Đổi tên chủ đề', onClick: ()=>{
             editVocabTopicId = topic.id; vocabTopicModalOpen = true; render();
           } },
         { icon:'🗑', label:'Xoá chủ đề', danger:true, onClick: async ()=>{
+            const removedIds = new Set(vocabTopicSubtreeIds(topic.id));
             deleteVocabTopic(topic.id);
-            if(vocabTopicFilter===topic.id) vocabTopicFilter = null;
+            if(vocabTopicFilter && removedIds.has(vocabTopicFilter)) vocabTopicFilter = null;
             await saveData();
             toast('Đã xoá chủ đề ✓');
             render();
@@ -7546,7 +7656,10 @@ function renderVocabList(list){
   list.innerHTML = '';
   const q = vocabSearch.trim().toLowerCase();
   let words = DATA.vocab.slice().sort((a,b)=>a.due-b.due);
-  if(vocabTopicFilter) words = words.filter(w => w.topicId === vocabTopicFilter);
+  if(vocabTopicFilter){
+    const allowed = new Set(vocabTopicSubtreeIds(vocabTopicFilter));
+    words = words.filter(w => w.topicId && allowed.has(w.topicId));
+  }
   if(q) words = words.filter(w =>
     w.word.toLowerCase().includes(q) || w.meaning.toLowerCase().includes(q)
   );
@@ -7559,19 +7672,26 @@ function renderVocabList(list){
   words.forEach(w=>{
     const item = document.createElement('div');
     item.className = 'manage-item';
-    const topic = w.topicId ? vocabTopicById(w.topicId) : null;
-    const subInfo = [w.ipa, w.pos, topic ? topic.name : ''].filter(Boolean).join('  ·  ');
+    const topicPath = w.topicId ? vocabTopicPath(w.topicId).map(t=>t.name).join(' › ') : '';
+    const subInfo = [w.ipa, w.pos, topicPath].filter(Boolean).join('  ·  ');
+    const family = w.familyId ? wordFamilyById(w.familyId) : null;
+    const familyCount = family ? wordsInFamily(family.id, w.id).length : 0;
     item.innerHTML = `
       <div class="mi-top">
         <div>
           ${subInfo ? `<span style="font-size:11px;color:var(--ink-faint)">${escapeHtml(subInfo)}</span>` : ''}
-          <div class="mi-front">${escapeHtml(w.word)}</div>
+          <div class="mi-front" style="display:flex; align-items:center; gap:6px;">
+            <span>${escapeHtml(w.word)}</span>
+            <button class="vocab-speak-btn" aria-label="Phát âm" style="font-size:0.7em; line-height:1; border:none; background:transparent; color:var(--ink-faint); cursor:pointer; flex-shrink:0;">🔊</button>
+          </div>
           <div class="mi-back">${escapeHtml(w.meaning)}</div>
           ${w.example ? `<div style="font-size:12.5px;color:var(--ink-faint);margin-top:5px;font-style:italic;">${escapeHtml(w.example)}</div>` : ''}
+          ${family ? `<div style="font-size:11px; color:var(--teal); margin-top:5px;">👪 ${escapeHtml(family.name)}${familyCount>0 ? ` · +${familyCount} từ khác` : ''}</div>` : ''}
         </div>
         <button class="mi-del">✕</button>
       </div>
     `;
+    item.querySelector('.vocab-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(w.word); };
     item.querySelector('.mi-del').onclick = (e)=>{ e.stopPropagation(); deleteVocabId = w.id; render(); };
     item.onclick = ()=>{ editVocabId = w.id; setView('vocab-add'); };
     list.appendChild(item);
@@ -7579,6 +7699,23 @@ function renderVocabList(list){
 }
 
 /* ---------------- màn Thêm/Sửa từ vựng ---------------- */
+// Phát âm 1 từ tiếng Anh bằng giọng đọc có sẵn của trình duyệt (Web Speech
+// API) — chạy hoàn toàn trên máy, không gọi mạng nên không dính lỗi CORS
+// như phần tra IPA. Nếu thiết bị/trình duyệt không hỗ trợ thì im lặng bỏ
+// qua (không toast, không throw) vì đây chỉ là tính năng hỗ trợ thêm.
+function speakWord(text){
+  const w = (text||'').trim();
+  if(!w) return;
+  if(!('speechSynthesis' in window)) return;
+  try{
+    window.speechSynthesis.cancel(); // huỷ câu đang đọc dở nếu bấm liên tiếp/đổi thẻ nhanh
+    const utter = new SpeechSynthesisUtterance(w);
+    utter.lang = 'en-US';
+    utter.rate = 0.95;
+    window.speechSynthesis.speak(utter);
+  }catch(e){ /* một số trình duyệt/thiết bị chặn TTS — bỏ qua */ }
+}
+
 // Tự động tra phiên âm IPA cho 1 từ tiếng Anh qua API từ điển mở miễn phí
 // (dictionaryapi.dev, không cần khoá API). Trả về chuỗi phiên âm đầu tiên
 // tìm được (thường đã có sẵn dấu /.../), hoặc null nếu không tra được
@@ -7614,8 +7751,10 @@ function renderVocabAdd(){
   // nhanh), trừ khi chủ đề đó vừa bị xoá ở nơi khác.
   if(editing){
     addVocabTopicChoice = editing.topicId || null;
-  } else if(addVocabTopicChoice && !vocabTopicById(addVocabTopicChoice)){
-    addVocabTopicChoice = null;
+    addVocabFamilyChoice = editing.familyId || null;
+  } else {
+    if(addVocabTopicChoice && !vocabTopicById(addVocabTopicChoice)) addVocabTopicChoice = null;
+    if(addVocabFamilyChoice && !wordFamilyById(addVocabFamilyChoice)) addVocabFamilyChoice = null;
   }
 
   const header = document.createElement('header');
@@ -7662,15 +7801,15 @@ function renderVocabAdd(){
   });
   main.appendChild(posChips);
 
-  // -- Chủ đề (giống kiểu chọn "Bộ" bên màn Thêm thẻ) --
+  // -- Chủ đề (giống kiểu chọn "Bộ" bên màn Thêm thẻ, hỗ trợ chủ đề con) --
   const topicGroup = document.createElement('div');
   topicGroup.className = 'select-row-group';
   const topicRow = document.createElement('label');
   topicRow.className = 'select-row';
-  const currentTopic = addVocabTopicChoice ? vocabTopicById(addVocabTopicChoice) : null;
+  const currentTopicLabel = addVocabTopicChoice ? vocabTopicPath(addVocabTopicChoice).map(t=>t.name).join(' › ') : '';
   topicRow.innerHTML = `
     <span class="select-row-label">Chủ đề</span>
-    <span class="select-row-value">${currentTopic ? escapeHtml(currentTopic.name) : 'Chưa phân loại'}</span>
+    <span class="select-row-value">${currentTopicLabel ? escapeHtml(currentTopicLabel) : 'Chưa phân loại'}</span>
   `;
   const topicSelect = document.createElement('select');
   topicSelect.className = 'select-row-input';
@@ -7678,9 +7817,9 @@ function renderVocabAdd(){
   noneOpt.value = ''; noneOpt.textContent = 'Chưa phân loại';
   if(!addVocabTopicChoice) noneOpt.selected = true;
   topicSelect.appendChild(noneOpt);
-  DATA.vocabTopics.forEach(t=>{
+  flattenVocabTopics(null).forEach(({topic:t, depth})=>{
     const opt = document.createElement('option');
-    opt.value = t.id; opt.textContent = t.name;
+    opt.value = t.id; opt.textContent = (depth>0 ? '—'.repeat(depth)+' ' : '') + t.name;
     if(t.id===addVocabTopicChoice) opt.selected = true;
     topicSelect.appendChild(opt);
   });
@@ -7690,6 +7829,7 @@ function renderVocabAdd(){
   topicSelect.onchange = ()=>{
     if(topicSelect.value==='__new__'){
       editVocabTopicId = null;
+      newVocabTopicParentId = null;
       vocabTopicModalOpen = true;
       render();
       return;
@@ -7700,6 +7840,61 @@ function renderVocabAdd(){
   topicRow.appendChild(topicSelect);
   topicGroup.appendChild(topicRow);
   main.appendChild(topicGroup);
+
+  // -- Họ từ (gom các dạng biến thể beauty/beautiful/beautifully... lại 1
+  // nhóm) — chọn giống hệt kiểu chọn Chủ đề ở trên, nhưng không phân cấp. --
+  const familyGroup = document.createElement('div');
+  familyGroup.className = 'select-row-group';
+  const familyRow = document.createElement('label');
+  familyRow.className = 'select-row';
+  const currentFamilyLabel = addVocabFamilyChoice ? (wordFamilyById(addVocabFamilyChoice)?.name || '') : '';
+  familyRow.innerHTML = `
+    <span class="select-row-label">Họ từ</span>
+    <span class="select-row-value">${currentFamilyLabel ? escapeHtml(currentFamilyLabel) : 'Không thuộc họ từ nào'}</span>
+  `;
+  const familySelect = document.createElement('select');
+  familySelect.className = 'select-row-input';
+  const noneFamilyOpt = document.createElement('option');
+  noneFamilyOpt.value = ''; noneFamilyOpt.textContent = 'Không thuộc họ từ nào';
+  if(!addVocabFamilyChoice) noneFamilyOpt.selected = true;
+  familySelect.appendChild(noneFamilyOpt);
+  allWordFamiliesSorted().forEach(f=>{
+    const opt = document.createElement('option');
+    opt.value = f.id; opt.textContent = f.name;
+    if(f.id===addVocabFamilyChoice) opt.selected = true;
+    familySelect.appendChild(opt);
+  });
+  const newFamilyOpt = document.createElement('option');
+  newFamilyOpt.value = '__new__'; newFamilyOpt.textContent = '+ Họ từ mới…';
+  familySelect.appendChild(newFamilyOpt);
+  familySelect.onchange = ()=>{
+    if(familySelect.value==='__new__'){
+      editVocabFamilyId = null;
+      vocabFamilyModalOpen = true;
+      render();
+      return;
+    }
+    addVocabFamilyChoice = familySelect.value || null;
+    render();
+  };
+  familyRow.appendChild(familySelect);
+  familyGroup.appendChild(familyRow);
+  main.appendChild(familyGroup);
+
+  // Xem trước các từ khác đã có trong họ này ngay khi chọn — để biết mình
+  // đang gom đúng nhóm, không cần lưu rồi mới xem lại.
+  if(addVocabFamilyChoice){
+    const members = wordsInFamily(addVocabFamilyChoice, editing ? editing.id : null);
+    const preview = document.createElement('div');
+    preview.style.cssText = 'background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin:-10px 0 4px; font-size:13px;';
+    if(members.length===0){
+      preview.innerHTML = `<span style="color:var(--ink-faint);">Đây sẽ là từ đầu tiên trong họ "${escapeHtml(wordFamilyById(addVocabFamilyChoice)?.name||'')}".</span>`;
+    } else {
+      preview.innerHTML = `<div style="color:var(--ink-faint); margin-bottom:6px;">Các từ khác đã có trong họ này:</div>` +
+        members.map(m=>`<div style="padding:3px 0;"><b>${escapeHtml(m.word)}</b>${m.pos ? ` <span style="color:var(--ink-faint);">(${escapeHtml(m.pos)})</span>` : ''} — ${escapeHtml(m.meaning)}</div>`).join('');
+    }
+    main.appendChild(preview);
+  }
 
   const ipaEl = field('Phiên âm IPA (tuỳ chọn)', 'vocabIpaInput', 'Ví dụ: /juːˈbɪkwɪtəs/', editing ? editing.ipa : '');
 
@@ -7752,12 +7947,13 @@ function renderVocabAdd(){
     const pos = document.getElementById('vocabPosInput').value.trim();
     const example = document.getElementById('vocabExampleInput').value.trim();
     const topicId = addVocabTopicChoice || null;
+    const familyId = addVocabFamilyChoice || null;
     if(!word || !meaning){ toast('Hãy điền ít nhất Từ và Nghĩa'); return; }
     if(editing){
-      Object.assign(editing, {word, meaning, ipa, pos, example, topicId});
+      Object.assign(editing, {word, meaning, ipa, pos, example, topicId, familyId});
       toast('Đã lưu thay đổi ✓');
     } else {
-      DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, ease:2.5, interval:0, reps:0, due:Date.now()});
+      DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, ease:2.5, interval:0, reps:0, due:Date.now()});
       toast('Đã thêm từ vựng ✓');
     }
     editVocabId = null;
@@ -7775,14 +7971,17 @@ function renderVocabAdd(){
 function renderVocabTopicModal(){
   const overlay = document.createElement('div');
   overlay.className = 'modal-backdrop';
-  overlay.onclick = (e)=>{ if(e.target===overlay){ vocabTopicModalOpen=false; editVocabTopicId=null; render(); } };
+  overlay.onclick = (e)=>{ if(e.target===overlay){ vocabTopicModalOpen=false; editVocabTopicId=null; newVocabTopicParentId=null; render(); } };
 
   const editing = editVocabTopicId ? vocabTopicById(editVocabTopicId) : null;
+  const title = editing ? 'Đổi tên chủ đề' : (newVocabTopicParentId ? 'Chủ đề con mới' : 'Chủ đề mới');
+  const parentHint = (!editing && newVocabTopicParentId) ? vocabTopicById(newVocabTopicParentId) : null;
 
   const card = document.createElement('div');
   card.className = 'modal-card';
   card.innerHTML = `
-    <div class="modal-title display">${editing ? 'Đổi tên chủ đề' : 'Chủ đề mới'}</div>
+    <div class="modal-title display">${title}</div>
+    ${parentHint ? `<p style="color:var(--ink-faint); font-size:12px; margin:-14px 0 16px;">Trong "${escapeHtml(parentHint.name)}"</p>` : ''}
     <div class="field" style="margin-bottom:4px;">
       <label>Tên chủ đề</label>
       <input type="text" id="vocabTopicNameInput" placeholder="Ví dụ: Du lịch" value="${editing ? escapeHtml(editing.name) : ''}">
@@ -7800,7 +7999,7 @@ function renderVocabTopicModal(){
   cancelBtn.style.color = 'var(--white)';
   cancelBtn.style.border = '1px solid var(--line)';
   cancelBtn.textContent = 'Huỷ';
-  cancelBtn.onclick = ()=>{ vocabTopicModalOpen=false; editVocabTopicId=null; render(); };
+  cancelBtn.onclick = ()=>{ vocabTopicModalOpen=false; editVocabTopicId=null; newVocabTopicParentId=null; render(); };
 
   const saveBtn = document.createElement('button');
   saveBtn.className = 'save-btn';
@@ -7813,9 +8012,10 @@ function renderVocabTopicModal(){
       editing.name = name;
       editVocabTopicId = null;
     } else {
-      const t = { id: uid(), name };
+      const t = { id: uid(), name, parentId: newVocabTopicParentId || null };
       DATA.vocabTopics.push(t);
       addVocabTopicChoice = t.id;
+      newVocabTopicParentId = null;
     }
     vocabTopicModalOpen = false;
     await saveData();
@@ -7830,6 +8030,97 @@ function renderVocabTopicModal(){
 
   requestAnimationFrame(()=>{
     const input = card.querySelector('#vocabTopicNameInput');
+    if(input) input.focus();
+    input.onkeydown = (e)=>{ if(e.key==='Enter') saveBtn.click(); };
+  });
+
+  return overlay;
+}
+
+/* ---------------- modal tạo/đổi tên/xoá họ từ ---------------- */
+function renderVocabFamilyModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-backdrop';
+  overlay.onclick = (e)=>{ if(e.target===overlay){ vocabFamilyModalOpen=false; editVocabFamilyId=null; render(); } };
+
+  const editing = editVocabFamilyId ? wordFamilyById(editVocabFamilyId) : null;
+  const title = editing ? 'Đổi tên họ từ' : 'Họ từ mới';
+  const members = editing ? wordsInFamily(editing.id, null) : [];
+
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+  card.innerHTML = `
+    <div class="modal-title display">${title}</div>
+    <p style="color:var(--ink-faint); font-size:12px; margin:-14px 0 16px;">Gom các dạng biến thể của cùng 1 từ gốc lại, vd: beauty — beautiful — beautifully.</p>
+    <div class="field" style="margin-bottom:4px;">
+      <label>Tên họ từ</label>
+      <input type="text" id="vocabFamilyNameInput" placeholder="Ví dụ: beauty (đẹp)" value="${editing ? escapeHtml(editing.name) : ''}">
+    </div>
+    ${editing && members.length>0 ? `<p style="color:var(--ink-faint); font-size:12px; margin:10px 0 0;">${members.length} từ đang thuộc họ này.</p>` : ''}
+  `;
+
+  const btnRow = document.createElement('div');
+  btnRow.style.display = 'flex';
+  btnRow.style.gap = '10px';
+  btnRow.style.marginTop = '22px';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'save-btn';
+  cancelBtn.style.background = 'var(--bg-elev)';
+  cancelBtn.style.color = 'var(--white)';
+  cancelBtn.style.border = '1px solid var(--line)';
+  cancelBtn.textContent = 'Huỷ';
+  cancelBtn.onclick = ()=>{ vocabFamilyModalOpen=false; editVocabFamilyId=null; render(); };
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'save-btn';
+  saveBtn.style.background = 'var(--teal)';
+  saveBtn.textContent = editing ? 'Lưu' : 'Tạo họ từ';
+  saveBtn.onclick = async ()=>{
+    const name = card.querySelector('#vocabFamilyNameInput').value.trim();
+    if(!name){ toast('Hãy nhập tên họ từ'); return; }
+    if(editing){
+      editing.name = name;
+      editVocabFamilyId = null;
+    } else {
+      const f = { id: uid(), name };
+      DATA.wordFamilies.push(f);
+      addVocabFamilyChoice = f.id;
+    }
+    vocabFamilyModalOpen = false;
+    await saveData();
+    toast(editing ? 'Đã lưu ✓' : 'Đã tạo họ từ ✓');
+    render();
+  };
+
+  btnRow.appendChild(cancelBtn);
+  btnRow.appendChild(saveBtn);
+  card.appendChild(btnRow);
+
+  // Sửa họ từ có sẵn → cho phép xoá hẳn ngay trong modal (gỡ nhãn khỏi các
+  // từ đang thuộc họ, không xoá từ) — không cần thêm màn hình/chip riêng
+  // chỉ để bấm giữ xoá như chủ đề.
+  if(editing){
+    const delBtn = document.createElement('button');
+    delBtn.className = 'save-btn';
+    delBtn.style.cssText = 'margin-top:10px; background:transparent; color:var(--coral); border:1px solid var(--coral);';
+    delBtn.textContent = 'Xoá họ từ này';
+    delBtn.onclick = async ()=>{
+      deleteWordFamily(editing.id);
+      if(addVocabFamilyChoice===editing.id) addVocabFamilyChoice = null;
+      vocabFamilyModalOpen = false;
+      editVocabFamilyId = null;
+      await saveData();
+      toast('Đã xoá họ từ ✓');
+      render();
+    };
+    card.appendChild(delBtn);
+  }
+
+  overlay.appendChild(card);
+
+  requestAnimationFrame(()=>{
+    const input = card.querySelector('#vocabFamilyNameInput');
     if(input) input.focus();
     input.onkeydown = (e)=>{ if(e.key==='Enter') saveBtn.click(); };
   });
@@ -7900,6 +8191,7 @@ function startVocabReview(){
   vocabFlipped = false;
   vocabSessionXpEarned = 0;
   vocabSessionCompletionHandled = false;
+  lastSpokenVocabIdx = -1;
   setView('vocab-review');
 }
 
@@ -7935,6 +8227,13 @@ function renderVocabReview(){
   const w = vocabReviewQueue[vocabReviewIdx];
   const remaining = vocabReviewQueue.slice(vocabReviewIdx);
 
+  // Sang từ mới (không phải render lại do lật thẻ/chấm điểm) → tự đọc từ
+  // đó lên nếu Cài đặt đang bật tự động phát âm.
+  if(lastSpokenVocabIdx !== vocabReviewIdx){
+    lastSpokenVocabIdx = vocabReviewIdx;
+    if(DATA.settings.autoSpeakVocab) speakWord(w.word);
+  }
+
   const topbar = document.createElement('div');
   topbar.className = 'review-topbar';
   topbar.innerHTML = `
@@ -7952,11 +8251,43 @@ function renderVocabReview(){
   const subInfo = [w.ipa, w.pos].filter(Boolean).join('  ·  ');
   fc.innerHTML = `
     ${subInfo ? `<div class="side-label">${escapeHtml(subInfo)}</div>` : ''}
-    <div class="content">${escapeHtml(w.word)}</div>
+    <div class="content" style="display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;">
+      <span>${escapeHtml(w.word)}</span>
+      <button class="vocab-speak-btn" aria-label="Phát âm" style="font-size:0.55em; line-height:1; border:none; background:var(--bg-elev); color:inherit; width:1.7em; height:1.7em; border-radius:50%; cursor:pointer; flex-shrink:0;">🔊</button>
+    </div>
     ${vocabFlipped ? `<hr class="answer-divider"><div class="answer">${escapeHtml(w.meaning)}${w.example ? `<br><br><span style="font-style:italic; font-size:0.9em; opacity:0.85;">${escapeHtml(w.example)}</span>` : ''}</div>` : ''}
   `;
+  fc.querySelector('.vocab-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(w.word); };
   stage.appendChild(fc);
+
   wrap.appendChild(stage);
+
+  // Lật thẻ xong và từ này thuộc 1 họ từ có từ khác → hiện luôn cả họ ngay
+  // dưới thẻ, để "học 1 lần thấy cả họ từ" thay vì phải mở từng thẻ riêng.
+  // Nằm ngoài .card-stage (là flex row canh giữa 1 thẻ) và gắn thẳng vào
+  // .review-wrap (flex column) để xếp thành 1 khối riêng bên dưới thẻ,
+  // không bị co kéo ngang cùng hàng với flashcard.
+  if(vocabFlipped && w.familyId){
+    const family = wordFamilyById(w.familyId);
+    const siblings = wordsInFamily(w.familyId, w.id);
+    if(family && siblings.length>0){
+      const famBox = document.createElement('div');
+      famBox.style.cssText = 'flex-shrink:0; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px; padding:14px 16px; margin:0 16px 16px; max-height:38vh; overflow-y:auto;';
+      famBox.innerHTML = `<div style="font-size:12px; color:var(--teal); font-weight:600; margin-bottom:8px;">👪 Cùng họ từ "${escapeHtml(family.name)}"</div>` +
+        siblings.map(s=>`
+          <div class="fam-sib-row" data-id="${s.id}" style="display:flex; align-items:baseline; gap:8px; padding:6px 0; border-top:1px solid var(--line);">
+            <span style="font-weight:600;">${escapeHtml(s.word)}</span>
+            ${s.pos ? `<span style="font-size:11px; color:var(--ink-faint);">${escapeHtml(s.pos)}</span>` : ''}
+            <span style="font-size:13px; color:var(--ink-faint); margin-left:auto; text-align:right;">${escapeHtml(s.meaning)}</span>
+          </div>
+        `).join('');
+      famBox.querySelectorAll('.fam-sib-row').forEach(row=>{
+        row.style.cursor = 'pointer';
+        row.onclick = ()=>{ const sib = vocabById(row.dataset.id); if(sib) speakWord(sib.word); };
+      });
+      wrap.appendChild(famBox);
+    }
+  }
 
   if(!vocabFlipped){
     const revealBtn = document.createElement('button');
