@@ -11,7 +11,11 @@ const SHELL = [
   'https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.css',
   'https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.js',
   'https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/contrib/auto-render.min.js',
-  'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js'
+  'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
+  // Bộ từ điển IPA lớn (~135.000 từ, rút trích từ Wiktionary) dùng cho tính
+  // năng "Tự động điền phiên âm" trong tab Từ vựng — cache lại để tra được
+  // offline, không phải gọi mạng mỗi lần thêm từ.
+  'https://cdn.jsdelivr.net/gh/open-dict-data/ipa-dict@master/data/en_US.txt'
 ];
 
 self.addEventListener('install', (event) => {

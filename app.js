@@ -6971,6 +6971,7 @@ function renderMatchGame(){
   render();
   if(_restoringDraft) toast('Đã khôi phục thẻ bạn đang soạn dở');
   initServiceWorkerUpdates();
+  preloadIpaBigDict();
   silentInitialSync();
   if(AUTH.token){
     loadNotifications();
@@ -7716,27 +7717,105 @@ function speakWord(text){
   }catch(e){ /* một số trình duyệt/thiết bị chặn TTS — bỏ qua */ }
 }
 
-// Tự động tra phiên âm IPA cho 1 từ tiếng Anh qua API từ điển mở miễn phí
-// (dictionaryapi.dev, không cần khoá API). Trả về chuỗi phiên âm đầu tiên
-// tìm được (thường đã có sẵn dấu /.../), hoặc null nếu không tra được
-// (từ không có trong từ điển, mất mạng...) — lỗi thì bỏ qua lặng lẽ, để
-// người dùng tự gõ tay như trước giờ, không chặn việc lưu từ.
+// Tự động tra phiên âm IPA cho 1 từ tiếng Anh. Có 2 nguồn, ưu tiên nguồn 1:
+//
+// 1) BỘ TỪ ĐIỂN IPA LỚN, TẢI VỀ MÁY (ipa-dict, dự án mã nguồn mở rút trích
+//    từ Wiktionary — ~135.000 mục từ tiếng Anh-Mỹ, nhiều hơn hẳn so với
+//    dictionaryapi.dev). File này được tải 1 LẦN qua CDN jsDelivr (CDN này
+//    có bật CORS sẵn nên không gặp lỗi như api.dictionaryapi.dev), sau đó
+//    Service Worker cache lại y như các file "shell" khác — từ lần dùng
+//    sau app tra hoàn toàn OFFLINE, tức thì, không cần gọi mạng nữa.
+// 2) Nếu từ không có trong bộ từ điển tải về (từ hiếm/từ lóng/tên riêng...)
+//    mới gọi tới API dictionaryapi.dev như phương án dự phòng.
+//
+// Mọi lỗi (mất mạng, từ không có...) đều bỏ qua lặng lẽ, để người dùng tự
+// gõ tay như trước giờ — không chặn việc lưu từ.
+const IPA_DICT_URL = 'https://cdn.jsdelivr.net/gh/open-dict-data/ipa-dict@master/data/en_US.txt';
+let ipaBigDictMap = null;       // Map<word thường, "/ipa/"> sau khi tải+parse xong
+let ipaBigDictLoadPromise = null;
+
+function fetchWithTimeout(url, ms){
+  const ctrl = new AbortController();
+  const timer = setTimeout(()=>ctrl.abort(), ms);
+  return fetch(url, { signal: ctrl.signal }).finally(()=>clearTimeout(timer));
+}
+
+// Tải + parse file "word[TAB]/ipa1/, /ipa2/" (mỗi dòng 1 từ). Một số từ có
+// nhiều cách phát âm cách nhau bởi ", " — chỉ lấy cách phát âm đầu tiên.
+async function loadIpaBigDict(){
+  if(ipaBigDictMap) return ipaBigDictMap;
+  if(ipaBigDictLoadPromise) return ipaBigDictLoadPromise;
+  ipaBigDictLoadPromise = (async ()=>{
+    try{
+      const res = await fetchWithTimeout(IPA_DICT_URL, 15000);
+      if(!res.ok) throw new Error('bad status ' + res.status);
+      const text = await res.text();
+      const map = new Map();
+      for(const line of text.split('\n')){
+        const tab = line.indexOf('\t');
+        if(tab < 0) continue;
+        const word = line.slice(0, tab).trim().toLowerCase();
+        let ipa = line.slice(tab + 1).trim();
+        if(!word || !ipa) continue;
+        const comma = ipa.indexOf(',');
+        if(comma > -1) ipa = ipa.slice(0, comma).trim();
+        map.set(word, ipa);
+      }
+      ipaBigDictMap = map;
+      return map;
+    }catch(e){
+      ipaBigDictLoadPromise = null; // cho phép thử tải lại ở lần tra tiếp theo
+      return null;
+    }
+  })();
+  return ipaBigDictLoadPromise;
+}
+
+// Tải trước bộ từ điển ngay khi app khởi động (không chặn UI) để lần đầu
+// bấm "Tự động điền phiên âm" đã có sẵn, tra tức thì.
+function preloadIpaBigDict(){ loadIpaBigDict(); }
+
+async function parseIpaFromDictionaryApiResponse(res){
+  if(!res.ok) return null;
+  const data = await res.json();
+  if(!Array.isArray(data)) return null;
+  for(const entry of data){
+    if(entry.phonetic) return entry.phonetic;
+    if(Array.isArray(entry.phonetics)){
+      const withText = entry.phonetics.find(p=>p.text);
+      if(withText) return withText.text;
+    }
+  }
+  return null;
+}
+
 async function fetchIpaFor(word){
   const w = (word||'').trim();
   if(!w) return null;
+  const wLower = w.toLowerCase();
+
+  // Nguồn 1: bộ từ điển lớn đã tải về máy — tra tức thì, không cần mạng.
+  const bigDict = await loadIpaBigDict();
+  if(bigDict && bigDict.has(wLower)) return bigDict.get(wLower);
+
+  // Nguồn 2 (dự phòng): API trực tuyến, dùng khi từ không có trong bộ từ
+  // điển lớn ở trên. dictionaryapi.dev thỉnh thoảng quá tải và trả lỗi 522
+  // (Cloudflare: server gốc không phản hồi kịp) — lúc đó trình duyệt hay
+  // hiển thị NHẦM thành lỗi "CORS policy", dù bản chất là server tạm sập.
+  const apiUrl = 'https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(w);
   try{
-    const res = await fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(w));
-    if(!res.ok) return null;
-    const data = await res.json();
-    if(!Array.isArray(data)) return null;
-    for(const entry of data){
-      if(entry.phonetic) return entry.phonetic;
-      if(Array.isArray(entry.phonetics)){
-        const withText = entry.phonetics.find(p=>p.text);
-        if(withText) return withText.text;
-      }
-    }
-  }catch(e){ /* offline hoặc lỗi mạng — im lặng bỏ qua */ }
+    const res = await fetchWithTimeout(apiUrl, 6000);
+    const ipa = await parseIpaFromDictionaryApiResponse(res);
+    if(ipa) return ipa;
+  }catch(e){ /* lỗi mạng/CORS/timeout — thử qua proxy dự phòng bên dưới */ }
+
+  try{
+    const proxyUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(apiUrl);
+    const res = await fetchWithTimeout(proxyUrl, 8000);
+    const ipa = await parseIpaFromDictionaryApiResponse(res);
+    if(ipa) return ipa;
+  }catch(e){ /* offline hoặc cả hai nguồn đều lỗi — im lặng bỏ qua */ }
+
   return null;
 }
 
