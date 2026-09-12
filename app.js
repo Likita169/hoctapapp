@@ -773,7 +773,21 @@ function render(){
     } else if(VIEW==='vocab'){
       const fab = document.createElement('button');
       fab.className='fab'; fab.textContent='+';
-      fab.onclick = ()=>{ editVocabId = null; setView('vocab-add'); };
+      fab.onclick = ()=>{
+        // Bấm nút + ở Từ vựng Anh → hỏi muốn tạo CHỦ ĐỀ (bộ từ, có thể lồng
+        // chủ đề con bên trong — bấm giữ 1 chip chủ đề sẽ hiện "Tạo chủ đề
+        // con") hay tạo THẲNG 1 TỪ mới.
+        actionSheetItems = [
+          { icon:'📚', label:'Tạo chủ đề', onClick: ()=>{
+              editVocabTopicId = null; newVocabTopicParentId = null;
+              vocabTopicModalOpen = true; render();
+            } },
+          { icon:'📝', label:'Tạo từ', onClick: ()=>{
+              editVocabId = null; setView('vocab-add');
+            } },
+        ];
+        render();
+      };
       $app.appendChild(fab);
     }
   }
@@ -7819,6 +7833,34 @@ async function fetchIpaFor(word){
   return null;
 }
 
+// Tự động dịch nghĩa tiếng Việt cho 1 từ/cụm từ tiếng Anh qua MyMemory
+// (dịch vụ dịch máy miễn phí, không cần khoá API, có hỗ trợ CORS —
+// https://mymemory.translated.net). Đây là bản dịch máy (không phải từ
+// điển có định nghĩa/nhiều nghĩa như "Nghĩa" người dùng tự gõ), nên chỉ
+// dùng để GỢI Ý điền nhanh — người dùng vẫn nên xem/sửa lại cho sát nghĩa.
+// MyMemory giới hạn ~5000 ký tự/ngày cho người dùng ẩn danh (theo IP), với
+// một app học từ vựng cá nhân thì mức này thường thoải mái đủ dùng.
+async function fetchMeaningFor(word){
+  const w = (word||'').trim();
+  if(!w) return null;
+  try{
+    const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(w) + '&langpair=en|vi';
+    const res = await fetchWithTimeout(url, 8000);
+    if(!res.ok) return null;
+    const data = await res.json();
+    const translated = data && data.responseData && data.responseData.translatedText;
+    if(!translated) return null;
+    const cleaned = translated.trim();
+    // Bỏ qua các kết quả rõ ràng là lỗi/không dịch được (API trả nguyên
+    // văn từ gốc, hoặc thông báo lỗi thay vì bản dịch thật).
+    if(!cleaned) return null;
+    if(cleaned.toLowerCase() === w.toLowerCase()) return null;
+    if(/no translation|invalid|query length limit/i.test(cleaned)) return null;
+    return cleaned;
+  }catch(e){ /* offline hoặc lỗi mạng — im lặng bỏ qua */ }
+  return null;
+}
+
 function renderVocabAdd(){
   const wrap = document.createElement('div');
   wrap.style.display = 'contents';
@@ -8014,6 +8056,36 @@ function renderVocabAdd(){
   main.appendChild(ipaAutoRow);
 
   field('Nghĩa', 'vocabMeaningInput', 'Ví dụ: có mặt khắp nơi', editing ? editing.meaning : '', true);
+
+  // Tự động điền nghĩa tiếng Việt: dịch từ/cụm tiếng Anh sang tiếng Việt qua
+  // MyMemory (API dịch miễn phí, không cần khoá, có hỗ trợ CORS). Đây là bản
+  // dịch máy nên chỉ mang tính gợi ý — người dùng nên xem lại và sửa cho sát
+  // nghĩa/văn cảnh mình cần trước khi lưu.
+  const meaningEl = document.getElementById('vocabMeaningInput');
+  const meaningAutoRow = document.createElement('div');
+  meaningAutoRow.style.cssText = 'margin:-10px 0 4px;';
+  const meaningAutoBtn = document.createElement('button');
+  meaningAutoBtn.type = 'button';
+  meaningAutoBtn.className = 'chip';
+  meaningAutoBtn.textContent = '🌐 Tự động điền nghĩa';
+  let meaningFetchToken = 0;
+  meaningAutoBtn.onclick = async ()=>{
+    const w = document.getElementById('vocabWordInput').value.trim();
+    if(!w){ toast('Hãy nhập từ tiếng Anh trước'); return; }
+    const myToken = ++meaningFetchToken;
+    meaningAutoBtn.disabled = true;
+    meaningAutoBtn.textContent = 'Đang dịch…';
+    const meaning = await fetchMeaningFor(w);
+    if(myToken === meaningFetchToken){
+      meaningAutoBtn.disabled = false;
+      meaningAutoBtn.textContent = '🌐 Tự động điền nghĩa';
+      if(meaning) meaningEl.value = meaning;
+      else toast('Không dịch được từ này, hãy tự nhập nghĩa nhé');
+    }
+  };
+  meaningAutoRow.appendChild(meaningAutoBtn);
+  main.appendChild(meaningAutoRow);
+
   field('Câu ví dụ (tuỳ chọn)', 'vocabExampleInput', 'Ví dụ: Smartphones have become ubiquitous.', editing ? editing.example : '', true);
 
   const saveBtn = document.createElement('button');
