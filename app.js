@@ -801,7 +801,7 @@ function render(){
               vocabTopicModalOpen = true; render();
             } },
           { icon:'📝', label:'Tạo từ', onClick: ()=>{
-              editVocabId = null; setView('vocab-add');
+              editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; setView('vocab-add');
             } },
         ];
         render();
@@ -7459,6 +7459,7 @@ function normalizeVocab(){
     if(w.example===undefined) w.example = '';
     if(w.topicId===undefined) w.topicId = null;
     if(w.familyId===undefined) w.familyId = null;
+    if(!Array.isArray(w.collocations)) w.collocations = [];
   });
   // Đảm bảo mọi chủ đề đều có parentId (null = chủ đề gốc) — cho dữ liệu cũ
   // lưu từ trước khi có chủ đề con.
@@ -7538,6 +7539,187 @@ function flattenVocabTopics(parentId, depth){
   return out;
 }
 
+/* ---------------- collocation (cụm từ hay đi kèm) ---------------- */
+// Ngân hàng collocation dựng sẵn, chọn lọc các cụm rất hay gặp trong đề thi
+// THPT (v + n, adj + n...). Khi người dùng gõ 1 từ trùng với 1 từ trong cụm
+// (vd gõ "make" hoặc gõ "decision") thì các cụm liên quan sẽ hiện ra thành
+// chip để bấm thêm nhanh, không cần gõ tay + tra nghĩa lại từ đầu.
+const COLLOCATION_BANK = [
+  {phrase:'make a decision', meaning:'đưa ra quyết định'},
+  {phrase:'make an effort', meaning:'nỗ lực'},
+  {phrase:'make progress', meaning:'tiến bộ'},
+  {phrase:'make a difference', meaning:'tạo ra sự khác biệt'},
+  {phrase:'make a mistake', meaning:'mắc lỗi'},
+  {phrase:'make a contribution', meaning:'đóng góp'},
+  {phrase:'make a suggestion', meaning:'đề xuất'},
+  {phrase:'make friends', meaning:'kết bạn'},
+  {phrase:'make money', meaning:'kiếm tiền'},
+  {phrase:'make an impression', meaning:'gây ấn tượng'},
+  {phrase:'make sense', meaning:'có ý nghĩa, hợp lý'},
+  {phrase:'make an appointment', meaning:'hẹn gặp'},
+  {phrase:'make up your mind', meaning:'quyết định (dứt khoát)'},
+  {phrase:'do homework', meaning:'làm bài tập về nhà'},
+  {phrase:'do research', meaning:'làm nghiên cứu'},
+  {phrase:'do damage', meaning:'gây thiệt hại'},
+  {phrase:'do a favor', meaning:'giúp một việc'},
+  {phrase:'do exercise', meaning:'tập thể dục'},
+  {phrase:'do business', meaning:'kinh doanh'},
+  {phrase:'do harm', meaning:'gây hại'},
+  {phrase:'do your best', meaning:'cố gắng hết sức'},
+  {phrase:'take a break', meaning:'nghỉ giải lao'},
+  {phrase:'take a risk', meaning:'chấp nhận rủi ro'},
+  {phrase:'take responsibility', meaning:'chịu trách nhiệm'},
+  {phrase:'take advantage of', meaning:'tận dụng'},
+  {phrase:'take place', meaning:'diễn ra'},
+  {phrase:'take part in', meaning:'tham gia vào'},
+  {phrase:'take action', meaning:'hành động'},
+  {phrase:'take care of', meaning:'chăm sóc'},
+  {phrase:'take notice of', meaning:'chú ý đến'},
+  {phrase:'take an exam', meaning:'thi'},
+  {phrase:'take time off', meaning:'nghỉ phép'},
+  {phrase:'have a chance', meaning:'có cơ hội'},
+  {phrase:'have an effect on', meaning:'có tác động đến'},
+  {phrase:'have a look', meaning:'nhìn qua'},
+  {phrase:'have an argument', meaning:'tranh cãi'},
+  {phrase:'have a rest', meaning:'nghỉ ngơi'},
+  {phrase:'have difficulty', meaning:'gặp khó khăn'},
+  {phrase:'have an impact on', meaning:'có ảnh hưởng đến'},
+  {phrase:'get married', meaning:'kết hôn'},
+  {phrase:'get divorced', meaning:'ly hôn'},
+  {phrase:'get lost', meaning:'bị lạc'},
+  {phrase:'get in touch with', meaning:'liên lạc với'},
+  {phrase:'get rid of', meaning:'loại bỏ'},
+  {phrase:'get used to', meaning:'quen với'},
+  {phrase:'get on well with', meaning:'hòa thuận với'},
+  {phrase:'give a presentation', meaning:'thuyết trình'},
+  {phrase:'give advice', meaning:'đưa ra lời khuyên'},
+  {phrase:'give birth to', meaning:'sinh con'},
+  {phrase:'give priority to', meaning:'ưu tiên'},
+  {phrase:'pay attention to', meaning:'chú ý đến'},
+  {phrase:'pay a visit', meaning:'đi thăm'},
+  {phrase:'pay a compliment', meaning:'khen ngợi'},
+  {phrase:'pay tribute to', meaning:'tôn vinh'},
+  {phrase:'pay off', meaning:'đem lại kết quả tốt'},
+  {phrase:'keep in touch', meaning:'giữ liên lạc'},
+  {phrase:'keep a diary', meaning:'viết nhật ký'},
+  {phrase:'keep fit', meaning:'giữ dáng, giữ sức khoẻ'},
+  {phrase:'keep an eye on', meaning:'trông chừng'},
+  {phrase:'keep a promise', meaning:'giữ lời hứa'},
+  {phrase:'catch a cold', meaning:'bị cảm'},
+  {phrase:'catch fire', meaning:'bốc cháy'},
+  {phrase:"catch someone's attention", meaning:'thu hút sự chú ý'},
+  {phrase:'break a record', meaning:'phá kỷ lục'},
+  {phrase:'break the law', meaning:'vi phạm pháp luật'},
+  {phrase:'break a habit', meaning:'từ bỏ thói quen'},
+  {phrase:'break the ice', meaning:'phá vỡ sự ngượng ngùng'},
+  {phrase:'come true', meaning:'trở thành hiện thực'},
+  {phrase:'come across', meaning:'tình cờ gặp/tìm thấy'},
+  {phrase:'come up with', meaning:'nghĩ ra'},
+  {phrase:'come into effect', meaning:'có hiệu lực'},
+  {phrase:'run a business', meaning:'điều hành kinh doanh'},
+  {phrase:'run out of', meaning:'hết, cạn kiệt'},
+  {phrase:'run a risk', meaning:'gặp rủi ro'},
+  {phrase:'set a record', meaning:'lập kỷ lục'},
+  {phrase:'set an example', meaning:'làm gương'},
+  {phrase:'set a goal', meaning:'đặt mục tiêu'},
+  {phrase:'set up a business', meaning:'thành lập doanh nghiệp'},
+  {phrase:'put pressure on', meaning:'gây áp lực lên'},
+  {phrase:'put forward', meaning:'đề xuất'},
+  {phrase:'put an end to', meaning:'chấm dứt'},
+  {phrase:'put emphasis on', meaning:'nhấn mạnh vào'},
+  {phrase:'put off', meaning:'trì hoãn'},
+  {phrase:'lose weight', meaning:'giảm cân'},
+  {phrase:'lose touch with', meaning:'mất liên lạc với'},
+  {phrase:'lose interest in', meaning:'mất hứng thú với'},
+  {phrase:'lose your temper', meaning:'nổi nóng'},
+  {phrase:'win a prize', meaning:'giành giải thưởng'},
+  {phrase:'win a medal', meaning:'giành huy chương'},
+  {phrase:'save money', meaning:'tiết kiệm tiền'},
+  {phrase:'save time', meaning:'tiết kiệm thời gian'},
+  {phrase:'save energy', meaning:'tiết kiệm năng lượng'},
+  {phrase:'save the environment', meaning:'bảo vệ môi trường'},
+  {phrase:'spend time on', meaning:'dành thời gian cho'},
+  {phrase:'waste time', meaning:'lãng phí thời gian'},
+  {phrase:'waste money', meaning:'lãng phí tiền bạc'},
+  {phrase:'raise awareness', meaning:'nâng cao nhận thức'},
+  {phrase:'raise money', meaning:'quyên tiền'},
+  {phrase:'raise a question', meaning:'đặt câu hỏi'},
+  {phrase:'raise funds', meaning:'gây quỹ'},
+  {phrase:'reach a conclusion', meaning:'đi đến kết luận'},
+  {phrase:'reach an agreement', meaning:'đạt được thoả thuận'},
+  {phrase:'achieve a goal', meaning:'đạt được mục tiêu'},
+  {phrase:'gain experience', meaning:'tích luỹ kinh nghiệm'},
+  {phrase:'gain weight', meaning:'tăng cân'},
+  {phrase:'gain access to', meaning:'được tiếp cận với'},
+  {phrase:'face a challenge', meaning:'đối mặt với thách thức'},
+  {phrase:'face a problem', meaning:'đối mặt với vấn đề'},
+  {phrase:'meet a deadline', meaning:'đáp ứng thời hạn'},
+  {phrase:'meet requirements', meaning:'đáp ứng yêu cầu'},
+  {phrase:'meet a need', meaning:'đáp ứng nhu cầu'},
+  {phrase:'ask for advice', meaning:'xin lời khuyên'},
+  {phrase:'play a role in', meaning:'đóng vai trò trong'},
+  {phrase:'play a part in', meaning:'đóng góp phần vào'},
+  {phrase:'draw a conclusion', meaning:'rút ra kết luận'},
+  {phrase:'draw attention to', meaning:'thu hút sự chú ý đến'},
+  {phrase:'build a relationship', meaning:'xây dựng mối quan hệ'},
+  {phrase:'carry out research', meaning:'tiến hành nghiên cứu'},
+  {phrase:'carry out an experiment', meaning:'thực hiện thí nghiệm'},
+  {phrase:'heavy rain', meaning:'mưa lớn'},
+  {phrase:'heavy traffic', meaning:'giao thông đông đúc'},
+  {phrase:'heavy smoker', meaning:'người hút thuốc nhiều'},
+  {phrase:'heavy drinker', meaning:'người uống rượu nhiều'},
+  {phrase:'strong wind', meaning:'gió mạnh'},
+  {phrase:'strong evidence', meaning:'bằng chứng thuyết phục'},
+  {phrase:'strong economy', meaning:'nền kinh tế mạnh'},
+  {phrase:'high demand', meaning:'nhu cầu cao'},
+  {phrase:'high quality', meaning:'chất lượng cao'},
+  {phrase:'high expectations', meaning:'kỳ vọng cao'},
+  {phrase:'high risk', meaning:'rủi ro cao'},
+  {phrase:'deep sleep', meaning:'giấc ngủ sâu'},
+  {phrase:'deep breath', meaning:'hít thở sâu'},
+  {phrase:'deep concern', meaning:'mối lo ngại sâu sắc'},
+  {phrase:'close relationship', meaning:'mối quan hệ thân thiết'},
+  {phrase:'close attention', meaning:'sự chú ý sát sao'},
+  {phrase:'fast food', meaning:'thức ăn nhanh'},
+  {phrase:'hard work', meaning:'làm việc chăm chỉ'},
+  {phrase:'hard evidence', meaning:'bằng chứng xác thực'},
+  {phrase:'light rain', meaning:'mưa nhỏ'},
+  {phrase:'light traffic', meaning:'giao thông thông thoáng'},
+  {phrase:'bright future', meaning:'tương lai tươi sáng'},
+  {phrase:'bright idea', meaning:'ý tưởng hay'},
+  {phrase:'severe weather', meaning:'thời tiết khắc nghiệt'},
+  {phrase:'severe shortage', meaning:'sự thiếu hụt nghiêm trọng'},
+  {phrase:'severe damage', meaning:'thiệt hại nghiêm trọng'},
+  {phrase:'fluent in', meaning:'thông thạo, trôi chảy'},
+  {phrase:'keen interest', meaning:'sự quan tâm sâu sắc'},
+  {phrase:'similar to', meaning:'tương tự với'},
+  {phrase:'vivid imagination', meaning:'trí tưởng tượng sống động'},
+  {phrase:'vivid memory', meaning:'ký ức sống động'},
+  {phrase:'wide range', meaning:'phạm vi rộng'},
+  {phrase:'widely available', meaning:'có sẵn rộng rãi'},
+  {phrase:'renewable energy', meaning:'năng lượng tái tạo'},
+  {phrase:'environmental protection', meaning:'bảo vệ môi trường'},
+  {phrase:'environmentally friendly', meaning:'thân thiện với môi trường'},
+  {phrase:'public transport', meaning:'giao thông công cộng'},
+  {phrase:'public opinion', meaning:'dư luận'},
+  {phrase:'global warming', meaning:'nóng lên toàn cầu'},
+  {phrase:'global economy', meaning:'nền kinh tế toàn cầu'},
+  {phrase:'economic growth', meaning:'tăng trưởng kinh tế'},
+  {phrase:'economic development', meaning:'phát triển kinh tế'},
+  {phrase:'social media', meaning:'mạng xã hội'},
+  {phrase:'social skills', meaning:'kỹ năng xã hội'},
+];
+// Trả về các collocation có chứa "word" như 1 TỪ trọn vẹn (không phải chuỗi
+// con) trong cụm — nhờ vậy gõ "make" gợi ý mọi cụm "make ...", mà gõ
+// "decision" cũng gợi ý ngược lại "make a decision".
+function collocationSuggestionsFor(word){
+  const w = (word||'').trim().toLowerCase();
+  if(!w) return [];
+  return COLLOCATION_BANK.filter(c=>
+    c.phrase.toLowerCase().split(/\s+/).some(tok=>tok.replace(/[^a-z']/g,'')===w)
+  );
+}
+
 /* ---------------- state ---------------- */
 let vocabSearch = '';
 let editVocabId = null;      // sửa từ này nếu có id, thêm mới nếu null
@@ -7556,6 +7738,93 @@ let addVocabFamilyChoice = null;   // họ từ đang chọn ở màn Thêm/Sử
 let vocabFamilyModalOpen = false;  // modal tạo/đổi tên/xoá họ từ
 let editVocabFamilyId = null;      // đang đổi tên họ từ này (null = đang tạo mới)
 let lastSpokenVocabIdx = -1;       // tránh đọc lại từ cũ mỗi lần render() lại màn ôn tập
+let dictationVocabValue = '';      // đang gõ gì ở chế độ "Nghe – gõ chính tả", cho đúng từ hiện tại
+let dictationVocabChecked = false; // đã bấm "Kiểm tra" cho từ hiện tại chưa
+let dictationVocabCorrect = false;
+let addVocabCollocations = [];     // các cụm từ đi kèm đang soạn ở màn Thêm/Sửa từ vựng: {id, phrase, meaning}
+let vocabAddLoadedFor = undefined; // id của từ mà addVocabCollocations đã nạp cho (undefined = chưa nạp lần nào, null = đang thêm từ mới)
+
+// -- Chế độ ôn tập từ vựng: 'flip' (lật thẻ) | 'quiz' (trắc nghiệm 4 đáp án)
+// -- giống hệt kiểu chọn chế độ ở màn ôn thẻ thường, nhưng tách state riêng
+// vì đây là 2 hàng đợi ôn tập độc lập nhau.
+let vocabReviewInputMode = 'flip';
+try{ vocabReviewInputMode = localStorage.getItem('srs_vocab_review_mode') || 'flip'; }catch(e){ /* ignore */ }
+function setVocabReviewInputMode(mode){
+  vocabReviewInputMode = mode;
+  try{ localStorage.setItem('srs_vocab_review_mode', mode); }catch(e){ /* ignore */ }
+}
+let vocabReviewMenuOpen = false;
+let quizVocabCurrentWordId = null;   // từ hiện tại mà quizVocabCurrentChoices đã sinh cho
+let quizVocabCurrentChoices = [];    // 4 phương án nghĩa (đã xáo trộn)
+let quizVocabSelectedChoice = null;
+let quizVocabIsCorrect = false;
+
+// Xoá sạch trạng thái "đang chọn trắc nghiệm" — gọi mỗi khi chuyển sang từ
+// khác, y hệt resetAnswerInputState() bên ôn thẻ thường.
+function resetVocabAnswerInputState(){
+  quizVocabCurrentWordId = null;
+  quizVocabCurrentChoices = [];
+  quizVocabSelectedChoice = null;
+  quizVocabIsCorrect = false;
+  dictationVocabValue = '';
+  dictationVocabChecked = false;
+  dictationVocabCorrect = false;
+}
+
+// Chấm chế độ "Nghe – gõ chính tả": so khớp chữ gõ vào với đúng CHÍNH TẢ
+// của từ (w.word), không phải nghĩa — khác với checkTypedAnswer() ở thẻ
+// thường. Dùng chung normalizeForCompare() nên không phân biệt hoa/thường
+// và bỏ qua khoảng trắng thừa 2 đầu.
+function checkVocabDictation(){
+  const w = vocabReviewQueue[vocabReviewIdx];
+  const input = document.getElementById('vocabDictationInput');
+  dictationVocabValue = input ? input.value : '';
+  dictationVocabCorrect = !!dictationVocabValue.trim() && normalizeForCompare(dictationVocabValue) === normalizeForCompare(w.word);
+  dictationVocabChecked = true;
+  vocabFlipped = true;
+  render();
+}
+
+// Sinh 3 phương án nghĩa nhiễu cho 1 từ — ưu tiên lấy nghĩa của các từ khác
+// CÙNG chủ đề trước (nhiễu hợp lý về mặt ngữ nghĩa), thiếu thì lấy thêm từ
+// toàn bộ kho từ vựng. Giống hệt cách buildQuizChoices() làm với thẻ.
+function buildVocabQuizChoices(word){
+  const correct = word.meaning;
+  function answerPool(list){
+    return list
+      .filter(w=>w.id!==word.id)
+      .map(w=>(w.meaning||'').trim())
+      .filter(s=> s && normalizeForCompare(s)!==normalizeForCompare(correct));
+  }
+  function pickUnique(arr, n, alreadyUsed){
+    const seen = new Set(alreadyUsed.map(normalizeForCompare));
+    const out = [];
+    const shuffled = arr.slice().sort(()=>Math.random()-0.5);
+    for(const s of shuffled){
+      const key = normalizeForCompare(s);
+      if(seen.has(key)) continue;
+      seen.add(key); out.push(s);
+      if(out.length>=n) break;
+    }
+    return out;
+  }
+  const sameTopicPool = word.topicId ? answerPool(DATA.vocab.filter(w=>w.topicId===word.topicId)) : [];
+  let distractors = pickUnique(sameTopicPool, 3, [correct]);
+  if(distractors.length < 3){
+    distractors = distractors.concat(pickUnique(answerPool(DATA.vocab), 3-distractors.length, [correct, ...distractors]));
+  }
+  const choices = [correct, ...distractors];
+  for(let i=choices.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [choices[i],choices[j]]=[choices[j],choices[i]]; }
+  return choices;
+}
+
+function selectVocabQuizChoice(choice){
+  const w = vocabReviewQueue[vocabReviewIdx];
+  quizVocabSelectedChoice = choice;
+  quizVocabIsCorrect = normalizeForCompare(choice) === normalizeForCompare(w.meaning);
+  vocabFlipped = true;
+  render();
+}
 
 const POS_QUICK_PICKS = ['n.','v.','adj.','adv.'];
 
@@ -7589,6 +7858,23 @@ function renderVocabHome(){
     <button class="hero-btn" ${due===0?'disabled':''}>${due===0 ? 'Đã ôn hết — quay lại sau' : 'Bắt đầu ôn tập →'}</button>
   `;
   hero.querySelector('button').onclick = ()=>{ if(due>0) startVocabReview(); };
+  // 2 lối tắt vào thẳng đúng chế độ ôn muốn dùng, khỏi phải mở màn ôn tập
+  // rồi vào menu ⋮ đổi chế độ mới bắt đầu được.
+  const modeRow = document.createElement('div');
+  modeRow.style.cssText = 'display:flex; gap:8px; justify-content:center; margin-top:12px;' + (due===0 ? ' opacity:0.45; pointer-events:none;' : '');
+  modeRow.innerHTML = `
+    <button type="button" class="chip" data-mode="flip">🔄 Lật thẻ</button>
+    <button type="button" class="chip" data-mode="quiz">🧠 Trắc nghiệm nhanh</button>
+    <button type="button" class="chip" data-mode="dictation">🎧 Nghe – gõ chính tả</button>
+  `;
+  modeRow.querySelectorAll('[data-mode]').forEach(btn=>{
+    btn.onclick = ()=>{
+      if(due===0) return;
+      setVocabReviewInputMode(btn.dataset.mode);
+      startVocabReview();
+    };
+  });
+  hero.appendChild(modeRow);
   main.appendChild(hero);
 
   const label = document.createElement('div');
@@ -7692,6 +7978,22 @@ function renderVocabTopicTree(main, parentId, depth){
     `;
     row.appendChild(info);
 
+    // Nút "+" thêm từ ngay trong chủ đề này — bấm phát là sang thẳng màn
+    // Thêm từ vựng với chủ đề đã được chọn sẵn, khỏi phải bấm chủ đề để lọc
+    // rồi mới bấm nút + ở trên cùng rồi mới chọn lại chủ đề trong dropdown.
+    const quickAdd = document.createElement('button');
+    quickAdd.type = 'button';
+    quickAdd.className = 'subject-quickadd';
+    quickAdd.textContent = '+';
+    quickAdd.setAttribute('aria-label', `Thêm từ vào chủ đề ${t.name}`);
+    quickAdd.onclick = (e)=>{
+      e.stopPropagation();
+      addVocabTopicChoice = t.id;
+      editVocabId = null;
+      setView('vocab-add');
+    };
+    row.appendChild(quickAdd);
+
     row.onclick = ()=>{
       vocabTopicFilter = t.id;
       if(kids>0 && !isOpen) expandedVocabTopics.add(t.id), saveExpandedVocabTopics();
@@ -7779,6 +8081,7 @@ function renderVocabList(list){
           </div>
           <div class="mi-back">${escapeHtml(w.meaning)}</div>
           ${w.example ? `<div style="font-size:12.5px;color:var(--ink-faint);margin-top:5px;font-style:italic;">${escapeHtml(w.example)}</div>` : ''}
+          ${w.collocations && w.collocations.length>0 ? `<div style="display:flex; flex-wrap:wrap; gap:5px; margin-top:6px;">${w.collocations.map(c=>`<span style="font-size:11px; background:var(--bg-elev); border:1px solid var(--line); border-radius:10px; padding:3px 8px; color:var(--ink-soft);" title="${escapeHtml(c.meaning||'')}">🔗 ${escapeHtml(c.phrase)}</span>`).join('')}</div>` : ''}
           ${family ? `<div style="font-size:11px; color:var(--teal); margin-top:5px;">👪 ${escapeHtml(family.name)}${familyCount>0 ? ` · +${familyCount} từ khác` : ''}</div>` : ''}
         </div>
         <button class="mi-del">✕</button>
@@ -7985,6 +8288,16 @@ function renderVocabAdd(){
     if(addVocabFamilyChoice && !wordFamilyById(addVocabFamilyChoice)) addVocabFamilyChoice = null;
   }
 
+  // Nạp danh sách collocation đang soạn — CHỈ nạp lại khi vừa chuyển sang
+  // sửa 1 từ khác (hoặc vừa mở màn thêm mới), không nạp lại mỗi lần
+  // render() để không mất các cụm người dùng vừa thêm/sửa dở trong lúc
+  // đang ở màn hình này (vd. sau khi chọn Chủ đề khiến cả màn dựng lại).
+  const vocabAddKey = editing ? editing.id : null;
+  if(vocabAddLoadedFor !== vocabAddKey){
+    addVocabCollocations = editing ? (editing.collocations||[]).map(c=>({...c})) : [];
+    vocabAddLoadedFor = vocabAddKey;
+  }
+
   const header = document.createElement('header');
   header.className = 'topbar';
   header.innerHTML = `<h1 class="display">${editing ? 'Sửa từ vựng' : 'Từ vựng mới'}</h1>`;
@@ -7994,7 +8307,7 @@ function renderVocabAdd(){
 
   const back = document.createElement('button');
   back.className = 'back-link'; back.textContent = '← Quay lại';
-  back.onclick = ()=>{ editVocabId = null; setView('vocab'); };
+  back.onclick = ()=>{ editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; setView('vocab'); };
   main.appendChild(back);
 
   function field(labelText, id, placeholder, value, isTextarea){
@@ -8193,6 +8506,103 @@ function renderVocabAdd(){
 
   field('Câu ví dụ (tuỳ chọn)', 'vocabExampleInput', 'Ví dụ: Smartphones have become ubiquitous.', editing ? editing.example : '', true);
 
+  // -- Cụm từ hay đi kèm (collocation) — vd: make a decision, heavy rain...
+  // Sát với dạng bài đề thi THPT hay kiểm tra collocation. Có gợi ý dựng
+  // sẵn theo từ đang gõ, và cho thêm cụm tự do + tự gõ/tự dịch nghĩa. Khu
+  // vực này tự vẽ lại riêng nó (renderColloBox), KHÔNG gọi render() toàn
+  // trang, để không làm mất chữ đang gõ dở ở các ô khác phía trên.
+  const colloField = document.createElement('div');
+  colloField.className = 'field';
+  colloField.innerHTML = `<label>Cụm từ hay đi kèm / Collocation (tuỳ chọn)</label>`;
+  main.appendChild(colloField);
+
+  const colloBox = document.createElement('div');
+  main.appendChild(colloBox);
+
+  function renderColloBox(){
+    colloBox.innerHTML = '';
+
+    const wordNow = (document.getElementById('vocabWordInput')?.value || '').trim().toLowerCase();
+    const suggestions = collocationSuggestionsFor(wordNow)
+      .filter(s => !addVocabCollocations.some(c=>c.phrase.toLowerCase()===s.phrase.toLowerCase()));
+
+    if(suggestions.length>0){
+      const sugLabel = document.createElement('div');
+      sugLabel.style.cssText = 'font-size:11.5px; color:var(--ink-faint); margin-bottom:8px;';
+      sugLabel.textContent = 'Gợi ý hay gặp trong đề thi — bấm để thêm:';
+      colloBox.appendChild(sugLabel);
+      const sugRow = document.createElement('div');
+      sugRow.style.cssText = 'display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px;';
+      suggestions.forEach(s=>{
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip chip-new';
+        chip.textContent = '+ ' + s.phrase;
+        chip.title = s.meaning;
+        chip.onclick = ()=>{
+          addVocabCollocations.push({id:uid(), phrase:s.phrase, meaning:s.meaning});
+          renderColloBox();
+        };
+        sugRow.appendChild(chip);
+      });
+      colloBox.appendChild(sugRow);
+    }
+
+    addVocabCollocations.forEach(c=>{
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; gap:8px; align-items:flex-start; margin-bottom:8px; background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:10px 12px;';
+      row.innerHTML = `
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:600; font-size:13.5px;">🔗 ${escapeHtml(c.phrase)}</div>
+          <input type="text" class="collo-meaning-input" placeholder="Nghĩa (tuỳ chọn)" value="${escapeHtml(c.meaning||'')}"
+            style="width:100%; margin-top:5px; background:transparent; border:none; border-bottom:1px dashed var(--line); font-size:12.5px; color:var(--ink-soft); padding:3px 0; font-family:'Inter',sans-serif;">
+        </div>
+        <button type="button" class="collo-translate-btn" aria-label="Dịch nghĩa" title="Tự động dịch nghĩa" style="border:none; background:transparent; color:var(--ink-faint); cursor:pointer; font-size:14px; flex-shrink:0; padding:2px;">🌐</button>
+        <button type="button" class="collo-del-btn" aria-label="Xoá cụm này" style="border:none; background:transparent; color:var(--ink-faint); cursor:pointer; font-size:16px; flex-shrink:0; padding:2px;">✕</button>
+      `;
+      const meaningInput = row.querySelector('.collo-meaning-input');
+      meaningInput.oninput = (e)=>{ c.meaning = e.target.value; };
+      row.querySelector('.collo-translate-btn').onclick = async ()=>{
+        const translated = await fetchMeaningFor(c.phrase);
+        if(translated){ c.meaning = translated; meaningInput.value = translated; }
+        else toast('Không dịch được cụm này, hãy tự nhập nghĩa nhé');
+      };
+      row.querySelector('.collo-del-btn').onclick = ()=>{
+        addVocabCollocations = addVocabCollocations.filter(x=>x.id!==c.id);
+        renderColloBox();
+      };
+      colloBox.appendChild(row);
+    });
+
+    const addRow = document.createElement('div');
+    addRow.style.cssText = 'display:flex; gap:8px;';
+    const newInput = document.createElement('input');
+    newInput.type = 'text';
+    newInput.placeholder = 'Ví dụ: make a decision';
+    newInput.style.cssText = 'flex:1; background:var(--bg-elev); border:1px solid var(--line); color:var(--white); border-radius:var(--radius-sm); padding:12px 14px; font-size:14px; font-family:\'Inter\',sans-serif;';
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'chip';
+    addBtn.style.flexShrink = '0';
+    addBtn.textContent = '+ Thêm';
+    const doAdd = ()=>{
+      const phrase = newInput.value.trim();
+      if(!phrase){ toast('Hãy nhập cụm từ trước'); return; }
+      addVocabCollocations.push({id:uid(), phrase, meaning:''});
+      renderColloBox();
+    };
+    addBtn.onclick = doAdd;
+    newInput.onkeydown = (e)=>{ if(e.key==='Enter'){ e.preventDefault(); doAdd(); } };
+    addRow.appendChild(newInput);
+    addRow.appendChild(addBtn);
+    colloBox.appendChild(addRow);
+  }
+  renderColloBox();
+
+  // Từ đang gõ thay đổi (rời khỏi ô Từ) → vẽ lại gợi ý collocation theo từ
+  // mới, phòng trường hợp người dùng gõ từ rồi mới kéo xuống xem gợi ý.
+  wordEl.addEventListener('blur', ()=> renderColloBox());
+
   const saveBtn = document.createElement('button');
   saveBtn.className = 'save-btn';
   saveBtn.textContent = editing ? 'Lưu thay đổi' : 'Lưu từ vựng';
@@ -8204,15 +8614,22 @@ function renderVocabAdd(){
     const example = document.getElementById('vocabExampleInput').value.trim();
     const topicId = addVocabTopicChoice || null;
     const familyId = addVocabFamilyChoice || null;
+    // Bỏ qua các dòng cụm từ bỏ trống (người dùng bấm + Thêm rồi lại xoá
+    // trắng), giữ nguyên thứ tự và làm sạch khoảng trắng thừa.
+    const collocations = addVocabCollocations
+      .filter(c=>c.phrase && c.phrase.trim())
+      .map(c=>({id:c.id, phrase:c.phrase.trim(), meaning:(c.meaning||'').trim()}));
     if(!word || !meaning){ toast('Hãy điền ít nhất Từ và Nghĩa'); return; }
     if(editing){
-      Object.assign(editing, {word, meaning, ipa, pos, example, topicId, familyId});
+      Object.assign(editing, {word, meaning, ipa, pos, example, topicId, familyId, collocations});
       toast('Đã lưu thay đổi ✓');
     } else {
-      DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, ease:2.5, interval:0, reps:0, due:Date.now()});
+      DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
       toast('Đã thêm từ vựng ✓');
     }
     editVocabId = null;
+    addVocabCollocations = [];
+    vocabAddLoadedFor = undefined;
     await saveData();
     setView('vocab');
   };
@@ -8451,6 +8868,8 @@ function startVocabReview(){
   vocabSessionXpEarned = 0;
   vocabSessionCompletionHandled = false;
   lastSpokenVocabIdx = -1;
+  vocabReviewMenuOpen = false;
+  resetVocabAnswerInputState();
   setView('vocab-review');
 }
 
@@ -8490,7 +8909,10 @@ function renderVocabReview(){
   // đó lên nếu Cài đặt đang bật tự động phát âm.
   if(lastSpokenVocabIdx !== vocabReviewIdx){
     lastSpokenVocabIdx = vocabReviewIdx;
-    if(DATA.settings.autoSpeakVocab) speakWord(w.word);
+    // Chế độ "Nghe – gõ chính tả" thì LUÔN đọc từ khi sang từ mới, bất kể
+    // Cài đặt tự động phát âm đang bật/tắt — vì nghe là bắt buộc để làm
+    // được bài, không phải tính năng hỗ trợ thêm như các chế độ khác.
+    if(DATA.settings.autoSpeakVocab || vocabReviewInputMode==='dictation') speakWord(w.word);
   }
 
   const topbar = document.createElement('div');
@@ -8498,28 +8920,90 @@ function renderVocabReview(){
   topbar.innerHTML = `
     <button class="review-icon-btn review-back" aria-label="Đóng">←</button>
     <div class="review-counters"><span class="rc rc-blue active">${remaining.length}</span></div>
-    <div style="display:flex;"></div>
+    <div style="display:flex;">
+      <button class="review-icon-btn review-menu-btn" aria-label="Thêm">⋮</button>
+    </div>
   `;
   topbar.querySelector('.review-back').onclick = ()=> setView('vocab');
+  topbar.querySelector('.review-menu-btn').onclick = (e)=>{ e.stopPropagation(); vocabReviewMenuOpen = !vocabReviewMenuOpen; render(); };
   wrap.appendChild(topbar);
+
+  if(vocabReviewMenuOpen){
+    const menu = document.createElement('div');
+    menu.className = 'review-menu';
+    const modes = [
+      {id:'flip', icon:'🔄', label:'Lật thẻ'},
+      {id:'quiz', icon:'🧠', label:'Trắc nghiệm nhanh'},
+      {id:'dictation', icon:'🎧', label:'Nghe – gõ chính tả'},
+    ];
+    menu.innerHTML = modes.map(m=>
+      `<button class="review-menu-item" data-mode="${m.id}">${m.icon} ${m.label} ${vocabReviewInputMode===m.id?'✓':''}</button>`
+    ).join('');
+    menu.querySelectorAll('[data-mode]').forEach(btn=>{
+      btn.onclick = ()=>{
+        setVocabReviewInputMode(btn.dataset.mode);
+        vocabReviewMenuOpen = false;
+        vocabFlipped = false;
+        resetVocabAnswerInputState();
+        render();
+      };
+    });
+    wrap.appendChild(menu);
+    setTimeout(()=>{
+      document.addEventListener('click', function closeOnce(e){
+        if(!menu.contains(e.target)){ vocabReviewMenuOpen=false; render(); }
+        document.removeEventListener('click', closeOnce);
+      }, {once:true});
+    }, 0);
+  }
 
   const stage = document.createElement('div');
   stage.className = 'card-stage';
   const fc = document.createElement('div');
   fc.className = 'flashcard flashcard-plain';
   const subInfo = [w.ipa, w.pos].filter(Boolean).join('  ·  ');
-  fc.innerHTML = `
-    ${subInfo ? `<div class="side-label">${escapeHtml(subInfo)}</div>` : ''}
-    <div class="content" style="display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;">
-      <span>${escapeHtml(w.word)}</span>
-      <button class="vocab-speak-btn" aria-label="Phát âm" style="font-size:0.55em; line-height:1; border:none; background:var(--bg-elev); color:inherit; width:1.7em; height:1.7em; border-radius:50%; cursor:pointer; flex-shrink:0;">🔊</button>
-    </div>
-    ${vocabFlipped ? `<hr class="answer-divider"><div class="answer">${escapeHtml(w.meaning)}${w.example ? `<br><br><span style="font-style:italic; font-size:0.9em; opacity:0.85;">${escapeHtml(w.example)}</span>` : ''}</div>` : ''}
-  `;
-  fc.querySelector('.vocab-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(w.word); };
+  // Chế độ "Nghe – gõ chính tả" khi CHƯA chấm: giấu cả chữ viết lẫn IPA/từ
+  // loại (đều là gợi ý chính tả), chỉ để nút loa to để nghe (lại) — đúng
+  // bản chất bài tập là nghe rồi tự gõ, không được nhìn thấy chữ trước.
+  const isDictationBlind = vocabReviewInputMode==='dictation' && !vocabFlipped;
+  if(isDictationBlind){
+    fc.innerHTML = `
+      <div class="side-label">🎧 Nghe và gõ lại từ</div>
+      <div class="content" style="display:flex; align-items:center; justify-content:center;">
+        <button class="vocab-speak-btn dictation-speak-btn" aria-label="Nghe từ" style="font-size:1em; line-height:1; border:none; background:var(--bg-elev); color:inherit; width:2.6em; height:2.6em; border-radius:50%; cursor:pointer;">🔊</button>
+      </div>
+    `;
+    fc.querySelector('.dictation-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(w.word); };
+  } else {
+    fc.innerHTML = `
+      ${subInfo ? `<div class="side-label">${escapeHtml(subInfo)}</div>` : ''}
+      <div class="content" style="display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;">
+        <span>${escapeHtml(w.word)}</span>
+        <button class="vocab-speak-btn" aria-label="Phát âm" style="font-size:0.55em; line-height:1; border:none; background:var(--bg-elev); color:inherit; width:1.7em; height:1.7em; border-radius:50%; cursor:pointer; flex-shrink:0;">🔊</button>
+      </div>
+      ${vocabFlipped ? `<hr class="answer-divider"><div class="answer">${escapeHtml(w.meaning)}${w.example ? `<br><br><span style="font-style:italic; font-size:0.9em; opacity:0.85;">${escapeHtml(w.example)}</span>` : ''}</div>` : ''}
+    `;
+    fc.querySelector('.vocab-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(w.word); };
+  }
   stage.appendChild(fc);
 
   wrap.appendChild(stage);
+
+  // Lật thẻ xong và từ này có collocation đã lưu → hiện ngay dưới thẻ, để
+  // nhớ từ luôn đi kèm nhớ cả cụm hay dùng với nó (rất sát dạng bài
+  // collocation trong đề thi THPT), không cần mở lại màn Sửa mới thấy.
+  if(vocabFlipped && w.collocations && w.collocations.length>0){
+    const colloBox = document.createElement('div');
+    colloBox.style.cssText = 'flex-shrink:0; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px; padding:14px 16px; margin:0 16px 16px; max-height:30vh; overflow-y:auto;';
+    colloBox.innerHTML = `<div style="font-size:12px; color:var(--teal); font-weight:600; margin-bottom:8px;">🔗 Cụm từ hay đi kèm</div>` +
+      w.collocations.map(c=>`
+        <div style="display:flex; align-items:baseline; gap:8px; padding:6px 0; border-top:1px solid var(--line);">
+          <span style="font-weight:600;">${escapeHtml(c.phrase)}</span>
+          ${c.meaning ? `<span style="font-size:13px; color:var(--ink-faint); margin-left:auto; text-align:right;">${escapeHtml(c.meaning)}</span>` : ''}
+        </div>
+      `).join('');
+    wrap.appendChild(colloBox);
+  }
 
   // Lật thẻ xong và từ này thuộc 1 họ từ có từ khác → hiện luôn cả họ ngay
   // dưới thẻ, để "học 1 lần thấy cả họ từ" thay vì phải mở từng thẻ riêng.
@@ -8549,12 +9033,83 @@ function renderVocabReview(){
   }
 
   if(!vocabFlipped){
-    const revealBtn = document.createElement('button');
-    revealBtn.className = 'reveal-btn';
-    revealBtn.textContent = 'Hiện nghĩa';
-    revealBtn.onclick = ()=>{ vocabFlipped = true; render(); };
-    wrap.appendChild(revealBtn);
+    if(vocabReviewInputMode==='quiz'){
+      if(quizVocabCurrentWordId !== w.id){
+        quizVocabCurrentChoices = buildVocabQuizChoices(w);
+        quizVocabCurrentWordId = w.id;
+        quizVocabSelectedChoice = null;
+      }
+      if(quizVocabCurrentChoices.length < 2){
+        const note = document.createElement('p');
+        note.style.cssText = 'text-align:center; color:var(--ink-faint); font-size:12.5px; margin:0 16px 10px;';
+        note.textContent = 'Chưa đủ từ khác để ra trắc nghiệm — hiện nghĩa như bình thường nhé.';
+        wrap.appendChild(note);
+        const revealBtn = document.createElement('button');
+        revealBtn.className = 'reveal-btn';
+        revealBtn.textContent = 'Hiện nghĩa';
+        revealBtn.onclick = ()=>{ vocabFlipped = true; render(); };
+        wrap.appendChild(revealBtn);
+      } else {
+        const choicesEl = document.createElement('div');
+        choicesEl.className = 'quiz-choices';
+        quizVocabCurrentChoices.forEach(choice=>{
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'quiz-choice';
+          btn.innerHTML = escapeHtml(choice);
+          btn.onclick = ()=> selectVocabQuizChoice(choice);
+          choicesEl.appendChild(btn);
+        });
+        wrap.appendChild(choicesEl);
+      }
+    } else if(vocabReviewInputMode==='dictation'){
+      const box = document.createElement('div');
+      box.className = 'type-answer-box';
+      box.innerHTML = `
+        <input type="text" id="vocabDictationInput" class="type-answer-input" placeholder="Gõ từ bạn nghe được..." autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button class="reveal-btn vocab-dictation-check">Kiểm tra</button>
+      `;
+      box.querySelector('.vocab-dictation-check').onclick = ()=> checkVocabDictation();
+      box.querySelector('#vocabDictationInput').onkeydown = (e)=>{ if(e.key==='Enter') checkVocabDictation(); };
+      wrap.appendChild(box);
+      requestAnimationFrame(()=>{ const el = document.getElementById('vocabDictationInput'); if(el) el.focus(); });
+    } else {
+      const revealBtn = document.createElement('button');
+      revealBtn.className = 'reveal-btn';
+      revealBtn.textContent = 'Hiện nghĩa';
+      revealBtn.onclick = ()=>{ vocabFlipped = true; render(); };
+      wrap.appendChild(revealBtn);
+    }
   } else {
+    if(vocabReviewInputMode==='dictation' && dictationVocabChecked){
+      const feedback = document.createElement('div');
+      feedback.className = 'type-feedback ' + (dictationVocabCorrect ? 'correct' : 'wrong');
+      feedback.textContent = dictationVocabCorrect
+        ? '✓ Chính xác!'
+        : (dictationVocabValue.trim() ? `✗ Chưa đúng — bạn đã gõ: "${dictationVocabValue.trim()}" (đúng: "${w.word}")` : `✗ Bạn chưa gõ gì cả (đúng: "${w.word}")`);
+      wrap.insertBefore(feedback, wrap.querySelector('.card-stage').nextSibling);
+    } else if(vocabReviewInputMode==='quiz' && quizVocabCurrentChoices.length>=2){
+      const choicesEl = document.createElement('div');
+      choicesEl.className = 'quiz-choices answered';
+      quizVocabCurrentChoices.forEach(choice=>{
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.disabled = true;
+        const isCorrectChoice = normalizeForCompare(choice)===normalizeForCompare(w.meaning);
+        const isChosen = choice === quizVocabSelectedChoice;
+        btn.className = 'quiz-choice' + (isCorrectChoice ? ' correct' : '') + (isChosen && !isCorrectChoice ? ' wrong' : '');
+        btn.innerHTML = escapeHtml(choice) + (isCorrectChoice ? ' ✓' : (isChosen ? ' ✗' : ''));
+        choicesEl.appendChild(btn);
+      });
+      wrap.insertBefore(choicesEl, wrap.querySelector('.card-stage').nextSibling);
+      if(quizVocabSelectedChoice === null){
+        const timeout = document.createElement('div');
+        timeout.className = 'type-feedback wrong';
+        timeout.textContent = '✗ Bạn chưa chọn đáp án nào';
+        wrap.insertBefore(timeout, choicesEl);
+      }
+    }
+
     const preview = {
       again: (()=>{ const c={...w}; grade(c,0); return c.interval; })(),
       hard: (()=>{ const c={...w}; grade(c,1); return c.interval; })(),
@@ -8579,6 +9134,7 @@ function renderVocabReview(){
         await saveData();
         vocabReviewIdx += 1;
         vocabFlipped = false;
+        resetVocabAnswerInputState();
         render();
       };
     });

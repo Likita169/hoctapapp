@@ -260,6 +260,11 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 .subject-expand:active{background:var(--bg-elev);}
 .subject-expand-spacer{width:24px; height:24px; flex-shrink:0; background:none; border:none;}
 .subject-row.topic-selected{background:rgba(235,165,62,0.12); box-shadow:inset 3px 0 0 var(--amber);}
+.subject-quickadd{width:26px; height:26px; flex-shrink:0; display:flex; align-items:center; justify-content:center;
+  background:rgba(235,165,62,0.14); border:none; color:var(--amber); font-size:16px; font-weight:700;
+  line-height:1; cursor:pointer; border-radius:8px;
+  transition:background .18s var(--ease-out), transform .18s var(--ease-out);}
+.subject-quickadd:active{background:rgba(235,165,62,0.28); transform:scale(0.88);}
 .subject-del{background:none; border:none; color:var(--ink-faint); font-size:16px; cursor:pointer;
   padding:6px; flex-shrink:0; line-height:1; border-radius:8px;}
 .subject-del:hover, .subject-del:active{color:var(--coral); background:rgba(239,91,115,0.12);}
