@@ -726,6 +726,13 @@ function currentRenderSig(){
 }
 
 function render(){
+  // Các màn hình "duyệt/danh sách" được nới rộng cột trên máy tính (xem
+  // #app.wide-view trong style.css) — cố tình KHÔNG áp cho review/match/
+  // vocab-review/vocab-stress/thi trắc nghiệm vì cột hẹp giúp tập trung
+  // đọc câu hỏi hơn, kể cả khi mở trên màn hình rộng.
+  const WIDE_VIEWS = new Set(['home','manage','classroom','stats','vocab','vocab-add','add']);
+  $app.classList.toggle('wide-view', WIDE_VIEWS.has(VIEW) && !takeTestOpen);
+
   const prevMainEl = $app.querySelector('main');
   const prevScrollTop = prevMainEl ? prevMainEl.scrollTop : 0;
   const newSig = currentRenderSig();

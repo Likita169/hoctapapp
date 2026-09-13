@@ -87,6 +87,17 @@ html,body{margin:0;padding:0;height:100%;height:100dvh;background:var(--bg);colo
     var(--bg);
   position:relative;
   isolation:isolate;
+  transition: max-width .25s var(--ease);
+}
+/* Các màn hình duyệt/danh sách (trang chủ, quản lý, lớp học, thống kê,
+   từ vựng, thêm thẻ...) được nới rộng cột trên màn hình lớn — đỡ cảm giác
+   "kẻ hẹp giữa 2 mảng nền trống" trên máy tính. Màn hình ôn thẻ/làm bài/trò
+   chơi (không có .wide-view) CỐ Ý giữ nguyên 480px vì cột hẹp giúp tập
+   trung đọc câu hỏi hơn — không phải bị bỏ sót, mà chừa lại kiểu này để
+   không phải viết lại toàn bộ layout bên trong (grid 2 cột, thẻ bài...)
+   vốn được canh theo cột hẹp. */
+@media (min-width:860px){
+  #app.wide-view{ max-width:760px; }
 }
 html[data-theme="light"] #app{
   background:
@@ -284,6 +295,7 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 
 /* ---------- Lớp học / Bài kiểm tra (kiểu thẻ, giống Azota) ---------- */
 .classroom-grid{display:grid; grid-template-columns:1fr 1fr; gap:13px; margin-bottom:6px;}
+@media (min-width:860px){ #app.wide-view .classroom-grid{ grid-template-columns:repeat(3, 1fr); } }
 .classroom-card{
   background:var(--bg-elev); border:1px solid var(--line); border-radius:17px; overflow:hidden;
   display:flex; flex-direction:column; cursor:pointer; box-shadow:var(--shadow-sm);
@@ -817,6 +829,7 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
 
 /* ---------- Stats ---------- */
 .stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:13px; margin-bottom:6px;}
+@media (min-width:860px){ #app.wide-view .stat-grid{ grid-template-columns:repeat(4, 1fr); } }
 .stat-box{background:var(--bg-elev); border:1px solid var(--line); border-radius:var(--radius-sm); padding:17px; box-shadow:var(--shadow-sm);
   animation: popIn .36s var(--ease-out) both;}
 .stat-grid .stat-box:nth-child(1){animation-delay:.02s;}
@@ -1091,6 +1104,7 @@ nav.tabbar button.active::before{
 .badge-grid{
   display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-bottom:20px;
 }
+@media (min-width:860px){ #app.wide-view .badge-grid{ grid-template-columns:repeat(5, 1fr); } }
 .badge-item{
   display:flex; flex-direction:column; align-items:center; text-align:center; gap:3px;
   background:var(--bg-elev); border:1px solid var(--line); border-radius:var(--radius-sm);
