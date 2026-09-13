@@ -154,7 +154,7 @@ button, .opt-row, .test-card, .question-card, .classroom-card, .subject-row, .th
    .view-enter (real page changes) still gets the intro motion. */
 .view-root.no-replay *{animation:none !important;}
 
-header.topbar{padding:24px 20px 14px; display:flex; align-items:baseline; justify-content:space-between;}
+header.topbar{padding:calc(24px + env(safe-area-inset-top)) 20px 14px; display:flex; align-items:baseline; justify-content:space-between;}
 header.topbar h1{font-size:22px; margin:0; font-weight:600; font-family:'Fraunces',serif; letter-spacing:-0.01em;}
 header.topbar .date{font-size:11.5px; color:var(--ink-faint); font-family:'IBM Plex Mono',monospace; letter-spacing:0.02em;}
 .top-submit-btn{
@@ -182,6 +182,19 @@ main{flex:1; overflow-y:auto; padding: 0 20px 100px; -webkit-overflow-scrolling:
 main::-webkit-scrollbar{display:none;}
 
 /* ---------- Home ---------- */
+.ios-install-banner{
+  position:relative; background:var(--bg-elev); border:1px solid var(--line);
+  border-radius:var(--radius); padding:16px 34px 16px 16px; margin-bottom:18px;
+  box-shadow:var(--shadow-sm); animation: riseSm .3s var(--ease-out) both;
+}
+.ios-install-title{font-family:'Fraunces',serif; font-size:15px; font-weight:600; margin-bottom:6px;}
+.ios-install-body{font-size:12.5px; line-height:1.55; color:var(--ink-soft);}
+.ios-install-close{
+  position:absolute; top:10px; right:10px; background:none; border:none; color:var(--ink-faint);
+  font-size:13px; cursor:pointer; padding:6px; line-height:1; border-radius:8px;
+}
+.ios-install-close:active{background:var(--bg); transform:scale(0.92);}
+
 .hero-card{
   background: linear-gradient(160deg, var(--hero-a), var(--hero-b) 55%, var(--hero-c) 100%);
   border:1px solid var(--line);
@@ -620,7 +633,7 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
 /* ---------- Review ---------- */
 .review-wrap{display:flex; flex-direction:column; height:100%; padding:0; position:relative;}
 
-.review-topbar{padding:14px 16px; display:flex; align-items:center; justify-content:space-between; gap:10px;}
+.review-topbar{padding:calc(14px + env(safe-area-inset-top)) 16px 14px; display:flex; align-items:center; justify-content:space-between; gap:10px;}
 .review-icon-btn{background:none; border:none; color:var(--ink-soft); font-size:19px; cursor:pointer;
   padding:6px 9px; border-radius:10px; line-height:1;}
 .review-icon-btn:active{background:var(--bg-elev); transform:scale(0.9);}
@@ -632,7 +645,7 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
 .review-counters .rc-green{color:var(--teal);}
 .review-counters .rc.active{border-bottom-color:currentColor;}
 
-.review-menu{position:absolute; top:54px; right:16px; z-index:20; background:var(--bg-elev);
+.review-menu{position:absolute; top:calc(54px + env(safe-area-inset-top)); right:16px; z-index:20; background:var(--bg-elev);
   border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; min-width:200px;
   animation: popIn .18s var(--ease-spring);}
 .review-menu-item{display:block; width:100%; text-align:left; background:none; border:none; color:var(--white);

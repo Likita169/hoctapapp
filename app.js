@@ -4,6 +4,29 @@
 const COLORS = ['#eba53e','#47b9a5','#ef5b73','#9d8ef2','#5aa3e6','#dd94cf'];
 const STORE_KEY = 'srs_data_v1';
 
+// ---- Phát hiện iPhone/iPad + đã "Thêm vào màn hình chính" hay chưa ----
+// Safari trên iOS KHÔNG hỗ trợ sự kiện beforeinstallprompt (khác Chrome/
+// Android), nên không thể tự hiện nút "Cài đặt". Cách duy nhất là người
+// dùng tự bấm nút Chia sẻ rồi chọn "Thêm vào MH chính" — 2 hàm dưới dùng để
+// biết khi nào cần nhắc việc đó, và (quan trọng hơn) để không mời họ bật
+// "Nhắc đúng giờ" (Web Push) khi App chưa cài, vì Push API trên iOS chỉ chạy
+// được sau khi đã ở chế độ standalone (đã thêm vào MH chính).
+function isIOSDevice(){
+  return /iP(hone|od|ad)/.test(navigator.platform) ||
+    (navigator.userAgent.includes('Macintosh') && 'ontouchend' in document); // iPad báo là Mac từ iPadOS 13
+}
+function isStandaloneMode(){
+  return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+    window.navigator.standalone === true; // navigator.standalone: cờ riêng của Safari/iOS
+}
+let iosBannerDismissed = false;
+try{ iosBannerDismissed = localStorage.getItem('srs_ios_banner_dismissed') === '1'; }catch(e){ /* ignore */ }
+function dismissIosBanner(){
+  iosBannerDismissed = true;
+  try{ localStorage.setItem('srs_ios_banner_dismissed', '1'); }catch(e){ /* ignore */ }
+  render();
+}
+
 // Best-guess the theme synchronously, before IndexedDB has loaded the real
 // settings, so the page doesn't flash the wrong colors on startup.
 (function preApplyTheme(){
@@ -723,6 +746,7 @@ function render(){
     else if(VIEW==='vocab') main.appendChild(renderVocabHome());
     else if(VIEW==='vocab-add') main.appendChild(renderVocabAdd());
     else if(VIEW==='vocab-review') main.appendChild(renderVocabReview());
+    else if(VIEW==='vocab-stress') main.appendChild(renderVocabStressGame());
   }catch(e){
     // Never let a rendering bug in one tab take the whole app (and the
     // tabbar) down with it — fall back to Home so the person isn't stuck.
@@ -768,7 +792,7 @@ function render(){
     console.error('Lỗi khi vẽ 1 lớp phủ (modal):', e);
   }
 
-  if(VIEW!=='review' && VIEW!=='match' && VIEW!=='vocab-review' && !takeTestOpen){
+  if(VIEW!=='review' && VIEW!=='match' && VIEW!=='vocab-review' && VIEW!=='vocab-stress' && !takeTestOpen){
     $app.appendChild(renderTabbar());
     if(VIEW==='home' || VIEW==='manage'){
       const fab = document.createElement('button');
@@ -831,7 +855,7 @@ function renderTabbar(){
   ];
   tabs.forEach(t=>{
     const b = document.createElement('button');
-    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-review') : VIEW===t.id;
+    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-review'||VIEW==='vocab-stress') : VIEW===t.id;
     b.className = isActive ? 'active' : '';
     b.innerHTML = `<span class="icon">${t.icon}</span><span>${t.label}</span>`;
     b.onclick = ()=>{ if(t.id==='manage') manageFilterSubjectId = null; setView(t.id); };
@@ -867,6 +891,26 @@ function buildProgressBar(){
 /* 05-trang-chu-bo-the.js — Tab Trang chủ: cây bộ thẻ lồng nhau (mở/thu gọn kiểu AnkiDroid), hàm emptyState() và escapeHtml() dùng chung
    (Phần 623-764 của app.js gốc, tách ra để dễ tìm & dễ sửa.) */
 
+// Thẻ nhắc "Thêm vào Màn hình chính" — chỉ hiện trên iPhone/iPad đang mở
+// bằng Safari (chưa cài), tự ẩn vĩnh viễn nếu người dùng bấm ✕ (nhớ qua
+// localStorage) hoặc sau khi họ cài xong (isStandaloneMode() sẽ thành true).
+function renderIosInstallBanner(){
+  const box = document.createElement('div');
+  box.className = 'ios-install-banner';
+  box.innerHTML = `
+    <button class="ios-install-close" aria-label="Đóng">✕</button>
+    <div class="ios-install-title">📲 Cài app vào iPhone</div>
+    <div class="ios-install-body">
+      Bấm nút <strong>Chia sẻ</strong> <span class="mono">⬆️</span> ở thanh dưới Safari
+      → chọn <strong>"Thêm vào MH chính"</strong>. Sau khi cài, app mở toàn màn hình,
+      có icon riêng, và dùng được thông báo nhắc ôn đúng giờ (tính năng này không
+      chạy được khi chỉ mở qua tab Safari).
+    </div>
+  `;
+  box.querySelector('.ios-install-close').onclick = dismissIosBanner;
+  return box;
+}
+
 /* ---------------- HOME ---------------- */
 function renderHome(){
   const wrap = document.createElement('div');
@@ -890,6 +934,10 @@ function renderHome(){
 
   const main = document.createElement('main');
   const totalDue = dueCards().length;
+
+  if(isIOSDevice() && !isStandaloneMode() && !iosBannerDismissed){
+    main.appendChild(renderIosInstallBanner());
+  }
 
   main.appendChild(buildProgressBar());
 
@@ -6616,7 +6664,14 @@ async function subscribePush(hour, minute){
     return false;
   }
   if(!('serviceWorker' in navigator) || !('PushManager' in window)){
-    toast('Trình duyệt này không hỗ trợ nhắc đúng giờ');
+    // Trên iPhone/iPad, lý do hầu như luôn là: chưa "Thêm vào màn hình
+    // chính" — Safari mở qua tab thường không có Push API, kể cả bản iOS
+    // mới nhất. Nói rõ ra thay vì chỉ báo chung chung "không hỗ trợ".
+    if(isIOSDevice() && !isStandaloneMode()){
+      toast('Hãy Thêm vào Màn hình chính trước (Chia sẻ ⬆️ → Thêm vào MH chính) để bật nhắc đúng giờ');
+    } else {
+      toast('Trình duyệt này không hỗ trợ nhắc đúng giờ');
+    }
     return false;
   }
   const granted = await requestReminderPermission();
@@ -7828,6 +7883,256 @@ function selectVocabQuizChoice(choice){
 
 const POS_QUICK_PICKS = ['n.','v.','adj.','adv.'];
 
+/* ---------------- Trò chơi: Tìm từ trọng âm khác ---------------- */
+// Từ chuỗi phiên âm IPA đã lưu sẵn cho mỗi từ (w.ipa), suy ra: từ có mấy
+// âm tiết và âm tiết thứ mấy được nhấn (trọng âm chính, dấu ˈ) — dùng để
+// tự sinh câu hỏi "tìm từ có trọng âm khác 3 từ còn lại" (đúng dạng bài
+// hay gặp trong đề thi THPT) mà không cần nhập tay thêm dữ liệu gì.
+//
+// Cách làm: gộp các ký tự nguyên âm IPA liên tiếp thành 1 "âm tiết" (nguyên
+// âm đôi như eɪ/aʊ/ɔɪ viết bằng 2 ký tự nguyên âm liền nhau vẫn tính là 1
+// âm tiết, không tăng thêm) — không cố tách chính xác ranh giới phụ âm vì
+// không cần thiết cho mục đích so trọng âm. Âm tiết nào có dấu ˈ đứng ngay
+// trước nó (tính từ sau âm tiết trước đó) thì là âm tiết được nhấn.
+const IPA_VOWEL_RE = /[iyɪʏeɛœøɐaɶɑɒɔʌɤoʊuɯəɚɜɝæ]/;
+function parseIpaStress(raw){
+  if(!raw) return null;
+  let s = raw.split(',')[0]; // nhiều cách phát âm cách nhau bởi dấu phẩy → chỉ lấy cách đầu
+  s = s.trim().replace(/^[\/\[]/, '').replace(/[\/\]]$/, '').trim();
+  if(!s) return null;
+
+  let syllables = 0;
+  let stressIndex = null;
+  let stressPending = false; // vừa gặp dấu ˈ, chưa gán được cho âm tiết nào
+  let inVowelRun = false;
+
+  for(const ch of s){
+    if(ch === 'ˈ' || ch === "'"){ stressPending = true; continue; }
+    if(ch === 'ˌ'){ continue; } // trọng âm phụ — bỏ qua, chỉ quan tâm trọng âm chính
+    if(IPA_VOWEL_RE.test(ch)){
+      if(!inVowelRun){
+        inVowelRun = true;
+        syllables += 1;
+        if(stressPending){ stressIndex = syllables; stressPending = false; }
+      }
+    } else if(ch === 'ː'){
+      // dấu kéo dài nguyên âm — vẫn thuộc âm tiết đang mở, không đổi gì
+    } else {
+      inVowelRun = false;
+    }
+  }
+
+  if(syllables < 2 || stressIndex === null) return null; // đơn âm tiết hoặc thiếu dấu trọng âm — không dùng được cho trò này
+  return { syllables, stressIndex };
+}
+
+function wordStressInfo(w){
+  if(!w || !w.ipa) return null;
+  return parseIpaStress(w.ipa);
+}
+
+let stressGameQuestions = [];
+let stressGameIdx = 0;
+let stressGameSelected = null;
+let stressGameChecked = false;
+let stressGameCorrectCount = 0;
+const STRESS_GAME_QUESTION_COUNT = 10; // số câu tối đa mỗi lượt chơi
+
+// Dựng bộ câu hỏi cho 1 lượt chơi: mỗi câu gồm 4 từ CÙNG số âm tiết, trong
+// đó 3 từ trọng âm rơi vào cùng 1 vị trí, 1 từ rơi vào vị trí khác. Lấy
+// thẳng từ kho Từ vựng Anh (DATA.vocab) đã có, không phụ thuộc từ nào đang
+// đến hạn ôn hay chưa — vì đây là bài luyện thêm, không phải ôn theo SRS.
+function buildStressGameQuestions(){
+  const infos = DATA.vocab
+    .map(w=>({ w, info: wordStressInfo(w) }))
+    .filter(x=>x.info);
+
+  // Gộp theo số âm tiết, rồi trong mỗi nhóm gộp tiếp theo vị trí trọng âm.
+  const bySyll = new Map();
+  infos.forEach(({w, info})=>{
+    if(!bySyll.has(info.syllables)) bySyll.set(info.syllables, new Map());
+    const byStress = bySyll.get(info.syllables);
+    if(!byStress.has(info.stressIndex)) byStress.set(info.stressIndex, []);
+    byStress.get(info.stressIndex).push(w);
+  });
+
+  // Chỉ giữ nhóm (theo số âm tiết) có ≥2 kiểu trọng âm khác nhau, và có ít
+  // nhất 1 kiểu đủ ≥3 từ để làm 3 phương án "giống nhau".
+  const validGroups = [];
+  bySyll.forEach((byStress)=>{
+    const patterns = Array.from(byStress.entries());
+    if(patterns.length < 2) return;
+    if(!patterns.some(([,list])=>list.length>=3)) return;
+    validGroups.push(patterns);
+  });
+  if(validGroups.length===0) return [];
+
+  function pickN(arr, n){
+    const copy = arr.slice();
+    for(let i=copy.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [copy[i],copy[j]]=[copy[j],copy[i]]; }
+    return copy.slice(0, n);
+  }
+
+  const questions = [];
+  const maxAttempts = STRESS_GAME_QUESTION_COUNT * 6; // đề phòng nhóm nào cũng lỡ không đủ, tránh vòng lặp vô hạn
+  let attempts = 0;
+  while(questions.length < STRESS_GAME_QUESTION_COUNT && attempts < maxAttempts){
+    attempts += 1;
+    const patterns = validGroups[Math.floor(Math.random()*validGroups.length)];
+    const majorPatterns = patterns.filter(([,list])=>list.length>=3);
+    const majorEntry = majorPatterns[Math.floor(Math.random()*majorPatterns.length)];
+    const otherPatterns = patterns.filter(([stressIdx])=>stressIdx!==majorEntry[0]);
+    if(otherPatterns.length===0) continue;
+    const oddEntry = otherPatterns[Math.floor(Math.random()*otherPatterns.length)];
+
+    const sameWords = pickN(majorEntry[1], 3);
+    if(sameWords.length < 3) continue;
+    const oddWord = oddEntry[1][Math.floor(Math.random()*oddEntry[1].length)];
+
+    const options = [
+      ...sameWords.map(w=>({ id:w.id, word:w.word, ipa:w.ipa, odd:false })),
+      { id: oddWord.id, word: oddWord.word, ipa: oddWord.ipa, odd:true },
+    ];
+    for(let i=options.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [options[i],options[j]]=[options[j],options[i]]; }
+    questions.push({ options, oddIndex: options.findIndex(o=>o.odd) });
+  }
+  return questions;
+}
+
+function startStressGame(){
+  stressGameQuestions = buildStressGameQuestions();
+  stressGameIdx = 0;
+  stressGameSelected = null;
+  stressGameChecked = false;
+  stressGameCorrectCount = 0;
+  setView('vocab-stress');
+}
+
+// Cộng XP nhẹ mỗi câu trả lời đúng — không đụng tới grade()/lịch ôn SRS của
+// từ (trò này kiểm tra kiến thức trọng âm, không phải test khả năng nhớ
+// nghĩa nên không nên ảnh hưởng lịch ôn từ đó).
+function recordStressGameXp(correct){
+  if(!correct) return;
+  normalizeProgress();
+  const p = DATA.progress;
+  const beforeLevel = computeLevel(p.xp).level;
+  p.xp += 1;
+  recordStudyDay();
+  evaluateThresholdBadges();
+  const afterLevel = computeLevel(p.xp).level;
+  if(afterLevel > beforeLevel) toast(`🎉 Lên cấp ${afterLevel}!`);
+  saveData();
+}
+
+function renderVocabStressGame(){
+  const wrap = document.createElement('div');
+  wrap.className = 'review-wrap';
+
+  if(stressGameQuestions.length===0){
+    wrap.innerHTML = `<div class="review-done">
+      <div class="glyph">🎯</div>
+      <h2 class="display">Chưa đủ dữ liệu</h2>
+      <p>Cần ít nhất 4 từ có phiên âm (IPA) cùng số âm tiết, trong đó có từ trọng âm khác nhau, mới ra được câu hỏi. Hãy thêm hoặc điền phiên âm cho nhiều từ hơn rồi quay lại nhé.</p>
+    </div>`;
+    const btn = document.createElement('button');
+    btn.className = 'hero-btn'; btn.style.maxWidth = '260px'; btn.textContent = 'Về Từ vựng Anh';
+    btn.onclick = ()=> setView('vocab');
+    wrap.querySelector('.review-done').appendChild(btn);
+    return wrap;
+  }
+
+  if(stressGameIdx >= stressGameQuestions.length){
+    wrap.innerHTML = `<div class="review-done">
+      <div class="glyph">🎉</div>
+      <h2 class="display">Xong rồi!</h2>
+      <p>Bạn đã trả lời đúng ${stressGameCorrectCount}/${stressGameQuestions.length} câu.</p>
+    </div>`;
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex; flex-direction:column; gap:10px; max-width:260px; margin:18px auto 0;';
+    const again = document.createElement('button');
+    again.className = 'hero-btn'; again.textContent = 'Chơi lượt mới';
+    again.onclick = ()=> startStressGame();
+    const back = document.createElement('button');
+    back.className = 'hero-btn'; back.style.cssText = 'background:var(--bg-elev); color:var(--ink);'; back.textContent = 'Về Từ vựng Anh';
+    back.onclick = ()=> setView('vocab');
+    actions.appendChild(again); actions.appendChild(back);
+    wrap.querySelector('.review-done').appendChild(actions);
+    return wrap;
+  }
+
+  const q = stressGameQuestions[stressGameIdx];
+
+  const topbar = document.createElement('div');
+  topbar.className = 'review-topbar';
+  topbar.innerHTML = `
+    <button class="review-icon-btn review-back" aria-label="Đóng">←</button>
+    <div class="review-counters"><span class="rc rc-blue active">${stressGameIdx+1}/${stressGameQuestions.length}</span></div>
+    <div style="display:flex;"></div>
+  `;
+  topbar.querySelector('.review-back').onclick = ()=> setView('vocab');
+  wrap.appendChild(topbar);
+
+  const prompt = document.createElement('p');
+  prompt.style.cssText = 'text-align:center; color:var(--ink-faint); font-size:13px; margin:4px 16px 14px;';
+  prompt.textContent = 'Chọn từ có trọng âm khác 3 từ còn lại:';
+  wrap.appendChild(prompt);
+
+  const choicesEl = document.createElement('div');
+  choicesEl.className = 'quiz-choices' + (stressGameChecked ? ' answered' : '');
+  q.options.forEach((opt, i)=>{
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'quiz-choice';
+    const ipaClean = opt.ipa ? opt.ipa.replace(/^[\/\[]|[\/\]]$/g, '') : '';
+    if(stressGameChecked){
+      btn.disabled = true;
+      const isOdd = i===q.oddIndex;
+      const isChosen = i===stressGameSelected;
+      btn.className += isOdd ? ' correct' : (isChosen ? ' wrong' : '');
+      btn.innerHTML = `<span style="font-weight:600;">${escapeHtml(opt.word)}</span>` +
+        (ipaClean ? ` <span style="opacity:0.75; font-size:0.85em;">/${escapeHtml(ipaClean)}/</span>` : '') +
+        (isOdd ? ' ✓' : (isChosen ? ' ✗' : ''));
+    } else {
+      btn.innerHTML = `<span style="display:inline-flex; align-items:center; gap:6px; justify-content:center; width:100%;">
+        <span>${escapeHtml(opt.word)}</span>
+        <span class="stress-speak-btn" role="button" aria-label="Nghe" style="font-size:0.85em;">🔊</span>
+      </span>`;
+      btn.querySelector('.stress-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(opt.word); };
+      btn.onclick = ()=>{
+        stressGameSelected = i;
+        stressGameChecked = true;
+        const correct = i===q.oddIndex;
+        if(correct) stressGameCorrectCount += 1;
+        recordStressGameXp(correct);
+        render();
+      };
+    }
+    choicesEl.appendChild(btn);
+  });
+  wrap.appendChild(choicesEl);
+
+  if(stressGameChecked){
+    const correct = stressGameSelected===q.oddIndex;
+    const feedback = document.createElement('div');
+    feedback.className = 'type-feedback ' + (correct ? 'correct' : 'wrong');
+    feedback.textContent = correct ? '✓ Chính xác!' : '✗ Chưa đúng rồi.';
+    wrap.insertBefore(feedback, choicesEl);
+
+    const nextBtn = document.createElement('button');
+    nextBtn.className = 'reveal-btn';
+    nextBtn.textContent = stressGameIdx+1 < stressGameQuestions.length ? 'Câu tiếp theo →' : 'Xem kết quả';
+    nextBtn.onclick = ()=>{
+      stressGameIdx += 1;
+      stressGameSelected = null;
+      stressGameChecked = false;
+      render();
+    };
+    wrap.appendChild(nextBtn);
+  }
+
+  return wrap;
+}
+
 /* ---------------- màn Từ vựng Anh (danh sách) ---------------- */
 function renderVocabHome(){
   const wrap = document.createElement('div');
@@ -7876,6 +8181,20 @@ function renderVocabHome(){
   });
   hero.appendChild(modeRow);
   main.appendChild(hero);
+
+  // Trò "Tìm từ trọng âm khác" không phụ thuộc từ nào đến hạn ôn (dùng cả
+  // kho từ vựng, không riêng từ due) nên đặt thành 1 lối vào riêng, luôn
+  // bấm được kể cả khi hero phía trên đang khoá do due===0.
+  const stressEntry = document.createElement('div');
+  stressEntry.style.cssText = 'margin-top:12px;';
+  const stressBtn = document.createElement('button');
+  stressBtn.type = 'button';
+  stressBtn.className = 'chip';
+  stressBtn.style.cssText = 'width:100%; text-align:center; justify-content:center; padding:12px; font-size:14px;';
+  stressBtn.textContent = '🎯 Tìm từ trọng âm khác';
+  stressBtn.onclick = ()=> startStressGame();
+  stressEntry.appendChild(stressBtn);
+  main.appendChild(stressEntry);
 
   const label = document.createElement('div');
   label.className = 'section-label';
