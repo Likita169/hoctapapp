@@ -812,6 +812,8 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
 .manage-item .mi-back{font-size:13px; color:var(--ink-faint); margin-top:5px; line-height:1.4;}
 .manage-item .mi-del{background:none; border:none; color:var(--ink-faint); font-size:18px; cursor:pointer; padding:4px 6px; flex-shrink:0; border-radius:8px;}
 .manage-item .mi-del:active{color:var(--coral); background:rgba(239,91,115,0.12); transform:scale(0.9);}
+.manage-item .mi-edit{background:none; border:none; color:var(--ink-faint); font-size:16px; cursor:pointer; padding:4px 6px; flex-shrink:0; border-radius:8px;}
+.manage-item .mi-edit:active{color:var(--teal); background:rgba(71,185,165,0.12); transform:scale(0.9);}
 .search-box{width:100%; background:var(--bg-elev); border:1px solid var(--line); color:var(--white);
   border-radius:var(--radius-sm); padding:12px 14px; font-size:14px; margin-bottom:14px; font-family:'Inter',sans-serif;
   transition:border-color .15s ease, box-shadow .15s ease;}
@@ -1150,6 +1152,7 @@ nav.tabbar button.active::before{
   .match-tile:not(.matched):hover{border-color:var(--line-soft);}
   .manage-item:hover{background:var(--bg-elev);}
   .manage-item .mi-del:hover{color:var(--coral); background:rgba(239,91,115,0.1);}
+  .manage-item .mi-edit:hover{color:var(--teal); background:rgba(71,185,165,0.1);}
   nav.tabbar button:not(.active):hover{color:var(--ink-soft);}
   .back-link:hover{color:var(--ink-soft);}
   .sheet-item:hover{background:var(--bg);}

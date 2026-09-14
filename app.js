@@ -188,6 +188,7 @@ let actionSheetItems = null;     // array of {icon,label,onClick,danger} — dri
 let manageFilterSubjectId = null; // if set, "Thẻ ghi nhớ" tab only shows cards from this subject's subtree
 let deleteSubjectId = null;
 let deleteCardId = null;
+let editCardId = null; // id của thẻ đang mở modal "Sửa thẻ" (null = đang đóng)
 let manageSearch = '';
 let sessionSubjectFilter = null;
 let timeModalOpen = false;
@@ -755,6 +756,7 @@ function render(){
     subjectModalOpen = false;
     deleteSubjectId = null;
     deleteCardId = null;
+    editCardId = null;
     timeModalOpen = false;
     settingsPanelOpen = false;
     main.innerHTML = '';
@@ -771,6 +773,7 @@ function render(){
     if(subjectModalOpen) $app.appendChild(renderSubjectModal());
     if(deleteSubjectId) $app.appendChild(renderDeleteSubjectModal());
     if(deleteCardId) $app.appendChild(renderDeleteCardModal());
+    if(editCardId) $app.appendChild(renderEditCardModal());
     if(deleteVocabId) $app.appendChild(renderDeleteVocabModal());
     if(vocabTopicModalOpen) $app.appendChild(renderVocabTopicModal());
     if(vocabFamilyModalOpen) $app.appendChild(renderVocabFamilyModal());
@@ -1699,6 +1702,139 @@ function renderDeleteCardModal(){
   return overlay;
 }
 
+/* ---------------- SỬA THẺ (modal) ----------------
+   Mở từ danh sách "Thẻ ghi nhớ" (nút ✎) hoặc ngay trong lúc ôn tập (nút ✎
+   ở thanh trên) khi phát hiện viết sai. Thẻ thường: sửa thẳng 2 mặt.
+   Thẻ điền từ: sửa nguyên câu có đánh dấu {{cN::đáp án}} — nhiều thẻ có
+   thể cùng chung 1 câu gốc (mỗi chỗ trống là 1 thẻ riêng), nên khi lưu sẽ
+   đồng bộ câu mới cho TẤT CẢ các thẻ anh em đó, và tự tạo thêm thẻ mới nếu
+   người dùng đánh dấu thêm chỗ trống mới ngay trong lúc sửa. */
+function renderEditCardModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-backdrop';
+  overlay.onclick = (e)=>{ if(e.target===overlay){ editCardId=null; render(); } };
+
+  const c = DATA.cards.find(x=>x.id===editCardId);
+  if(!c){
+    editCardId = null;
+    return overlay;
+  }
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-card';
+
+  const title = document.createElement('div');
+  title.className = 'modal-title display';
+  title.textContent = 'Sửa thẻ';
+  modal.appendChild(title);
+
+  if(c.type==='cloze'){
+    // Mọi thẻ cùng câu gốc (cùng bộ, cùng chuỗi front trước khi sửa).
+    const siblings = DATA.cards.filter(x=>x.type==='cloze' && x.subjectId===c.subjectId && x.front===c.front);
+    const siblingIndices = new Set(siblings.map(s=>s.clozeIndex));
+
+    const fCloze = document.createElement('div');
+    fCloze.className = 'field';
+    fCloze.innerHTML = `<label>Câu văn — bôi đen từ/cụm từ cần ẩn rồi bấm "🕳 Ẩn từ"</label>`;
+    modal.appendChild(fCloze);
+    const clozeBuilt = buildCardTextarea('editClozeInput', '', {clozeButton:true});
+    clozeBuilt.field.value = c.front;
+    fCloze.appendChild(clozeBuilt.wrap);
+
+    const hint = document.createElement('p');
+    hint.style.cssText = 'color:var(--ink-faint); font-size:12px; margin:8px 2px 0; line-height:1.5;';
+    hint.textContent = siblings.length>1
+      ? `Câu này đang có ${siblings.length} chỗ trống (mỗi chỗ là 1 thẻ riêng) — sửa ở đây sẽ cập nhật cho cả ${siblings.length} thẻ. Đừng xoá các dấu {{...}} đang dùng; muốn bớt chỗ trống thì xoá thẻ đó (nút ✕) thay vì xoá dấu ở đây.`
+      : 'Đừng xoá dấu {{...}} đang đánh dấu chỗ trống; muốn thêm chỗ trống mới thì bôi đen rồi bấm "🕳 Ẩn từ".';
+    modal.appendChild(hint);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex; gap:10px; margin-top:22px;';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'save-btn';
+    cancelBtn.style.cssText = 'background:var(--bg-elev); color:var(--white); border:1px solid var(--line);';
+    cancelBtn.textContent = 'Huỷ';
+    cancelBtn.onclick = ()=>{ editCardId=null; render(); };
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'save-btn';
+    saveBtn.textContent = 'Lưu thay đổi';
+    saveBtn.onclick = async ()=>{
+      const newText = document.getElementById('editClozeInput').value.trim();
+      if(!newText){ toast('Câu văn không được để trống'); return; }
+      const newIndices = new Set(clozeIndicesOf(newText));
+      // Không cho xoá mất chỗ trống mà thẻ khác đang tham chiếu tới.
+      for(const idx of siblingIndices){
+        if(!newIndices.has(idx)){
+          toast('Bạn đã lỡ xoá 1 chỗ trống đang được dùng làm thẻ — hãy giữ nguyên dấu {{...}} đó, hoặc xoá hẳn thẻ tương ứng trước rồi mới sửa.');
+          return;
+        }
+      }
+      siblings.forEach(s=>{ s.front = newText; });
+      // Chỗ trống mới được thêm ngay trong lúc sửa → tạo thẻ mới luôn cho tiện.
+      let addedCount = 0;
+      newIndices.forEach(idx=>{
+        if(!siblingIndices.has(idx)){
+          DATA.cards.push({id:uid(), subjectId:c.subjectId, type:'cloze', front:newText, back:'', clozeIndex:idx, ease:2.5, interval:0, reps:0, due:Date.now()});
+          addedCount++;
+        }
+      });
+      await saveData();
+      editCardId = null;
+      toast(addedCount>0 ? `Đã lưu · thêm ${addedCount} thẻ mới ✓` : 'Đã lưu thay đổi ✓');
+      render();
+    };
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(saveBtn);
+    modal.appendChild(btnRow);
+  } else {
+    const fFront = document.createElement('div');
+    fFront.className = 'field';
+    fFront.innerHTML = `<label>Mặt trước — Câu hỏi / công thức</label>`;
+    modal.appendChild(fFront);
+    const frontBuilt = buildCardTextarea('editFrontInput', '');
+    frontBuilt.field.value = c.front;
+    fFront.appendChild(frontBuilt.wrap);
+
+    const fBack = document.createElement('div');
+    fBack.className = 'field';
+    fBack.innerHTML = `<label>Mặt sau — Đáp án / giải thích</label>`;
+    modal.appendChild(fBack);
+    const backBuilt = buildCardTextarea('editBackInput', '');
+    backBuilt.field.value = c.back;
+    fBack.appendChild(backBuilt.wrap);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex; gap:10px; margin-top:22px;';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'save-btn';
+    cancelBtn.style.cssText = 'background:var(--bg-elev); color:var(--white); border:1px solid var(--line);';
+    cancelBtn.textContent = 'Huỷ';
+    cancelBtn.onclick = ()=>{ editCardId=null; render(); };
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'save-btn';
+    saveBtn.textContent = 'Lưu thay đổi';
+    saveBtn.onclick = async ()=>{
+      const front = document.getElementById('editFrontInput').value.trim();
+      const back = document.getElementById('editBackInput').value.trim();
+      if(!front || !back){ toast('Hãy điền cả hai mặt của thẻ'); return; }
+      c.front = front;
+      c.back = back;
+      await saveData();
+      editCardId = null;
+      toast('Đã lưu thay đổi ✓');
+      render();
+    };
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(saveBtn);
+    modal.appendChild(btnRow);
+  }
+
+  overlay.appendChild(modal);
+  return overlay;
+}
+
 /* 08-hen-gio-va-on-tap.js — Modal chọn giờ (dùng cho giờ nhắc nhở) và toàn bộ màn hình Ôn tập (lật thẻ, chấm điểm, hoàn tác)
    (Phần 1323-1589 của app.js gốc, tách ra để dễ tìm & dễ sửa.) */
 
@@ -2047,11 +2183,13 @@ function renderReview(){
       <span class="rc rc-green ${bucket==='mastered'?'active':''}">${masteredCount}</span>
     </div>
     <div style="display:flex;">
+      <button class="review-icon-btn review-edit" aria-label="Sửa thẻ này" title="Sửa thẻ này">✎</button>
       <button class="review-icon-btn review-undo" aria-label="Hoàn tác" ${reviewHistory.length===0?'disabled':''}>↶</button>
       <button class="review-icon-btn review-menu-btn" aria-label="Thêm">⋮</button>
     </div>
   `;
   topbar.querySelector('.review-back').onclick = ()=>{ stopQuizCountdown(); setView('home'); };
+  topbar.querySelector('.review-edit').onclick = ()=>{ editCardId = card.id; render(); };
   topbar.querySelector('.review-undo').onclick = ()=> undoReview();
   topbar.querySelector('.review-menu-btn').onclick = (e)=>{ e.stopPropagation(); reviewMenuOpen = !reviewMenuOpen; render(); };
   wrap.appendChild(topbar);
@@ -2318,9 +2456,13 @@ function renderManageList(list){
           <div class="mi-front">${isCloze ? clozeDisplayHtml(c.front, c.clozeIndex, false) : escapeHtml(c.front)}</div>
           <div class="mi-back">${isCloze ? 'Đáp án: '+escapeHtml(clozeAnswerAt(c.front, c.clozeIndex)) : escapeHtml(c.back)}</div>
         </div>
-        <button class="mi-del">✕</button>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          <button class="mi-edit" aria-label="Sửa thẻ" title="Sửa thẻ">✎</button>
+          <button class="mi-del" aria-label="Xoá thẻ" title="Xoá thẻ">✕</button>
+        </div>
       </div>
     `;
+    item.querySelector('.mi-edit').onclick = ()=>{ editCardId = c.id; render(); };
     item.querySelector('.mi-del').onclick = ()=>{ deleteCardId = c.id; render(); };
     list.appendChild(item);
   });
