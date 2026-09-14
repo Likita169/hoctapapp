@@ -726,13 +726,6 @@ function currentRenderSig(){
 }
 
 function render(){
-  // Các màn hình "duyệt/danh sách" được nới rộng cột trên máy tính (xem
-  // #app.wide-view trong style.css) — cố tình KHÔNG áp cho review/match/
-  // vocab-review/vocab-stress/thi trắc nghiệm vì cột hẹp giúp tập trung
-  // đọc câu hỏi hơn, kể cả khi mở trên màn hình rộng.
-  const WIDE_VIEWS = new Set(['home','manage','classroom','stats','vocab','vocab-add','add']);
-  $app.classList.toggle('wide-view', WIDE_VIEWS.has(VIEW) && !takeTestOpen);
-
   const prevMainEl = $app.querySelector('main');
   const prevScrollTop = prevMainEl ? prevMainEl.scrollTop : 0;
   const newSig = currentRenderSig();
@@ -1955,6 +1948,53 @@ function selectQuizChoice(choice){
   flipped = true;
   render();
 }
+
+// ---- Phím tắt lúc Ôn thẻ (kiểu Anki) ----
+// Gắn DUY NHẤT 1 LẦN lúc script chạy (không gắn lại mỗi lần render(), tránh
+// chồng listener) — đọc VIEW/flipped/reviewInputMode mới nhất mỗi lần bấm
+// phím nhờ closure vì các biến này là `let` cấp module, được gán lại chứ
+// không khai báo lại. Chỉ hoạt động khi đang ở màn hình Ôn thẻ (VIEW ===
+// 'review'), bỏ qua hoàn toàn khi đang gõ vào 1 ô input/textarea (để không
+// phá việc gõ đáp án ở chế độ "Gõ đáp án") — nhờ vậy không cần né riêng
+// từng chế độ, cứ đang gõ chữ là im lặng nhường phím cho việc gõ.
+//   Space / Enter  → chưa lật thì lật thẻ; đã lật thì chấm "Nhớ" luôn
+//                    (giống quy ước Space = Good của Anki, đi nhanh)
+//   1 / 2 / 3 / 4  → đã lật: chấm Quên/Khó/Nhớ/Dễ theo đúng thứ tự nút
+//                    chưa lật + đang ở chế độ Trắc nghiệm: chọn đáp án 1-4
+//   Esc            → đang mở menu ⋮ thì đóng lại
+document.addEventListener('keydown', (e)=>{
+  if(VIEW !== 'review') return;
+  if(reviewMenuOpen){
+    if(e.key === 'Escape'){ reviewMenuOpen = false; render(); }
+    return;
+  }
+  const active = document.activeElement;
+  const isTyping = active && (active.tagName==='INPUT' || active.tagName==='TEXTAREA');
+  if(isTyping) return;
+
+  if(e.key===' ' || e.key==='Spacebar' || e.key==='Enter'){
+    e.preventDefault();
+    if(!flipped){
+      const revealBtn = document.querySelector('.reveal-btn:not(.type-answer-check)');
+      if(revealBtn) revealBtn.click();
+    } else {
+      const goodBtn = document.querySelector('.grade-btn.grade-good');
+      if(goodBtn) goodBtn.click();
+    }
+    return;
+  }
+  if(['1','2','3','4'].includes(e.key)){
+    if(flipped){
+      const classes = ['grade-again','grade-hard','grade-good','grade-easy'];
+      const btn = document.querySelector('.grade-btn.' + classes[Number(e.key)-1]);
+      if(btn) btn.click();
+    } else if(reviewInputMode==='quiz'){
+      const choices = document.querySelectorAll('.quiz-choices:not(.answered) .quiz-choice');
+      const btn = choices[Number(e.key)-1];
+      if(btn) btn.click();
+    }
+  }
+});
 
 function renderReview(){
   const wrap = document.createElement('div');

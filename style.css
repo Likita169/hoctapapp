@@ -87,18 +87,45 @@ html,body{margin:0;padding:0;height:100%;height:100dvh;background:var(--bg);colo
     var(--bg);
   position:relative;
   isolation:isolate;
-  transition: max-width .25s var(--ease);
 }
-/* Các màn hình duyệt/danh sách (trang chủ, quản lý, lớp học, thống kê,
-   từ vựng, thêm thẻ...) được nới rộng cột trên màn hình lớn — đỡ cảm giác
-   "kẻ hẹp giữa 2 mảng nền trống" trên máy tính. Màn hình ôn thẻ/làm bài/trò
-   chơi (không có .wide-view) CỐ Ý giữ nguyên 480px vì cột hẹp giúp tập
-   trung đọc câu hỏi hơn — không phải bị bỏ sót, mà chừa lại kiểu này để
-   không phải viết lại toàn bộ layout bên trong (grid 2 cột, thẻ bài...)
-   vốn được canh theo cột hẹp. */
-@media (min-width:860px){
-  #app.wide-view{ max-width:760px; }
+
+/* ============ CHẾ ĐỘ MÁY TÍNH (≥900px): app chiếm TOÀN màn hình trình
+   duyệt thay vì hiện thành 1 cột hẹp 480px lọt thỏm giữa 2 mảng nền trống
+   — thanh tab dưới cùng (nav.tabbar) chuyển thành sidebar bên trái cố định,
+   nội dung (header + main) chiếm hết phần còn lại, tự canh giữa ở độ rộng
+   đọc thoải mái (900px) để chữ không bị kéo dài hết cỡ màn hình ultra-wide.
+   Giao diện di động (cột 480px, tab bar dưới cùng) giữ nguyên không đổi ở
+   dưới 900px — 2 layout khác nhau thật sự, không phải chỉ nới rộng số. ============ */
+@media (min-width:900px){
+  #app{
+    max-width:none; width:100%; margin:0;
+    flex-direction:row;
+  }
+
+  .view-root{ flex:1; min-width:0; }
+
+  nav.tabbar{
+    position:static; order:-1; flex-direction:column; margin:0;
+    width:230px; min-width:230px; max-width:230px; height:100%;
+    border-top:none; border-right:1px solid var(--line);
+    padding:26px 12px calc(16px + env(safe-area-inset-bottom));
+    gap:3px; align-items:stretch;
+  }
+  nav.tabbar button{
+    flex:none; flex-direction:row; justify-content:flex-start; gap:13px;
+    padding:11px 14px; border-radius:12px; font-size:13.5px;
+  }
+  nav.tabbar button .icon{font-size:18px;}
+  nav.tabbar button.active{ background:rgba(235,165,62,0.12); }
+  nav.tabbar button.active .icon{ transform:none; }
+  nav.tabbar button.active::before{ display:none; } /* gạch chân nhỏ hợp cho icon-trên-chữ ở tab bar, không hợp hàng ngang trong sidebar */
+
+  header.topbar, .review-topbar, main{ max-width:900px; margin:0 auto; width:100%; }
+  main{ padding:0 32px 40px; }
+
+  .fab{ bottom:24px; }
 }
+
 html[data-theme="light"] #app{
   background:
     radial-gradient(900px 420px at 50% -160px, rgba(184,121,31,0.07), transparent 60%),
@@ -295,7 +322,7 @@ main .subject-row:nth-of-type(n+6){animation-delay:.20s;}
 
 /* ---------- Lớp học / Bài kiểm tra (kiểu thẻ, giống Azota) ---------- */
 .classroom-grid{display:grid; grid-template-columns:1fr 1fr; gap:13px; margin-bottom:6px;}
-@media (min-width:860px){ #app.wide-view .classroom-grid{ grid-template-columns:repeat(3, 1fr); } }
+@media (min-width:900px){ .classroom-grid{ grid-template-columns:repeat(3, 1fr); } }
 .classroom-card{
   background:var(--bg-elev); border:1px solid var(--line); border-radius:17px; overflow:hidden;
   display:flex; flex-direction:column; cursor:pointer; box-shadow:var(--shadow-sm);
@@ -829,7 +856,7 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
 
 /* ---------- Stats ---------- */
 .stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:13px; margin-bottom:6px;}
-@media (min-width:860px){ #app.wide-view .stat-grid{ grid-template-columns:repeat(4, 1fr); } }
+@media (min-width:900px){ .stat-grid{ grid-template-columns:repeat(4, 1fr); } }
 .stat-box{background:var(--bg-elev); border:1px solid var(--line); border-radius:var(--radius-sm); padding:17px; box-shadow:var(--shadow-sm);
   animation: popIn .36s var(--ease-out) both;}
 .stat-grid .stat-box:nth-child(1){animation-delay:.02s;}
@@ -1104,7 +1131,7 @@ nav.tabbar button.active::before{
 .badge-grid{
   display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-bottom:20px;
 }
-@media (min-width:860px){ #app.wide-view .badge-grid{ grid-template-columns:repeat(5, 1fr); } }
+@media (min-width:900px){ .badge-grid{ grid-template-columns:repeat(5, 1fr); } }
 .badge-item{
   display:flex; flex-direction:column; align-items:center; text-align:center; gap:3px;
   background:var(--bg-elev); border:1px solid var(--line); border-radius:var(--radius-sm);
@@ -1125,3 +1152,66 @@ nav.tabbar button.active::before{
 }
 .session-recap-item .srv{font-size:16px; font-weight:800; font-family:'IBM Plex Mono',monospace;}
 .session-recap-item .srl{font-size:10.5px; color:var(--ink-faint); font-weight:600;}
+
+/* ---- Phản hồi hover cho các nút vốn chỉ có hiệu ứng bấm (:active) ----
+   Trước đây phần lớn nút chỉ phản hồi khi bấm xuống (:active) — trên máy
+   tính dùng chuột, di chuột qua không có tín hiệu gì là bấm được. Gom hết
+   vào 1 khối, bọc trong @media(hover:hover) như các hover có sẵn trong file
+   (không áp dụng trên cảm ứng, tránh hover "dính" sau khi chạm). Hiệu ứng
+   cố tình nhẹ hơn :active (không scale-down, vì scale-down là cảm giác
+   "đang nhấn", chỉ hợp lúc bấm thật) — chủ yếu đổi viền/nền/màu hoặc nhích
+   nhẹ lên trên.  */
+@media (hover:hover){
+  .top-submit-btn:not(:disabled):hover{filter:brightness(1.08);}
+  .bell-btn:hover{color:var(--amber);}
+  .ios-install-close:hover{background:var(--bg); color:var(--ink);}
+  .subject-row:hover{background:var(--bg-elev);}
+  .subject-due:not(.zero):hover{background:rgba(235,165,62,0.14);}
+  .subject-expand:hover{background:var(--bg-elev);}
+  .subject-quickadd:hover{background:rgba(235,165,62,0.2);}
+  .classroom-banner .cb-del:hover{background:rgba(0,0,0,0.3);}
+  .classroom-chip:hover{border-color:var(--amber); color:var(--amber);}
+  .question-card:hover{border-color:var(--violet);}
+  .essay-photo-add:hover{background:var(--bg-elev);}
+  .save-btn.secondary-btn:hover{border-color:var(--teal);}
+  .pw-toggle:hover{color:var(--amber);}
+  .math-btn:hover{border-color:var(--violet); color:var(--violet);}
+  .math-btn-cloze:hover{border-color:var(--pink); color:var(--pink);}
+  .card-type-btn:not(.active):hover{border-color:var(--line-soft);}
+  .chip:not(.active):hover{border-color:var(--line-soft);}
+  .save-btn:not(:disabled):hover{box-shadow:0 4px 10px rgba(71,185,165,0.18);}
+  .review-icon-btn:hover{background:var(--bg-elev);}
+  .review-menu-item:hover{background:var(--bg);}
+  .reveal-btn:not(:disabled):hover{box-shadow:0 4px 12px rgba(43,125,233,0.18);}
+  .quiz-choice:not(.readonly):hover{border-color:var(--violet);}
+  .match-tile:not(.matched):hover{border-color:var(--line-soft);}
+  .manage-item:hover{background:var(--bg-elev);}
+  .manage-item .mi-del:hover{color:var(--coral); background:rgba(239,91,115,0.1);}
+  nav.tabbar button:not(.active):hover{color:var(--ink-soft);}
+  .back-link:hover{color:var(--ink-soft);}
+  .sheet-item:hover{background:var(--bg);}
+  .update-banner button:hover{filter:brightness(1.08);}
+  .time-value-btn:hover{border-color:var(--amber);}
+  .color-dot:hover{transform:scale(1.12);}
+  .theme-opt:not(.active):hover{border-color:var(--line-soft);}
+  .file-preview-icon-btn:hover{background:var(--bg-elev);}
+  .progress-bar-card:hover{border-color:var(--amber);}
+}
+
+/* ---- Cho phép bôi đen & copy chữ khi dùng chuột (máy tính) ----
+   *{user-select:none} ở đầu file là để tránh bôi đen nhầm khi vuốt/chạm
+   trên điện thoại — hợp lý cho cảm ứng nhưng chặn luôn việc copy câu hỏi/
+   đáp án/ghi chú trên máy tính, nơi bôi đen bằng chuột là thao tác bình
+   thường. Bật lại CHỈ khi phát hiện có chuột thật (hover:hover + pointer:
+   fine — không khớp iPad dùng ngón tay/Apple Pencil), rồi chặn lại riêng ở
+   vài nút bấm liên tục/không có nội dung cần copy (tab bar, FAB, chip lọc,
+   nút icon...) để bấm nhanh không bị dính bôi xanh vô nghĩa. */
+@media (hover:hover) and (pointer:fine){
+  *{ -webkit-user-select:text; user-select:text; }
+  nav.tabbar button, .fab, .gear-btn, .bell-btn, .review-icon-btn,
+  .ios-install-close, .back-link, .chip, .theme-opt, .color-dot,
+  .subject-expand, .subject-quickadd, .card-type-btn, .math-btn, .math-btn-cloze,
+  .grade-btn, .quiz-choice, .classroom-chip{
+    -webkit-user-select:none; user-select:none;
+  }
+}
