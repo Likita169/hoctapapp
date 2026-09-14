@@ -89,43 +89,6 @@ html,body{margin:0;padding:0;height:100%;height:100dvh;background:var(--bg);colo
   isolation:isolate;
 }
 
-/* ============ CHẾ ĐỘ MÁY TÍNH (≥900px): app chiếm TOÀN màn hình trình
-   duyệt thay vì hiện thành 1 cột hẹp 480px lọt thỏm giữa 2 mảng nền trống
-   — thanh tab dưới cùng (nav.tabbar) chuyển thành sidebar bên trái cố định,
-   nội dung (header + main) chiếm hết phần còn lại, tự canh giữa ở độ rộng
-   đọc thoải mái (900px) để chữ không bị kéo dài hết cỡ màn hình ultra-wide.
-   Giao diện di động (cột 480px, tab bar dưới cùng) giữ nguyên không đổi ở
-   dưới 900px — 2 layout khác nhau thật sự, không phải chỉ nới rộng số. ============ */
-@media (min-width:900px){
-  #app{
-    max-width:none; width:100%; margin:0;
-    flex-direction:row;
-  }
-
-  .view-root{ flex:1; min-width:0; }
-
-  nav.tabbar{
-    position:static; order:-1; flex-direction:column; margin:0;
-    width:230px; min-width:230px; max-width:230px; height:100%;
-    border-top:none; border-right:1px solid var(--line);
-    padding:26px 12px calc(16px + env(safe-area-inset-bottom));
-    gap:3px; align-items:stretch;
-  }
-  nav.tabbar button{
-    flex:none; flex-direction:row; justify-content:flex-start; gap:13px;
-    padding:11px 14px; border-radius:12px; font-size:13.5px;
-  }
-  nav.tabbar button .icon{font-size:18px;}
-  nav.tabbar button.active{ background:rgba(235,165,62,0.12); }
-  nav.tabbar button.active .icon{ transform:none; }
-  nav.tabbar button.active::before{ display:none; } /* gạch chân nhỏ hợp cho icon-trên-chữ ở tab bar, không hợp hàng ngang trong sidebar */
-
-  header.topbar, .review-topbar, main{ max-width:900px; margin:0 auto; width:100%; }
-  main{ padding:0 32px 40px; }
-
-  .fab{ bottom:24px; }
-}
-
 html[data-theme="light"] #app{
   background:
     radial-gradient(900px 420px at 50% -160px, rgba(184,121,31,0.07), transparent 60%),
@@ -1214,4 +1177,48 @@ nav.tabbar button.active::before{
   .grade-btn, .quiz-choice, .classroom-chip{
     -webkit-user-select:none; user-select:none;
   }
+}
+
+/* ============ CHẾ ĐỘ MÁY TÍNH (≥900px): app chiếm TOÀN màn hình trình
+   duyệt thay vì hiện thành 1 cột hẹp 480px lọt thỏm giữa 2 mảng nền trống
+   — thanh tab dưới cùng (nav.tabbar) chuyển thành sidebar bên trái cố định,
+   nội dung (header + main) chiếm hết phần còn lại, tự canh giữa ở độ rộng
+   đọc thoải mái (900px) để chữ không bị kéo dài hết cỡ màn hình ultra-wide.
+   Giao diện di động (cột 480px, tab bar dưới cùng) giữ nguyên không đổi ở
+   dưới 900px — 2 layout khác nhau thật sự, không phải chỉ nới rộng số.
+   ĐẶT CUỐI FILE CÓ CHỦ ĐÍCH: các rule gốc của nav.tabbar/header.topbar/main/
+   .fab nằm rải rác phía trên — nếu khối @media này đứng trước chúng, khi
+   trùng thuộc tính thì rule gốc (đứng sau) sẽ thắng do cùng độ đặc hiệu mà
+   đứng sau trong file, làm ghi đè desktop bị "lọt" từng phần (lỗi từng gặp:
+   sidebar nổi lưng chừng giữa màn hình thay vì dính sát bên trái). Nếu sau
+   này thêm rule mới cho các selector này, luôn chèn TRƯỚC khối này. */
+@media (min-width:900px){
+  #app{
+    max-width:none; width:100%; margin:0;
+    flex-direction:row;
+  }
+
+  .view-root{ flex:1; min-width:0; }
+
+  nav.tabbar{
+    position:static; order:-1; flex-direction:column; margin:0;
+    width:230px; min-width:230px; max-width:230px; height:100%;
+    bottom:auto; left:auto; right:auto;
+    border-top:none; border-right:1px solid var(--line);
+    padding:26px 12px calc(16px + env(safe-area-inset-bottom));
+    gap:3px; align-items:stretch;
+  }
+  nav.tabbar button{
+    flex:none; flex-direction:row; justify-content:flex-start; gap:13px;
+    padding:11px 14px; border-radius:12px; font-size:13.5px;
+  }
+  nav.tabbar button .icon{font-size:18px;}
+  nav.tabbar button.active{ background:rgba(235,165,62,0.12); }
+  nav.tabbar button.active .icon{ transform:none; }
+  nav.tabbar button.active::before{ display:none; }
+
+  header.topbar, .review-topbar, main{ max-width:900px; margin:0 auto; width:100%; }
+  main{ padding:0 32px 40px; }
+
+  .fab{ bottom:24px; }
 }
