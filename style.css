@@ -717,6 +717,18 @@ mark.cloze-answer{background:rgba(157,142,242,0.28); color:inherit; border-radiu
 .type-feedback.correct{color:var(--teal);}
 .type-feedback.wrong{color:var(--coral);}
 
+/* Chế độ "Viết đáp án" — khung nhiều dòng để viết tự do (đáp án dài),
+   xếp dọc thay vì nằm ngang như "Gõ đáp án"; vẫn chấm bằng so khớp tự động. */
+.write-answer-box{margin:0 16px 26px; display:flex; flex-direction:column; gap:10px; animation: riseSm .3s var(--ease-out) both;}
+.write-answer-textarea{
+  width:100%; box-sizing:border-box; padding:14px 15px; border-radius:var(--radius-sm); border:1px solid var(--line);
+  background:var(--bg-elev); color:var(--white); font-size:15px; font-family:'Inter',sans-serif; outline:none;
+  resize:vertical; min-height:96px; line-height:1.5;
+  transition:border-color .15s ease, box-shadow .15s ease;
+}
+.write-answer-textarea:focus{border-color:var(--violet); box-shadow:0 0 0 3px rgba(157,142,242,0.2);}
+.write-answer-box .reveal-btn{margin:0; width:100%;}
+
 /* Chế độ "Trắc nghiệm nhanh" — 4 lựa chọn thay cho nút "Hiện đáp án" */
 .quiz-countdown{
   text-align:center; font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:15px;

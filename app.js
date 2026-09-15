@@ -200,7 +200,7 @@ let timeModalMinute = 0;
 const TIME_ITEM_H = 44;
 
 /* ---- chế độ trả lời khi ôn tập: lật thẻ / gõ đáp án / trắc nghiệm nhanh ---- */
-let reviewInputMode = 'flip';    // 'flip' | 'type' | 'quiz' — nhớ lại lựa chọn lần ôn trước
+let reviewInputMode = 'flip';    // 'flip' | 'type' | 'write' | 'quiz' — nhớ lại lựa chọn lần ôn trước
 try{ reviewInputMode = localStorage.getItem('srs_review_mode') || 'flip'; }catch(e){ /* ignore */ }
 function setReviewInputMode(mode){
   reviewInputMode = mode;
@@ -209,6 +209,9 @@ function setReviewInputMode(mode){
 let typedAnswerValue = '';       // đang gõ gì ở chế độ "Gõ đáp án", cho đúng thẻ hiện tại
 let typedAnswerChecked = false;  // đã bấm "Kiểm tra" cho thẻ hiện tại chưa
 let typedAnswerCorrect = false;
+let writtenAnswerValue = '';     // đang viết gì ở chế độ "Viết đáp án" (khung nhiều dòng), cho đúng thẻ hiện tại
+let writtenAnswerChecked = false;// đã bấm "Kiểm tra" cho thẻ hiện tại chưa
+let writtenAnswerCorrect = false;
 let quizCurrentCardId = null;    // id thẻ mà quizCurrentChoices đang ứng với — tránh sinh lại đáp án mỗi lần vẽ lại
 let quizCurrentChoices = [];     // các lựa chọn trắc nghiệm (đã xáo trộn) cho thẻ hiện tại
 let quizSelectedChoice = null;
@@ -1960,6 +1963,9 @@ function resetAnswerInputState(){
   typedAnswerValue = '';
   typedAnswerChecked = false;
   typedAnswerCorrect = false;
+  writtenAnswerValue = '';
+  writtenAnswerChecked = false;
+  writtenAnswerCorrect = false;
   quizCurrentCardId = null;
   quizCurrentChoices = [];
   quizSelectedChoice = null;
@@ -2076,6 +2082,21 @@ function checkTypedAnswer(){
   render();
 }
 
+// Chế độ "Viết đáp án" — giống "Gõ đáp án" nhưng dùng khung nhiều dòng để
+// viết tự do (phù hợp thẻ có đáp án dài), vẫn chấm bằng cách so khớp tự
+// động với đáp án đúng (chuẩn hoá dấu/hoa-thường/khoảng trắng thừa) y hệt
+// "Gõ đáp án", chỉ khác ô nhập liệu.
+function checkWrittenAnswer(){
+  const input = document.getElementById('writtenAnswerInput');
+  writtenAnswerValue = input ? input.value : '';
+  const card = reviewQueue[reviewIdx];
+  const correct = correctAnswerText(card);
+  writtenAnswerCorrect = !!writtenAnswerValue.trim() && normalizeForCompare(writtenAnswerValue) === normalizeForCompare(correct);
+  writtenAnswerChecked = true;
+  flipped = true;
+  render();
+}
+
 function selectQuizChoice(choice){
   const card = reviewQueue[reviewIdx];
   stopQuizCountdown();
@@ -2111,7 +2132,7 @@ document.addEventListener('keydown', (e)=>{
   if(e.key===' ' || e.key==='Spacebar' || e.key==='Enter'){
     e.preventDefault();
     if(!flipped){
-      const revealBtn = document.querySelector('.reveal-btn:not(.type-answer-check)');
+      const revealBtn = document.querySelector('.reveal-btn:not(.type-answer-check):not(.write-answer-check)');
       if(revealBtn) revealBtn.click();
     } else {
       const goodBtn = document.querySelector('.grade-btn.grade-good');
@@ -2200,6 +2221,7 @@ function renderReview(){
     const modes = [
       {id:'flip', icon:'🔄', label:'Lật thẻ'},
       {id:'type', icon:'⌨️', label:'Gõ đáp án'},
+      {id:'write', icon:'📝', label:'Viết đáp án'},
       {id:'quiz', icon:'🧠', label:'Trắc nghiệm'},
     ];
     menu.innerHTML = modes.map(m=>
@@ -2267,6 +2289,16 @@ function renderReview(){
       box.querySelector('#typedAnswerInput').onkeydown = (e)=>{ if(e.key==='Enter') checkTypedAnswer(); };
       wrap.appendChild(box);
       requestAnimationFrame(()=>{ const el = document.getElementById('typedAnswerInput'); if(el) el.focus(); });
+    } else if(reviewInputMode==='write'){
+      const box = document.createElement('div');
+      box.className = 'write-answer-box';
+      box.innerHTML = `
+        <textarea id="writtenAnswerInput" class="write-answer-textarea" placeholder="Viết nội dung/đáp án của bạn..." autocapitalize="off" spellcheck="false" rows="4"></textarea>
+        <button class="reveal-btn write-answer-check">Kiểm tra</button>
+      `;
+      box.querySelector('.write-answer-check').onclick = ()=> checkWrittenAnswer();
+      wrap.appendChild(box);
+      requestAnimationFrame(()=>{ const el = document.getElementById('writtenAnswerInput'); if(el) el.focus(); });
     } else if(reviewInputMode==='quiz'){
       if(quizCurrentCardId !== card.id){
         quizCurrentChoices = buildQuizChoices(card);
@@ -2319,6 +2351,13 @@ function renderReview(){
       feedback.textContent = typedAnswerCorrect
         ? '✓ Chính xác!'
         : (typedAnswerValue.trim() ? `✗ Chưa đúng — bạn đã gõ: "${typedAnswerValue.trim()}"` : '✗ Bạn chưa gõ gì cả');
+      wrap.insertBefore(feedback, wrap.querySelector('.card-stage').nextSibling);
+    } else if(reviewInputMode==='write' && writtenAnswerChecked){
+      const feedback = document.createElement('div');
+      feedback.className = 'type-feedback ' + (writtenAnswerCorrect ? 'correct' : 'wrong');
+      feedback.textContent = writtenAnswerCorrect
+        ? '✓ Chính xác!'
+        : (writtenAnswerValue.trim() ? `✗ Chưa đúng — bạn đã viết: "${writtenAnswerValue.trim()}"` : '✗ Bạn chưa viết gì cả');
       wrap.insertBefore(feedback, wrap.querySelector('.card-stage').nextSibling);
     } else if(reviewInputMode==='quiz' && quizCurrentChoices.length>=2){
       const choicesEl = document.createElement('div');
