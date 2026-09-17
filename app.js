@@ -847,6 +847,7 @@ function render(){
   // Vẽ lại mọi công thức toán ($...$) xuất hiện trong khung nhìn vừa dựng
   // (câu hỏi/đáp án của thẻ, danh sách quản lý, hộp xác nhận xoá...).
   renderMathIn($app);
+  renderInlineImages($app);
 }
 
 function renderTabbar(){
@@ -1083,6 +1084,40 @@ function renderMathIn(el){
       ignoredTags:['script','noscript','style','textarea','pre']
     });
   }catch(e){ /* đừng để lỗi vẽ công thức làm hỏng cả giao diện */ }
+}
+
+// Vẽ lại các công thức "kiểu cũ" (MathType/OLE, xem docxExtractOleEquationImages) đã
+// được nhúng dưới dạng {{IMG:data:image/png;base64,...}} lúc nhập đề — escapeHtml() không
+// đụng tới các ký tự này nên marker vẫn còn nguyên trong text; ở đây chỉ quét các text
+// node bên trong el rồi thay bằng <img> thật, không innerHTML nguyên khối (an toàn, không
+// tạo lỗ hổng chèn HTML từ nội dung câu hỏi).
+const IMG_MARKER_RE = /\{\{IMG:(data:image\/(?:png|jpe?g|gif);base64,[A-Za-z0-9+/=]+)\}\}/g;
+function renderInlineImages(el){
+  if(!el) return;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+  const toReplace = [];
+  let node;
+  while((node = walker.nextNode())){
+    IMG_MARKER_RE.lastIndex = 0;
+    if(IMG_MARKER_RE.test(node.nodeValue)) toReplace.push(node);
+  }
+  toReplace.forEach(node=>{
+    const text = node.nodeValue;
+    const frag = document.createDocumentFragment();
+    let lastIndex = 0, m;
+    IMG_MARKER_RE.lastIndex = 0;
+    while((m = IMG_MARKER_RE.exec(text))){
+      if(m.index > lastIndex) frag.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
+      const img = document.createElement('img');
+      img.src = m[1];
+      img.alt = 'công thức';
+      img.className = 'eq-img';
+      frag.appendChild(img);
+      lastIndex = m.index + m[0].length;
+    }
+    if(lastIndex < text.length) frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+    node.parentNode.replaceChild(frag, node);
+  });
 }
 
 /* ---------------- Điền vào chỗ trống (Cloze) ----------------
@@ -7310,6 +7345,324 @@ function renderMatchGame(){
    KaTeX (xem renderMathIn() trong phần "Công thức toán học"). Nhờ vậy câu hỏi/phương án
    nhập vào hiện ra phân số, căn, số mũ... y hệt bản Word gốc, không phải "(5π)/(12)". */
 
+/* ---------------- CÔNG THỨC KIỂU CŨ: MathType / Equation Editor 3.0 (OLE + ảnh WMF) ----------------
+   Nhiều đề (nhất là đề soạn lâu năm, gõ bằng MathType) không chèn công thức theo kiểu
+   Word Equation (<m:oMath>) mà chèn dưới dạng object OLE (ProgID "Equation.DSMT4"...),
+   Word chỉ lưu kèm 1 ảnh xem trước định dạng .wmf (Windows Metafile) — trình duyệt
+   KHÔNG hiển thị được .wmf trực tiếp. Bộ hàm dưới đây tự đọc từng file .wmf này (nó chỉ
+   là 1 chuỗi lệnh vẽ GDI rất đơn giản: chọn font, viết chữ, vẽ vài đường thẳng cho dấu
+   gạch phân số/căn...) và "vẽ lại" bằng <canvas>, xuất ra ảnh PNG (base64) chèn thẳng vào
+   câu hỏi/phương án bằng cú pháp {{IMG:data:image/png;base64,...}} — xem renderInlineImages().
+   Không phải trình đọc WMF tổng quát, chỉ đủ cho đúng những lệnh MathType hay dùng. */
+const WMF_REC = {
+  EOF:0x0000, SAVEDC:0x001E, SETBKMODE:0x0102, SETMAPMODE:0x0103,
+  RESTOREDC:0x0127, SELECTOBJECT:0x012D, SETTEXTALIGN:0x012E,
+  SETBKCOLOR:0x0201, SETTEXTCOLOR:0x0209, SETWINDOWORG:0x020B, SETWINDOWEXT:0x020C,
+  SETVIEWPORTORG:0x020D, SETVIEWPORTEXT:0x020E, OFFSETWINDOWORG:0x020F,
+  LINETO:0x0213, MOVETO:0x0214, POLYGON:0x0324, POLYLINE:0x0325,
+  SCALEWINDOWEXT:0x0410, SCALEVIEWPORTEXT:0x0412, ELLIPSE:0x0418, RECTANGLE:0x041B,
+  TEXTOUT:0x0521, POLYPOLYGON:0x0538, ESCAPE:0x0626, ARC:0x0817,
+  EXTTEXTOUT:0x0A32, DELETEOBJECT:0x01F0, CREATEPENINDIRECT:0x02FA,
+  CREATEFONTINDIRECT:0x02FB, CREATEBRUSHINDIRECT:0x02FC,
+};
+function wmfRgbFromColorRef(v){
+  const r=v&0xff, g=(v>>8)&0xff, b=(v>>16)&0xff;
+  return `rgb(${r},${g},${b})`;
+}
+function wmfReadFontFace(bytes, offset){
+  let s='';
+  for(let i=offset;i<bytes.length;i++){ if(bytes[i]===0) break; s+=String.fromCharCode(bytes[i]); }
+  return s;
+}
+// MathType chỉ dùng vài font quen thuộc; font "Symbol"/"MT Extra" độc quyền không có sẵn
+// trên máy người dùng nên xấp xỉ bằng font hệ thống — vài ký hiệu đặc biệt có thể lệch
+// chút ít, chấp nhận được vì mục đích là xem lại/duyệt câu hỏi, không phải bản in.
+function wmfMapFontFamily(face){
+  const f=(face||'').toLowerCase();
+  if(f.includes('symbol')) return 'Symbol, "Times New Roman", serif';
+  if(f.includes('mt extra') || f.includes('euclid')) return '"Times New Roman", serif';
+  if(f.includes('times')) return '"Times New Roman", Times, serif';
+  if(f.includes('arial') || f.includes('helvetica')) return 'Arial, Helvetica, sans-serif';
+  if(f.includes('courier')) return '"Courier New", monospace';
+  return '"Times New Roman", Times, serif';
+}
+function wmfReadPlaceableHeader(buf){
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  if(dv.getUint32(0,true) !== 0x9AC6CDD7) return null;
+  const left=dv.getInt16(6,true), top=dv.getInt16(8,true);
+  const right=dv.getInt16(10,true), bottom=dv.getInt16(12,true);
+  const inch = dv.getUint16(14,true) || 1440;
+  return {left,top,right,bottom,inch};
+}
+function wmfParseRecords(buf){
+  let off=0;
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  if(dv.getUint32(0,true) === 0x9AC6CDD7) off = 22;
+  off += 18; // standard WMF header
+  const records=[];
+  while(off+6 <= buf.length){
+    const sizeWords = dv.getUint32(off,true);
+    if(sizeWords < 3) break;
+    const func = dv.getUint16(off+4,true);
+    const paramEnd = off + sizeWords*2;
+    if(paramEnd > buf.length) break;
+    records.push({func, params: buf.subarray(off+6, paramEnd)});
+    off = paramEnd;
+    if(func === WMF_REC.EOF) break;
+  }
+  return records;
+}
+// dpi ở đây chỉ để chọn độ nét khi vẽ ra canvas (nét hơn khi phóng to), KHÔNG phải độ
+// phân giải gốc của file — kích thước thật (bao nhiêu inch) lấy từ Aldus Placeable Header
+// (bbox + trường "inch"): CHÍNH XÁC là cách Word/libwmf tính, đã đối chiếu khớp.
+function wmfGetRenderSize(buf, dpi){
+  dpi = dpi || 220;
+  const ph = wmfReadPlaceableHeader(buf);
+  if(ph){
+    const wIn = Math.abs(ph.right-ph.left)/ph.inch, hIn = Math.abs(ph.bottom-ph.top)/ph.inch;
+    return { width: Math.max(1, Math.round(wIn*dpi)), height: Math.max(1, Math.round(hIn*dpi)), dpiScale: dpi/ph.inch };
+  }
+  const records = wmfParseRecords(buf);
+  let w=100, h=40;
+  for(const {func, params} of records){
+    if(func === WMF_REC.SETWINDOWEXT){
+      const dv = new DataView(params.buffer, params.byteOffset, params.byteLength);
+      h = Math.abs(dv.getInt16(0,true)) || h;
+      w = Math.abs(dv.getInt16(2,true)) || w;
+      break;
+    }
+  }
+  return { width:w, height:h, dpiScale:1 };
+}
+function wmfRenderToCanvas(buf, canvas, scale){
+  const records = wmfParseRecords(buf);
+  const ctx = canvas.getContext('2d');
+  // Bảng đối tượng GDI (font/bút vẽ...) — WMF thực sự TÁI SỬ DỤNG lại đúng chỉ số vừa bị
+  // xoá (DeleteObject) cho lệnh Create* kế tiếp (giống cách Windows cấp phát handle thật).
+  // Nếu chỉ push() thêm vào cuối mảng thì mọi SelectObject sau lần Delete đầu tiên sẽ
+  // trỏ lệch chỉ số — chọn NHẦM font, chữ bị vẽ sai kiểu/méo.
+  const objects = [];
+  function createObject(obj){
+    for(let i=0;i<objects.length;i++){ if(objects[i]===null){ objects[i]=obj; return; } }
+    objects.push(obj);
+  }
+  let curPen = {color:'rgb(0,0,0)', width:1};
+  let curBrush = {color:null};
+  let curFont = {family:'"Times New Roman", Times, serif', size:12, italic:false, bold:false};
+  let textColor = 'rgb(0,0,0)';
+  let textAlign = 0;
+  let curX=0, curY=0;
+  let winOrgX=0, winOrgY=0, winExtX=1, winExtY=1;
+  let vpOrgX=0, vpOrgY=0, vpExtX=0, vpExtY=0;
+  const saveStack=[];
+  function mapX(x){ if(vpExtX) return ((x-winOrgX)*(vpExtX/winExtX)+vpOrgX)*scale; return (x-winOrgX)*scale; }
+  function mapY(y){ if(vpExtY) return ((y-winOrgY)*(vpExtY/winExtY)+vpOrgY)*scale; return (y-winOrgY)*scale; }
+  function mapLen(len, horiz){
+    if(horiz && vpExtX) return Math.abs(len*(vpExtX/winExtX))*scale;
+    if(!horiz && vpExtY) return Math.abs(len*(vpExtY/winExtY))*scale;
+    return Math.abs(len)*scale;
+  }
+  function drawText(str,x,y){
+    if(!str) return;
+    const px=mapX(x), py=mapY(y);
+    const fontPx = Math.max(6, mapLen(curFont.size, false));
+    ctx.font = `${curFont.italic?'italic ':''}${curFont.bold?'bold ':''}${fontPx}px ${curFont.family}`;
+    ctx.fillStyle = textColor;
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    ctx.fillText(str, px, py);
+  }
+  for(const {func, params} of records){
+    const dv = new DataView(params.buffer, params.byteOffset, params.byteLength);
+    const i16=(o)=>dv.getInt16(o,true), u16=(o)=>dv.getUint16(o,true), u32=(o)=>dv.getUint32(o,true);
+    switch(func){
+      case WMF_REC.SAVEDC:
+        saveStack.push({curPen,curBrush,curFont,textColor,textAlign,curX,curY}); break;
+      case WMF_REC.RESTOREDC: {
+        const s = saveStack.pop();
+        if(s){ curPen=s.curPen; curBrush=s.curBrush; curFont=s.curFont; textColor=s.textColor; textAlign=s.textAlign; curX=s.curX; curY=s.curY; }
+        break;
+      }
+      case WMF_REC.SETTEXTCOLOR: textColor = wmfRgbFromColorRef(u32(0)); break;
+      case WMF_REC.SETTEXTALIGN: textAlign = u16(0); break;
+      case WMF_REC.SETWINDOWORG: winOrgY=i16(0); winOrgX=i16(2); break;
+      case WMF_REC.SETWINDOWEXT: winExtY=i16(0)||1; winExtX=i16(2)||1; break;
+      case WMF_REC.SETVIEWPORTORG: vpOrgY=i16(0); vpOrgX=i16(2); break;
+      case WMF_REC.SETVIEWPORTEXT: vpExtY=i16(0)||1; vpExtX=i16(2)||1; break;
+      case WMF_REC.OFFSETWINDOWORG: winOrgX += i16(2); winOrgY += i16(0); break;
+      case WMF_REC.MOVETO: curY=i16(0); curX=i16(2); break;
+      case WMF_REC.LINETO: {
+        const y=i16(0), x=i16(2);
+        ctx.strokeStyle = curPen.color; ctx.lineWidth = Math.max(1, mapLen(curPen.width,true));
+        ctx.beginPath(); ctx.moveTo(mapX(curX),mapY(curY)); ctx.lineTo(mapX(x),mapY(y)); ctx.stroke();
+        curX=x; curY=y; break;
+      }
+      case WMF_REC.POLYLINE: case WMF_REC.POLYGON: {
+        const n=u16(0);
+        ctx.beginPath();
+        for(let k=0;k<n;k++){
+          const px=i16(2+k*4), py=i16(2+k*4+2);
+          if(k===0) ctx.moveTo(mapX(px),mapY(py)); else ctx.lineTo(mapX(px),mapY(py));
+        }
+        if(func===WMF_REC.POLYGON){ ctx.closePath(); if(curBrush.color){ ctx.fillStyle=curBrush.color; ctx.fill(); } }
+        ctx.strokeStyle=curPen.color; ctx.lineWidth=Math.max(1, mapLen(curPen.width,true)); ctx.stroke();
+        break;
+      }
+      case WMF_REC.POLYPOLYGON: {
+        const nPoly=u16(0); const counts=[];
+        for(let p=0;p<nPoly;p++) counts.push(u16(2+p*2));
+        let po = 2+nPoly*2;
+        ctx.beginPath();
+        for(const cnt of counts){
+          for(let k=0;k<cnt;k++){
+            const px=i16(po+k*4), py=i16(po+k*4+2);
+            if(k===0) ctx.moveTo(mapX(px),mapY(py)); else ctx.lineTo(mapX(px),mapY(py));
+          }
+          ctx.closePath(); po += cnt*4;
+        }
+        if(curBrush.color){ ctx.fillStyle=curBrush.color; ctx.fill(); }
+        ctx.strokeStyle=curPen.color; ctx.lineWidth=Math.max(1, mapLen(curPen.width,true)); ctx.stroke();
+        break;
+      }
+      case WMF_REC.RECTANGLE: {
+        const bot=i16(0), right=i16(2), top=i16(4), left=i16(6);
+        const x=mapX(left), y=mapY(top), w=mapX(right)-mapX(left), h=mapY(bot)-mapY(top);
+        if(curBrush.color){ ctx.fillStyle=curBrush.color; ctx.fillRect(x,y,w,h); }
+        ctx.strokeStyle=curPen.color; ctx.lineWidth=Math.max(1, mapLen(curPen.width,true)); ctx.strokeRect(x,y,w,h);
+        break;
+      }
+      case WMF_REC.ELLIPSE: {
+        const bot=i16(0), right=i16(2), top=i16(4), left=i16(6);
+        const cx=mapX((left+right)/2), cy=mapY((top+bot)/2);
+        const rx=Math.abs(mapX(right)-mapX(left))/2, ry=Math.abs(mapY(bot)-mapY(top))/2;
+        ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2);
+        if(curBrush.color){ ctx.fillStyle=curBrush.color; ctx.fill(); }
+        ctx.strokeStyle=curPen.color; ctx.lineWidth=Math.max(1, mapLen(curPen.width,true)); ctx.stroke();
+        break;
+      }
+      case WMF_REC.CREATEPENINDIRECT: {
+        const style=u16(0), widthX=i16(2), color=wmfRgbFromColorRef(u32(6));
+        createObject({type:'pen', color: style===5 ? null : color, width: widthX||1});
+        break;
+      }
+      case WMF_REC.CREATEBRUSHINDIRECT: {
+        const style=u16(0), color=wmfRgbFromColorRef(u32(2));
+        createObject({type:'brush', color: style===1 ? null : color});
+        break;
+      }
+      case WMF_REC.CREATEFONTINDIRECT: {
+        const height=i16(0), weight=u16(8), italic=params[10]!==0, face=wmfReadFontFace(params,18);
+        createObject({type:'font', size:Math.max(6,Math.abs(height)), italic, bold: weight>=600, family: wmfMapFontFamily(face)});
+        break;
+      }
+      case WMF_REC.SELECTOBJECT: {
+        const obj = objects[u16(0)];
+        if(obj){
+          if(obj.type==='pen') curPen = obj.color ? {color:obj.color,width:obj.width} : {color:'transparent',width:obj.width};
+          else if(obj.type==='brush') curBrush = {color:obj.color};
+          else if(obj.type==='font') curFont = obj;
+        }
+        break;
+      }
+      case WMF_REC.DELETEOBJECT: objects[u16(0)] = null; break;
+      case WMF_REC.TEXTOUT: {
+        const len=u16(0); let str='';
+        for(let k=0;k<len;k++) str += String.fromCharCode(params[2+k]);
+        const pad = len%2===0 ? len : len+1;
+        // TA_UPDATECP (bit 0 của SETTEXTALIGN): MathType đặt vị trí chữ bằng MOVETO đứng
+        // ngay trước đó, toạ độ (x,y) ghi kèm trong chính record này chỉ là placeholder 0.
+        const useCp = (textAlign & 1) !== 0;
+        drawText(str, useCp?curX:i16(2+pad+2), useCp?curY:i16(2+pad));
+        break;
+      }
+      case WMF_REC.EXTTEXTOUT: {
+        const recY=i16(0), recX=i16(2), len=u16(4), flags=u16(6);
+        let so=8; if(flags & 0x6) so += 8;
+        let str=''; for(let k=0;k<len;k++) str += String.fromCharCode(params[so+k]);
+        so += len;
+        if(len%2!==0) so += 1; // chuỗi được đệm chẵn byte trước khi tới mảng Dx
+        // MathType hầu như luôn kèm mảng Dx (độ rộng từng ký tự) — 1 lệnh EXTTEXTOUT có
+        // thể vẽ 2 cụm chữ cách xa nhau (vd 2 chữ "tan" của "tan(π+a)=tan a"), khoảng
+        // trống ở giữa do lệnh khác (font khác) vẽ vào. Nếu vẽ nguyên chuỗi 1 lần bằng
+        // fillText() sẽ dính liền chữ lại, sai hoàn toàn vị trí.
+        let dx = null;
+        if(params.length - so >= len*2){
+          dx = [];
+          for(let k=0;k<len;k++) dx.push(dv.getInt16(so+k*2, true));
+        }
+        const useCp = (textAlign & 1) !== 0;
+        let px = useCp?curX:recX, py = useCp?curY:recY;
+        if(dx){ for(let k=0;k<len;k++){ drawText(str[k], px, py); px += dx[k]; } }
+        else { drawText(str, px, py); }
+        if(useCp) curX = px;
+        break;
+      }
+      default: break; // bỏ qua ESCAPE (metadata riêng của MathType) và các lệnh không dùng tới
+    }
+  }
+}
+// Chuyển thẳng 1 file .wmf (Uint8Array) thành data URL PNG, sẵn sàng chèn vào câu hỏi.
+function wmfBytesToPngDataUrl(bytes){
+  try{
+    const {width, height, dpiScale} = wmfGetRenderSize(bytes, 220);
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    wmfRenderToCanvas(bytes, canvas, dpiScale);
+    return canvas.toDataURL('image/png');
+  }catch(e){ return null; }
+}
+function arrayBufferToBase64(bytes){
+  let binary = '';
+  const chunk = 0x8000;
+  for(let i=0;i<bytes.length;i+=chunk) binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunk));
+  return btoa(binary);
+}
+// word/_rels/document.xml.rels ánh xạ r:id -> đường dẫn file thật (vd rId5 -> media/image4.wmf)
+async function docxLoadRelationships(zip){
+  const map = {};
+  const entry = zip.file('word/_rels/document.xml.rels');
+  if(!entry) return map;
+  try{
+    const xml = await entry.async('string');
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    Array.from(doc.getElementsByTagName('Relationship')).forEach(r=>{
+      map[r.getAttribute('Id')] = r.getAttribute('Target');
+    });
+  }catch(e){ /* không có quan hệ nào thì thôi, công thức OLE sẽ không hiện được */ }
+  return map;
+}
+// Dò toàn bộ document.xml tìm các object công thức (w:object > v:shape > v:imagedata),
+// đọc file ảnh gắn kèm (thường là .wmf) và vẽ lại thành PNG — trả về Map<r:id, dataURL>
+// để docxParagraphText() tra cứu khi gặp lại đúng object đó trong từng đoạn văn.
+async function docxExtractOleEquationImages(zip, xmlDoc){
+  const rels = await docxLoadRelationships(zip);
+  const map = new Map();
+  const shapes = Array.from(xmlDoc.getElementsByTagName('v:imagedata'));
+  for(const imagedata of shapes){
+    const rId = imagedata.getAttribute('r:id');
+    if(!rId || map.has(rId)) continue;
+    const target = rels[rId];
+    if(!target) continue;
+    const path = 'word/' + target.replace(/^\.?\/+/, '');
+    const entry = zip.file(path);
+    if(!entry) continue;
+    try{
+      const bytes = new Uint8Array(await entry.async('arraybuffer'));
+      let dataUrl = null;
+      if(/\.wmf$/i.test(path)){
+        dataUrl = wmfBytesToPngDataUrl(bytes);
+      } else if(/\.(png|jpe?g|gif)$/i.test(path)){
+        const ext = path.match(/\.(\w+)$/)[1].toLowerCase().replace('jpg','jpeg');
+        dataUrl = `data:image/${ext};base64,${arrayBufferToBase64(bytes)}`;
+      }
+      // .emf (metafile) hoặc định dạng khác: bỏ qua — sẽ không tự chèn được, câu chứa nó
+      // vẫn được nhận diện nhưng thiếu phần công thức đó (người soạn cần bổ sung tay).
+      if(dataUrl) map.set(rId, dataUrl);
+    }catch(e){ /* 1 công thức lỗi không được làm hỏng cả file */ }
+  }
+  return map;
+}
+
 function domFindChild(node, tag){
   return Array.from(node.childNodes||[]).find(c=>c.nodeType===1 && c.tagName===tag);
 }
@@ -7378,12 +7731,21 @@ function omlToText(node){
 }
 
 // Text của 1 đoạn <w:p>, thay riêng phần công thức toán bằng $...$ (LaTeX, KaTeX vẽ lại
-// đúng như bản Word) — chữ thường xung quanh giữ nguyên, không đụng vào.
-function docxParagraphText(pNode){
+// đúng như bản Word) — chữ thường xung quanh giữ nguyên, không đụng vào. oleMap (nếu có)
+// là Map<r:id, dataURL PNG> đã dựng sẵn cho các công thức kiểu cũ (MathType/OLE, xem phía
+// trên) — gặp đúng object đó thì chèn {{IMG:...}} thay vì bỏ trống.
+function docxParagraphText(pNode, oleMap){
   let text = '';
   function walk(n){
     if(n.nodeType!==1) return;
     if(n.tagName==='m:oMath'){ const latex = omlToText(n).trim(); if(latex) text += '$' + latex + '$'; return; }
+    if(n.tagName==='w:object'){
+      const imagedata = n.getElementsByTagName ? n.getElementsByTagName('v:imagedata')[0] : null;
+      const rId = imagedata && imagedata.getAttribute('r:id');
+      const dataUrl = rId && oleMap && oleMap.get(rId);
+      if(dataUrl) text += '{{IMG:' + dataUrl + '}}';
+      return; // không đệ quy tiếp — tránh lẫn chữ mô tả/fallback bên trong object
+    }
     if(n.tagName==='w:t'){ text += n.textContent; return; }
     if(n.tagName==='w:tab'){ text += ' '; return; }
     if(n.tagName==='w:br' || n.tagName==='w:cr'){ text += ' '; return; }
@@ -7396,19 +7758,19 @@ function docxParagraphText(pNode){
 // Đọc toàn bộ word/document.xml thành 1 danh sách "khối" theo đúng thứ tự trong file:
 // đoạn văn bản thường ({type:'p', text}) hoặc 1 hàng của bảng ({type:'tr', cells:[...]}) —
 // bảng dùng cho các phương án A/B/C/D và bảng Đúng-Sai (mỗi ô là 1 cell riêng).
-function docxExtractBlocks(xmlDoc){
+function docxExtractBlocks(xmlDoc, oleMap){
   const body = xmlDoc.getElementsByTagName('w:body')[0];
   const blocks = [];
   if(!body) return blocks;
   Array.from(body.childNodes).forEach(child=>{
     if(child.nodeType!==1) return;
     if(child.tagName==='w:p'){
-      const t = docxParagraphText(child);
+      const t = docxParagraphText(child, oleMap);
       if(t) blocks.push({type:'p', text:t});
     } else if(child.tagName==='w:tbl'){
       Array.from(child.childNodes).filter(c=>c.nodeType===1 && c.tagName==='w:tr').forEach(tr=>{
         const cells = Array.from(tr.childNodes).filter(c=>c.nodeType===1 && c.tagName==='w:tc').map(tc=>{
-          const ps = Array.from(tc.childNodes).filter(c=>c.nodeType===1 && c.tagName==='w:p').map(docxParagraphText).filter(Boolean);
+          const ps = Array.from(tc.childNodes).filter(c=>c.nodeType===1 && c.tagName==='w:p').map(p=>docxParagraphText(p, oleMap)).filter(Boolean);
           return ps.join(' ');
         });
         if(cells.some(Boolean)) blocks.push({type:'tr', cells});
@@ -7431,7 +7793,8 @@ async function docxFileToBlocks(file){
   const xml = await entry.async('string');
   const xmlDoc = new DOMParser().parseFromString(xml, 'application/xml');
   if(xmlDoc.getElementsByTagName('parsererror')[0]) throw new Error('Không đọc được nội dung file (lỗi định dạng)');
-  return docxExtractBlocks(xmlDoc);
+  const oleMap = await docxExtractOleEquationImages(zip, xmlDoc);
+  return docxExtractBlocks(xmlDoc, oleMap);
 }
 
 /* ---------------- TÁCH 3 PHẦN + NHẬN DIỆN TỪNG CÂU ----------------

@@ -1237,3 +1237,14 @@ nav.tabbar button.active::before{
 
   .fab{ bottom:24px; }
 }
+
+/* Công thức kiểu cũ (MathType/OLE) nhập từ Word, vẽ lại thành ảnh PNG — xem
+   wmfRenderToCanvas()/renderInlineImages() trong app.js. */
+.eq-img{
+  display:inline-block;
+  vertical-align:middle;
+  max-width:100%;
+  height:1.1em;
+  width:auto;
+  margin:0 1px;
+}
