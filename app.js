@@ -732,6 +732,13 @@ function currentRenderSig(){
 function render(){
   const prevMainEl = $app.querySelector('main');
   const prevScrollTop = prevMainEl ? prevMainEl.scrollTop : 0;
+  // Bản xem trước PDF/Word (.file-preview-body) cũng là 1 khung cuộn riêng,
+  // độc lập với <main> — nếu không lưu lại thì mỗi lần render() bị gọi lại
+  // từ 1 việc không liên quan (vd. poll thông báo mỗi 60s ở dưới) sẽ xoá
+  // trắng rồi dựng lại modal xem trước, làm khung cuộn nhảy về trang đầu
+  // dù người dùng đang xem giữa tài liệu.
+  const prevFilePreviewBodyEl = $app.querySelector('.file-preview-body');
+  const prevFilePreviewScrollTop = prevFilePreviewBodyEl ? prevFilePreviewBodyEl.scrollTop : 0;
   const newSig = currentRenderSig();
   const samePage = _prevRenderSig && _prevRenderSig.length===newSig.length && _prevRenderSig.every((v,i)=>v===newSig[i]);
 
@@ -842,6 +849,10 @@ function render(){
 
   const newMainEl = $app.querySelector('main');
   if(newMainEl && samePage) newMainEl.scrollTop = prevScrollTop;
+  if(filePreviewOpen && prevFilePreviewScrollTop){
+    const newFilePreviewBodyEl = $app.querySelector('.file-preview-body');
+    if(newFilePreviewBodyEl) newFilePreviewBodyEl.scrollTop = prevFilePreviewScrollTop;
+  }
   _prevRenderSig = newSig;
 
   // Vẽ lại mọi công thức toán ($...$) xuất hiện trong khung nhìn vừa dựng
