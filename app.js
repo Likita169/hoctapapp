@@ -732,13 +732,6 @@ function currentRenderSig(){
 function render(){
   const prevMainEl = $app.querySelector('main');
   const prevScrollTop = prevMainEl ? prevMainEl.scrollTop : 0;
-  // Bản xem trước PDF/Word (.file-preview-body) cũng là 1 khung cuộn riêng,
-  // độc lập với <main> — nếu không lưu lại thì mỗi lần render() bị gọi lại
-  // từ 1 việc không liên quan (vd. poll thông báo mỗi 60s ở dưới) sẽ xoá
-  // trắng rồi dựng lại modal xem trước, làm khung cuộn nhảy về trang đầu
-  // dù người dùng đang xem giữa tài liệu.
-  const prevFilePreviewBodyEl = $app.querySelector('.file-preview-body');
-  const prevFilePreviewScrollTop = prevFilePreviewBodyEl ? prevFilePreviewBodyEl.scrollTop : 0;
   const newSig = currentRenderSig();
   const samePage = _prevRenderSig && _prevRenderSig.length===newSig.length && _prevRenderSig.every((v,i)=>v===newSig[i]);
 
@@ -849,10 +842,6 @@ function render(){
 
   const newMainEl = $app.querySelector('main');
   if(newMainEl && samePage) newMainEl.scrollTop = prevScrollTop;
-  if(filePreviewOpen && prevFilePreviewScrollTop){
-    const newFilePreviewBodyEl = $app.querySelector('.file-preview-body');
-    if(newFilePreviewBodyEl) newFilePreviewBodyEl.scrollTop = prevFilePreviewScrollTop;
-  }
   _prevRenderSig = newSig;
 
   // Vẽ lại mọi công thức toán ($...$) xuất hiện trong khung nhìn vừa dựng
@@ -1098,11 +1087,14 @@ function renderMathIn(el){
 }
 
 // Vẽ lại các công thức "kiểu cũ" (MathType/OLE, xem docxExtractOleEquationImages) đã
-// được nhúng dưới dạng {{IMG:data:image/png;base64,...}} lúc nhập đề — escapeHtml() không
-// đụng tới các ký tự này nên marker vẫn còn nguyên trong text; ở đây chỉ quét các text
-// node bên trong el rồi thay bằng <img> thật, không innerHTML nguyên khối (an toàn, không
-// tạo lỗ hổng chèn HTML từ nội dung câu hỏi).
-const IMG_MARKER_RE = /\{\{IMG:(data:image\/(?:png|jpe?g|gif);base64,[A-Za-z0-9+/=]+)\}\}/g;
+// được nhúng dưới dạng {{IMG:WxH|data:image/png;base64,...}} lúc nhập đề — escapeHtml()
+// không đụng tới các ký tự này nên marker vẫn còn nguyên trong text; ở đây chỉ quét các
+// text node bên trong el rồi thay bằng <img> thật, không innerHTML nguyên khối (an toàn,
+// không tạo lỗ hổng chèn HTML từ nội dung câu hỏi). W,H là kích thước HIỂN THỊ (px) đã
+// tính sẵn lúc nhập — đặt thẳng làm thuộc tính width/height của <img> để mỗi công thức
+// hiện đúng theo tỉ lệ THẬT của nó (phân số/căn tự nhiên cao hơn 1 dòng chữ đơn — không
+// ép về cùng 1 chiều cao bằng CSS như bản trước, đó chính là lỗi làm phân số bị bóp nhỏ).
+const IMG_MARKER_RE = /\{\{IMG:(\d+)x(\d+)\|(data:image\/(?:png|jpe?g|gif);base64,[A-Za-z0-9+/=]+)\}\}/g;
 function renderInlineImages(el){
   if(!el) return;
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
@@ -1120,7 +1112,9 @@ function renderInlineImages(el){
     while((m = IMG_MARKER_RE.exec(text))){
       if(m.index > lastIndex) frag.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
       const img = document.createElement('img');
-      img.src = m[1];
+      img.src = m[3];
+      img.width = parseInt(m[1], 10);
+      img.height = parseInt(m[2], 10);
       img.alt = 'công thức';
       img.className = 'eq-img';
       frag.appendChild(img);
@@ -7613,13 +7607,21 @@ function wmfRenderToCanvas(buf, canvas, scale){
   }
 }
 // Chuyển thẳng 1 file .wmf (Uint8Array) thành data URL PNG, sẵn sàng chèn vào câu hỏi.
+// DPI dùng để VẼ canvas (cao, cho nét chữ sắc, không phải kích thước hiện lên màn
+// hình) so với DPI dùng để QUYẾT ĐỊNH kích thước hiển thị thật (khớp cỡ chữ giao
+// diện — 84 được canh sao cho 1 công thức 1 dòng đơn giản cao gần bằng 1 dòng chữ
+// thường; công thức có phân số/căn tự nhiên sẽ cao hơn theo đúng tỉ lệ thật của nó,
+// KHÔNG bị ép về cùng 1 chiều cao như trước — đó là lỗi khiến phân số bị bóp nhỏ tí).
+const WMF_RENDER_DPI = 220;
+const WMF_DISPLAY_DPI = 84;
 function wmfBytesToPngDataUrl(bytes){
   try{
-    const {width, height, dpiScale} = wmfGetRenderSize(bytes, 220);
+    const {width, height, dpiScale} = wmfGetRenderSize(bytes, WMF_RENDER_DPI);
     const canvas = document.createElement('canvas');
     canvas.width = width; canvas.height = height;
     wmfRenderToCanvas(bytes, canvas, dpiScale);
-    return canvas.toDataURL('image/png');
+    const display = wmfGetRenderSize(bytes, WMF_DISPLAY_DPI);
+    return { dataUrl: canvas.toDataURL('image/png'), width: display.width, height: display.height };
   }catch(e){ return null; }
 }
 function arrayBufferToBase64(bytes){
@@ -7645,9 +7647,24 @@ async function docxLoadRelationships(zip){
 // Dò toàn bộ document.xml tìm các object công thức (w:object > v:shape > v:imagedata),
 // đọc file ảnh gắn kèm (thường là .wmf) và vẽ lại thành PNG — trả về Map<r:id, dataURL>
 // để docxParagraphText() tra cứu khi gặp lại đúng object đó trong từng đoạn văn.
+// Kích thước hiển thị mặc định cho ảnh dán trực tiếp (PNG/JPEG/GIF, hiếm gặp — khác
+// với công thức MathType/.wmf ở trên) — không có gì để suy ra cỡ chữ gốc như WMF nên
+// chỉ co cho vừa 1 dòng chữ nếu ảnh gốc quá to, còn nhỏ hơn thì giữ nguyên kích thước thật.
+function rasterImageDisplaySize(dataUrl, maxH){
+  return new Promise(resolve=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const w = img.naturalWidth||1, h = img.naturalHeight||1;
+      if(h > maxH){ resolve({width: Math.round(w*maxH/h), height: maxH}); }
+      else resolve({width:w, height:h});
+    };
+    img.onerror = ()=> resolve({width:maxH, height:maxH});
+    img.src = dataUrl;
+  });
+}
 async function docxExtractOleEquationImages(zip, xmlDoc){
   const rels = await docxLoadRelationships(zip);
-  const map = new Map();
+  const map = new Map(); // rId -> {dataUrl, width, height} (kích thước HIỂN THỊ, tính bằng px)
   const shapes = Array.from(xmlDoc.getElementsByTagName('v:imagedata'));
   for(const imagedata of shapes){
     const rId = imagedata.getAttribute('r:id');
@@ -7659,16 +7676,18 @@ async function docxExtractOleEquationImages(zip, xmlDoc){
     if(!entry) continue;
     try{
       const bytes = new Uint8Array(await entry.async('arraybuffer'));
-      let dataUrl = null;
+      let entryResult = null;
       if(/\.wmf$/i.test(path)){
-        dataUrl = wmfBytesToPngDataUrl(bytes);
+        entryResult = wmfBytesToPngDataUrl(bytes); // đã trả về {dataUrl,width,height}
       } else if(/\.(png|jpe?g|gif)$/i.test(path)){
         const ext = path.match(/\.(\w+)$/)[1].toLowerCase().replace('jpg','jpeg');
-        dataUrl = `data:image/${ext};base64,${arrayBufferToBase64(bytes)}`;
+        const dataUrl = `data:image/${ext};base64,${arrayBufferToBase64(bytes)}`;
+        const size = await rasterImageDisplaySize(dataUrl, 28);
+        entryResult = { dataUrl, width: size.width, height: size.height };
       }
       // .emf (metafile) hoặc định dạng khác: bỏ qua — sẽ không tự chèn được, câu chứa nó
       // vẫn được nhận diện nhưng thiếu phần công thức đó (người soạn cần bổ sung tay).
-      if(dataUrl) map.set(rId, dataUrl);
+      if(entryResult && entryResult.dataUrl) map.set(rId, entryResult);
     }catch(e){ /* 1 công thức lỗi không được làm hỏng cả file */ }
   }
   return map;
@@ -7753,8 +7772,11 @@ function docxParagraphText(pNode, oleMap){
     if(n.tagName==='w:object'){
       const imagedata = n.getElementsByTagName ? n.getElementsByTagName('v:imagedata')[0] : null;
       const rId = imagedata && imagedata.getAttribute('r:id');
-      const dataUrl = rId && oleMap && oleMap.get(rId);
-      if(dataUrl) text += '{{IMG:' + dataUrl + '}}';
+      const img = rId && oleMap && oleMap.get(rId);
+      // Kèm sẵn kích thước HIỂN THỊ (W x H, px) ngay trong marker — để lúc vẽ ra <img>
+      // không phải đoán cỡ bằng CSS cố định (đó là lỗi khiến phân số bị bóp nhỏ tí trước
+      // đây: ép mọi ảnh về cùng 1 chiều cao bất kể ảnh 1 dòng hay phân số 2 tầng).
+      if(img) text += '{{IMG:' + img.width + 'x' + img.height + '|' + img.dataUrl + '}}';
       return; // không đệ quy tiếp — tránh lẫn chữ mô tả/fallback bên trong object
     }
     if(n.tagName==='w:t'){ text += n.textContent; return; }
