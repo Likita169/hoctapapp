@@ -119,7 +119,7 @@ let testSubmissionsLoading = false;
 
 let submissionDetailOpen = null;                // {testId, title, studentId, studentEmail, studentName, score, total, attemptCount, submittedAt, detail} — 1 học sinh, để giáo viên xem/chấm
 let submissionDetailLoading = false;
-let essayGradeOpen = null;                      // {questionId, prompt, imageData, rubric, submittedImages, status, note, busy} — màn chấm 1 câu tự luận
+let essayGradeOpen = null;                      // {questionId, prompt, rubric, submittedImages, status, note, busy, step, tool, color, pages:[{rot,strokes,comment}], imgEls} — màn chấm 1 câu tự luận (từng ảnh một)
 
 /* ---- làm bài kiểm tra (học sinh) ---- */
 let studentTestListClassroom = null;            // {id, name} whose test list (student view) is open
@@ -5751,97 +5751,441 @@ function renderSubmissionDetail(){
   return wrap;
 }
 
-/* ---- chấm 1 câu tự luận bằng cách khoanh/vẽ lên ảnh (giáo viên) ---- */
+/* ---- chấm 1 câu tự luận: từng ảnh một — viết/vẽ lên ảnh, xoay, thu phóng, gõ nhận xét dưới ảnh (giáo viên) ----
+   Trạng thái mỗi ảnh nằm trong essayGradeOpen.pages[i] = { rot, strokes, comment }:
+     • rot      — góc xoay 0/90/180/270 (độ, theo chiều kim đồng hồ)
+     • strokes  — các nét vẽ dạng VECTOR [{color, width, pts:[{x,y}]}], toạ độ tính theo ẢNH GỐC
+                  (chưa xoay) → xoay ảnh thì nét vẽ xoay theo, hoàn tác từng nét được, và bấm
+                  Đạt/Chưa đạt hay chuyển ảnh qua lại (render() vẽ lại cả màn hình) cũng không mất nét.
+     • comment  — nhận xét gõ dưới ảnh; khi lưu sẽ được in thành 1 dải chữ ngay dưới ảnh.
+   essayGradeOpen.step: 0..n-1 = chấm lần lượt từng ảnh, n = màn "Tổng kết" (Đạt/Chưa đạt + nhận xét chung + Lưu). */
+const EG_COLORS = ['#ff3b30', '#1fa463', '#2f6bff'];
+const EG_COLOR_NAMES = ['đỏ', 'xanh lá', 'xanh dương'];
+const EG_MAX_ZOOM = 8;   // thu phóng tối đa = 8 lần so với mức "vừa khung"
+
 function openEssayGrade(d){
+  const imgs = d.submittedImages || [];
   essayGradeOpen = {
     questionId: d.questionId, prompt: d.prompt, rubric: d.rubric || '',
-    submittedImages: d.submittedImages || [], status: d.status==='pending' ? 'pass' : d.status,
-    note: d.note || '', busy: false
+    submittedImages: imgs, status: d.status==='pending' ? 'pass' : d.status,
+    note: d.note || '', busy: false,
+    step: 0, tool: 'draw', color: EG_COLORS[0],
+    pages: imgs.map(()=>({ rot: 0, strokes: [], comment: '' })),
+    imgEls: []
   };
   render();
 }
 
-function renderEssayGrade(){
-  const wrap = document.createElement('div');
-  wrap.style.display = 'contents';
-  const g = essayGradeOpen;
-
-  const header = document.createElement('header');
-  header.className = 'topbar';
-  header.innerHTML = `<h1 class="display" style="font-size:18px;">Chấm bài tự luận</h1>`;
-  wrap.appendChild(header);
-
-  const main = document.createElement('main');
-  const backLink = document.createElement('button');
-  backLink.className = 'back-link';
-  backLink.textContent = '← Quay lại';
-  backLink.style.marginBottom = '14px';
-  backLink.disabled = g.busy;
-  backLink.onclick = ()=>{ if(!g.busy){ essayGradeOpen = null; render(); } };
-  main.appendChild(backLink);
-
-  const promptEl = document.createElement('div');
-  promptEl.className = 'qcard-prompt'; promptEl.style.marginBottom = '4px';
-  promptEl.textContent = g.prompt;
-  main.appendChild(promptEl);
-  if(g.rubric){
-    const rubricEl = document.createElement('div');
-    rubricEl.className = 'tr-sub'; rubricEl.style.marginBottom = '14px'; rubricEl.style.fontStyle = 'italic';
-    rubricEl.textContent = 'Yêu cầu: ' + g.rubric;
-    main.appendChild(rubricEl);
+/* ---- các hàm tiện ích: ảnh, xoay, toạ độ ---- */
+function egImageOf(g, i){
+  // Nạp mỗi ảnh đúng 1 lần, giữ lại giữa các lần render()
+  let el = g.imgEls[i];
+  if(!el){ el = new Image(); el.src = g.submittedImages[i]; g.imgEls[i] = el; }
+  return el;
+}
+function egCanvasSize(img, rot){
+  const w = img.naturalWidth, h = img.naturalHeight;
+  return (rot % 180) ? { w: h, h: w } : { w: w, h: h };
+}
+// Đặt phép biến đổi để vẽ "ảnh gốc w×h" lên canvas đã xoay rot độ
+function egApplyTransform(ctx, w, h, rot){
+  if(rot===90) ctx.setTransform(0, 1, -1, 0, h, 0);
+  else if(rot===180) ctx.setTransform(-1, 0, 0, -1, w, h);
+  else if(rot===270) ctx.setTransform(0, -1, 1, 0, 0, w);
+  else ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+// Từ toạ độ trên canvas (đã xoay) về toạ độ ảnh gốc — ngược lại với egApplyTransform
+function egToImageCoords(cx, cy, w, h, rot){
+  if(rot===90) return { x: cy, y: h - cx };
+  if(rot===180) return { x: w - cx, y: h - cy };
+  if(rot===270) return { x: w - cy, y: cx };
+  return { x: cx, y: cy };
+}
+function egDrawStroke(ctx, s){
+  ctx.strokeStyle = s.color; ctx.fillStyle = s.color; ctx.lineWidth = s.width;
+  const p = s.pts;
+  if(p.length === 1){
+    ctx.beginPath(); ctx.arc(p[0].x, p[0].y, s.width/2, 0, Math.PI*2); ctx.fill();
+    return;
   }
+  ctx.beginPath(); ctx.moveTo(p[0].x, p[0].y);
+  for(let i=1; i<p.length; i++) ctx.lineTo(p[i].x, p[i].y);
+  ctx.stroke();
+}
+// Vẽ lại toàn bộ: ảnh (đã xoay) + các nét vẽ. Canvas có kích thước = ảnh sau khi xoay.
+function egPaint(ctx, img, page){
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const sz = egCanvasSize(img, page.rot);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, sz.w, sz.h);
+  egApplyTransform(ctx, w, h, page.rot);
+  ctx.drawImage(img, 0, 0, w, h);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  page.strokes.forEach(s=> egDrawStroke(ctx, s));
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+/* ---- khung xem ảnh: vẽ bằng 1 ngón, 2 ngón để thu phóng/kéo, lăn chuột để thu phóng ---- */
+function egBuildViewer(g, pi, onZoom){
+  const img = egImageOf(g, pi);
+  const page = g.pages[pi];
+
+  const box = document.createElement('div');
+  box.className = 'eg-viewport';
+  const stage = document.createElement('div');
+  stage.className = 'eg-stage';
+  const canvas = document.createElement('canvas');
+  stage.appendChild(canvas);
+  box.appendChild(stage);
+  const msg = document.createElement('div');
+  msg.className = 'eg-viewport-msg';
+  msg.textContent = 'Đang tải ảnh…';
+  box.appendChild(msg);
+  const ctx = canvas.getContext('2d');
+
+  let ready = false;
+  let fit = 1;                       // tỉ lệ để cả ảnh vừa khít khung
+  const view = { s: 1, x: 0, y: 0 }; // tỉ lệ + vị trí hiện tại của ảnh trong khung
+  const pointers = new Map();        // pointerId -> {x,y} (toạ độ trong khung)
+  let stroke = null, panning = null, pinch = null;
+
+  const paint = ()=> egPaint(ctx, img, page);
+  const layout = ()=>{
+    const sz = egCanvasSize(img, page.rot);
+    canvas.width = sz.w; canvas.height = sz.h;
+    canvas.style.width = sz.w + 'px'; canvas.style.height = sz.h + 'px';
+    paint();
+  };
+  const computeFit = ()=>{
+    const f = Math.min(box.clientWidth / canvas.width, box.clientHeight / canvas.height);
+    fit = (isFinite(f) && f > 0) ? f : 1;
+  };
+  const clampScale = (s)=> Math.min(Math.max(s, fit), fit * EG_MAX_ZOOM);
+  const clampView = ()=>{
+    const vw = box.clientWidth, vh = box.clientHeight;
+    view.s = clampScale(view.s);
+    const cw = canvas.width * view.s, ch = canvas.height * view.s;
+    view.x = cw <= vw ? (vw - cw) / 2 : Math.min(0, Math.max(vw - cw, view.x));
+    view.y = ch <= vh ? (vh - ch) / 2 : Math.min(0, Math.max(vh - ch, view.y));
+  };
+  const apply = ()=>{
+    stage.style.transform = 'translate(' + view.x + 'px,' + view.y + 'px) scale(' + view.s + ')';
+    if(onZoom) onZoom(view.s / fit);
+  };
+  const fitView = ()=>{ computeFit(); view.s = fit; clampView(); apply(); };
+  const zoomAt = (px, py, s)=>{
+    const ns = clampScale(s);
+    const k = ns / view.s;
+    view.x = px - (px - view.x) * k;
+    view.y = py - (py - view.y) * k;
+    view.s = ns;
+    clampView(); apply();
+  };
+
+  // Chỉ bắt đầu khi ảnh đã tải xong VÀ khung đã được gắn vào trang (có kích thước thật)
+  const boot = ()=>{
+    if(!img.complete || !img.naturalWidth || !box.clientWidth) return;
+    if(!ready){
+      ready = true; msg.remove(); layout(); fitView();
+      return;
+    }
+    // khung đổi kích thước (xoay điện thoại...) → giữ nguyên mức thu phóng tương đối
+    const z = view.s / fit;
+    computeFit(); view.s = fit * z; clampView(); apply();
+  };
+  if('ResizeObserver' in window){ new ResizeObserver(boot).observe(box); }
+  else requestAnimationFrame(()=> requestAnimationFrame(boot));
+  img.onload = boot;
+  img.onerror = ()=>{ msg.textContent = 'Không tải được ảnh này.'; };
+
+  /* --- điều khiển bằng chạm / chuột --- */
+  const local = (e)=>{ const r = box.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const toImage = (e)=>{
+    const r = canvas.getBoundingClientRect();     // đã tính cả phép thu phóng CSS
+    const cx = (e.clientX - r.left) * (canvas.width / r.width);
+    const cy = (e.clientY - r.top) * (canvas.height / r.height);
+    return egToImageCoords(cx, cy, img.naturalWidth, img.naturalHeight, page.rot);
+  };
+  const strokeWidth = ()=> Math.max(2, Math.max(4, img.naturalWidth / 100) / (view.s / fit)); // nét luôn dày ~bằng nhau trên màn hình dù đang zoom bao nhiêu
+
+  box.onpointerdown = (e)=>{
+    if(!ready) return;
+    if(e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    try{ box.setPointerCapture(e.pointerId); }catch(_){ /* bỏ qua */ }
+    pointers.set(e.pointerId, local(e));
+
+    if(pointers.size === 2){
+      // Ngón thứ 2 chạm vào → chuyển sang thu phóng/kéo ảnh, bỏ nét đang vẽ dở
+      if(stroke){ page.strokes.pop(); stroke = null; paint(); }
+      panning = null;
+      const pts = Array.from(pointers.values());
+      pinch = {
+        dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1,
+        mx: (pts[0].x + pts[1].x) / 2, my: (pts[0].y + pts[1].y) / 2,
+        s: view.s, x: view.x, y: view.y
+      };
+      return;
+    }
+    if(pointers.size > 2) return;
+
+    if(g.tool === 'draw'){
+      const p = toImage(e);
+      stroke = { color: g.color, width: strokeWidth(), pts: [p] };
+      page.strokes.push(stroke);
+      egApplyTransform(ctx, img.naturalWidth, img.naturalHeight, page.rot);
+      egDrawStroke(ctx, stroke);                    // chấm tròn nhỏ ngay khi vừa chạm
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    } else {
+      const l = local(e);
+      panning = { sx: l.x, sy: l.y, vx: view.x, vy: view.y };
+    }
+  };
+
+  box.onpointermove = (e)=>{
+    if(!pointers.has(e.pointerId)) return;
+    const l = local(e);
+    pointers.set(e.pointerId, l);
+
+    if(pinch && pointers.size >= 2){
+      e.preventDefault();
+      const pts = Array.from(pointers.values());
+      const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+      const mx = (pts[0].x + pts[1].x) / 2, my = (pts[0].y + pts[1].y) / 2;
+      const ns = clampScale(pinch.s * d / pinch.dist);
+      const k = ns / pinch.s;
+      view.s = ns;
+      view.x = mx - (pinch.mx - pinch.x) * k;      // giữ điểm giữa 2 ngón "dính" với nội dung
+      view.y = my - (pinch.my - pinch.y) * k;
+      clampView(); apply();
+      return;
+    }
+    if(stroke){
+      e.preventDefault();
+      const evs = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
+      egApplyTransform(ctx, img.naturalWidth, img.naturalHeight, page.rot);
+      ctx.strokeStyle = stroke.color; ctx.lineWidth = stroke.width; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      evs.forEach((ev)=>{
+        const p = toImage(ev);
+        const last = stroke.pts[stroke.pts.length - 1];
+        ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+        stroke.pts.push(p);
+      });
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    } else if(panning){
+      e.preventDefault();
+      view.x = panning.vx + (l.x - panning.sx);
+      view.y = panning.vy + (l.y - panning.sy);
+      clampView(); apply();
+    }
+  };
+
+  const pointerEnd = (e)=>{
+    pointers.delete(e.pointerId);
+    if(pointers.size < 2) pinch = null;
+    if(pointers.size === 0){ stroke = null; panning = null; }
+  };
+  box.onpointerup = pointerEnd;
+  box.onpointercancel = pointerEnd;
+  box.oncontextmenu = (e)=> e.preventDefault();
+
+  // Lăn chuột (máy tính): thu phóng quanh vị trí con trỏ
+  box.addEventListener('wheel', (e)=>{
+    if(!ready) return;
+    e.preventDefault();
+    const r = box.getBoundingClientRect();
+    const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+    zoomAt(e.clientX - r.left, e.clientY - r.top, view.s * Math.exp(-dy * 0.0015));
+  }, { passive: false });
+
+  const api = {
+    el: box,
+    zoom: (f)=>{ if(ready) zoomAt(box.clientWidth / 2, box.clientHeight / 2, view.s * f); },
+    fit: ()=>{ if(ready) fitView(); },
+    rotate: (dir)=>{
+      if(!ready) return;
+      page.rot = (page.rot + (dir > 0 ? 90 : 270)) % 360;
+      layout(); fitView();
+    },
+    undo: ()=>{ if(ready && page.strokes.length){ page.strokes.pop(); paint(); } },
+    clear: ()=>{
+      if(!ready || !page.strokes.length) return;
+      if(page.strokes.length > 1 && !confirm('Xoá toàn bộ nét vẽ trên ảnh này?')) return;
+      page.strokes.length = 0; paint();
+    },
+    refreshCursor: ()=>{ box.style.cursor = g.tool === 'pan' ? 'grab' : 'crosshair'; }
+  };
+  api.refreshCursor();
+  return api;
+}
+
+/* ---- thanh công cụ phía trên ảnh ---- */
+function egBuildToolbar(g, viewer, zoomLabel){
+  const bar = document.createElement('div');
+  bar.className = 'eg-toolbar';
+  const group = ()=>{ const d = document.createElement('div'); d.className = 'eg-group'; bar.appendChild(d); return d; };
+  const btn = (parent, text, title, fn)=>{
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'eg-tool'; b.textContent = text;
+    b.title = title; b.setAttribute('aria-label', title);
+    b.onclick = fn;
+    parent.appendChild(b);
+    return b;
+  };
+
+  // Chế độ: vẽ / kéo ảnh
+  const g1 = group();
+  const drawBtn = btn(g1, '✏️ Vẽ', 'Vẽ, khoanh lên ảnh', ()=> setTool('draw'));
+  const panBtn = btn(g1, '✋ Kéo', 'Kéo ảnh bằng 1 ngón', ()=> setTool('pan'));
+  const setTool = (t)=>{
+    g.tool = t;
+    drawBtn.classList.toggle('active', t === 'draw');
+    panBtn.classList.toggle('active', t === 'pan');
+    viewer.refreshCursor();
+  };
+
+  // Màu bút
+  const g2 = group();
+  const swatches = EG_COLORS.map((c, i)=>{
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'eg-swatch'; b.style.background = c;
+    b.title = 'Bút ' + EG_COLOR_NAMES[i]; b.setAttribute('aria-label', 'Bút ' + EG_COLOR_NAMES[i]);
+    b.onclick = ()=> setColor(c);
+    g2.appendChild(b);
+    return b;
+  });
+  const setColor = (c)=>{
+    g.color = c;
+    swatches.forEach((b, i)=> b.classList.toggle('active', EG_COLORS[i] === c));
+    if(g.tool !== 'draw') setTool('draw');
+  };
+
+  // Xoay ảnh
+  const g3 = group();
+  btn(g3, '↺', 'Xoay trái 90°', ()=> viewer.rotate(-1));
+  btn(g3, '↻', 'Xoay phải 90°', ()=> viewer.rotate(1));
+
+  // Thu phóng
+  const g4 = group();
+  btn(g4, '−', 'Thu nhỏ', ()=> viewer.zoom(1 / 1.5));
+  g4.appendChild(zoomLabel);
+  btn(g4, '+', 'Phóng to', ()=> viewer.zoom(1.5));
+  btn(g4, 'Vừa', 'Vừa khung hình', ()=> viewer.fit());
+
+  // Hoàn tác / xoá nét
+  const g5 = group();
+  btn(g5, '↩', 'Hoàn tác nét vừa vẽ', ()=> viewer.undo());
+  btn(g5, '🗑', 'Xoá hết nét vẽ trên ảnh này', ()=> viewer.clear());
+
+  setTool(g.tool);
+  setColor(g.color);
+  return bar;
+}
+
+/* ---- dải chọn ảnh: Ảnh 1 · Ảnh 2 · … · Tổng kết ---- */
+function egPageTouched(p){ return p.strokes.length > 0 || p.rot !== 0 || !!(p.comment || '').trim(); }
+
+function egGoto(step){
+  const g = essayGradeOpen;
+  if(!g || g.busy) return;
+  g.step = step;
+  render();
+  const m = $app.querySelector('main');
+  if(m) m.scrollTop = 0;
+}
+
+function egBuildStepper(g){
+  const n = g.submittedImages.length;
+  const row = document.createElement('div');
+  row.className = 'eg-stepper';
+  for(let i = 0; i <= n; i++){
+    const isSummary = i === n;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'eg-step' + (i === g.step ? ' active' : '') + ((!isSummary && egPageTouched(g.pages[i])) ? ' touched' : '');
+    b.textContent = isSummary ? 'Tổng kết' : ('Ảnh ' + (i + 1));
+    b.onclick = ()=> egGoto(i);
+    row.appendChild(b);
+  }
+  return row;
+}
+
+/* ---- bước chấm 1 ảnh: thanh công cụ, khung ảnh, ô nhận xét bên dưới, nút chuyển ảnh ---- */
+function egBuildPageStep(g, pi){
+  const n = g.submittedImages.length;
+  const page = g.pages[pi];
+  const root = document.createElement('div');
 
   const hint = document.createElement('div');
-  hint.className = 'tr-sub'; hint.style.marginBottom = '10px';
-  hint.textContent = 'Chạm và kéo trên ảnh để khoanh/vẽ chỗ sai. Nút "Xoá nét" xoá toàn bộ nét vẽ trên ảnh đó.';
-  main.appendChild(hint);
+  hint.className = 'tr-sub'; hint.style.marginBottom = '4px';
+  hint.textContent = 'Ảnh ' + (pi + 1) + '/' + n + ' — 1 ngón để viết/khoanh, 2 ngón để thu phóng và kéo ảnh (hoặc chọn ✋ Kéo).';
+  root.appendChild(hint);
 
-  const canvasCtxs = []; // {canvas, img}
-  g.submittedImages.forEach((src,pi)=>{
-    const photoWrap = document.createElement('div');
-    photoWrap.className = 'essay-grade-photo-wrap';
-    const img = document.createElement('img');
-    img.src = src;
-    const canvas = document.createElement('canvas');
-    photoWrap.appendChild(img);
-    photoWrap.appendChild(canvas);
-    main.appendChild(photoWrap);
+  const zoomLabel = document.createElement('span');
+  zoomLabel.className = 'eg-zoom-label'; zoomLabel.textContent = '100%';
+  const viewer = egBuildViewer(g, pi, (z)=>{ zoomLabel.textContent = Math.round(z * 100) + '%'; });
+  root.appendChild(egBuildToolbar(g, viewer, zoomLabel));
+  root.appendChild(viewer.el);
 
-    const clearBtn = document.createElement('button');
-    clearBtn.className = 'back-link';
-    clearBtn.style.marginBottom = '14px';
-    clearBtn.textContent = '🗑 Xoá nét vẽ trên ảnh ' + (pi+1);
-    main.appendChild(clearBtn);
+  const field = document.createElement('div');
+  field.className = 'field'; field.style.marginTop = '14px';
+  const label = document.createElement('label');
+  label.textContent = 'Nhận xét cho ảnh ' + (pi + 1) + ' (được in ngay dưới ảnh)';
+  field.appendChild(label);
+  const ta = document.createElement('textarea');
+  ta.rows = 3; ta.maxLength = 1000; ta.value = page.comment;
+  ta.placeholder = 'Ví dụ: câu b thiếu bước rút gọn, xem lại đơn vị đo…';
+  ta.oninput = ()=>{ page.comment = ta.value; };
+  field.appendChild(ta);
+  root.appendChild(field);
 
-    const setup = ()=>{
-      const rect = img.getBoundingClientRect();
-      canvas.width = img.naturalWidth || rect.width;
-      canvas.height = img.naturalHeight || rect.height;
-      const ctx = canvas.getContext('2d');
-      ctx.strokeStyle = '#ff3b30'; ctx.lineWidth = Math.max(4, canvas.width/120); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      let drawing = false, lastX = 0, lastY = 0;
-      const posFromEvent = (e)=>{
-        const r = canvas.getBoundingClientRect();
-        const cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
-        const cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
-        return { x: cx * (canvas.width/r.width), y: cy * (canvas.height/r.height) };
-      };
-      const start = (e)=>{ e.preventDefault(); drawing = true; const p = posFromEvent(e); lastX = p.x; lastY = p.y; };
-      const move = (e)=>{
-        if(!drawing) return;
-        e.preventDefault();
-        const p = posFromEvent(e);
-        ctx.beginPath(); ctx.moveTo(lastX,lastY); ctx.lineTo(p.x,p.y); ctx.stroke();
-        lastX = p.x; lastY = p.y;
-      };
-      const end = ()=>{ drawing = false; };
-      canvas.onpointerdown = start; canvas.onpointermove = move; canvas.onpointerup = end; canvas.onpointerleave = end;
-      clearBtn.onclick = ()=> ctx.clearRect(0,0,canvas.width,canvas.height);
-    };
-    if(img.complete && img.naturalWidth) setup(); else img.onload = setup;
+  const nav = document.createElement('div');
+  nav.className = 'eg-nav';
+  if(pi > 0){
+    const prev = document.createElement('button');
+    prev.type = 'button'; prev.className = 'save-btn secondary-btn';
+    prev.textContent = '← Ảnh ' + pi;
+    prev.onclick = ()=> egGoto(pi - 1);
+    nav.appendChild(prev);
+  }
+  const next = document.createElement('button');
+  next.type = 'button'; next.className = 'save-btn';
+  next.textContent = pi < n - 1 ? ('Ảnh ' + (pi + 2) + ' →') : 'Tổng kết →';
+  next.onclick = ()=> egGoto(pi + 1);
+  nav.appendChild(next);
+  root.appendChild(nav);
 
-    canvasCtxs.push({ canvas, img });
-  });
+  return root;
+}
+
+/* ---- bước cuối: tổng kết, chọn Đạt/Chưa đạt, nhận xét chung, lưu ---- */
+function egBuildSummary(g){
+  const n = g.submittedImages.length;
+  const root = document.createElement('div');
+
+  if(n === 0){
+    const none = document.createElement('div');
+    none.className = 'tr-sub'; none.style.marginBottom = '16px';
+    none.textContent = 'Học sinh chưa nộp ảnh nào cho câu này.';
+    root.appendChild(none);
+  } else {
+    const list = document.createElement('div');
+    list.className = 'eg-summary-list';
+    g.pages.forEach((p, i)=>{
+      const parts = [];
+      if(p.strokes.length) parts.push(p.strokes.length + ' nét vẽ');
+      if((p.comment || '').trim()) parts.push('có nhận xét');
+      if(p.rot) parts.push('đã xoay');
+      const row = document.createElement('button');
+      row.type = 'button'; row.className = 'eg-summary-row';
+      const t = document.createElement('span'); t.textContent = 'Ảnh ' + (i + 1);
+      const s = document.createElement('span'); s.className = 'tr-sub'; s.textContent = parts.length ? parts.join(' · ') : 'chưa đánh dấu gì';
+      row.appendChild(t); row.appendChild(s);
+      row.onclick = ()=> egGoto(i);
+      list.appendChild(row);
+    });
+    root.appendChild(list);
+  }
 
   const statusField = document.createElement('div');
   statusField.className = 'field';
@@ -5859,51 +6203,170 @@ function renderEssayGrade(){
     statusRow.appendChild(b);
   });
   statusField.appendChild(statusRow);
-  main.appendChild(statusField);
+  root.appendChild(statusField);
 
   const noteField = document.createElement('div');
   noteField.className = 'field';
-  noteField.innerHTML = `<label>Nhận xét cho học sinh (không bắt buộc)</label>`;
+  noteField.innerHTML = `<label>Nhận xét chung cho cả bài (không bắt buộc)</label>`;
   const noteArea = document.createElement('textarea');
-  noteArea.rows = 3; noteArea.value = g.note; noteArea.placeholder = 'Ví dụ: thiếu bước rút gọn ở câu b, xem lại đơn vị đo…';
+  noteArea.rows = 3; noteArea.value = g.note; noteArea.placeholder = 'Ví dụ: trình bày sạch đẹp, cần chú ý đơn vị đo…';
   noteArea.style.width='100%'; noteArea.style.boxSizing='border-box'; noteArea.style.background='var(--bg-elev)'; noteArea.style.border='1px solid var(--line)';
   noteArea.style.color='var(--white)'; noteArea.style.borderRadius='9px'; noteArea.style.padding='10px 11px'; noteArea.style.fontSize='14px';
   noteArea.oninput = ()=>{ g.note = noteArea.value; };
   noteField.appendChild(noteArea);
-  main.appendChild(noteField);
+  root.appendChild(noteField);
 
+  const nav = document.createElement('div');
+  nav.className = 'eg-nav';
+  if(n > 0){
+    const prev = document.createElement('button');
+    prev.type = 'button'; prev.className = 'save-btn secondary-btn';
+    prev.textContent = '← Ảnh ' + n; prev.disabled = g.busy;
+    prev.onclick = ()=> egGoto(n - 1);
+    nav.appendChild(prev);
+  }
   const saveBtn = document.createElement('button');
-  saveBtn.className = 'save-btn';
+  saveBtn.type = 'button'; saveBtn.className = 'save-btn';
   saveBtn.textContent = g.busy ? 'Đang lưu…' : 'Lưu kết quả chấm';
   saveBtn.disabled = g.busy;
-  saveBtn.onclick = ()=> saveEssayGrade(canvasCtxs);
-  main.appendChild(saveBtn);
+  saveBtn.onclick = ()=> saveEssayGrade();
+  nav.appendChild(saveBtn);
+  root.appendChild(nav);
+
+  return root;
+}
+
+function renderEssayGrade(){
+  const g = essayGradeOpen;
+  const n = g.submittedImages.length;
+  if(g.step > n) g.step = n;
+  if(g.step < 0) g.step = 0;
+
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `<h1 class="display" style="font-size:18px;">Chấm bài tự luận</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+  const backLink = document.createElement('button');
+  backLink.className = 'back-link';
+  backLink.textContent = '← Quay lại';
+  backLink.style.marginBottom = '14px';
+  backLink.disabled = g.busy;
+  backLink.onclick = ()=>{
+    if(g.busy) return;
+    const hasWork = g.pages.some(egPageTouched);
+    if(hasWork && !confirm('Thoát và bỏ các nét vẽ/nhận xét chưa lưu?')) return;
+    essayGradeOpen = null; render();
+  };
+  main.appendChild(backLink);
+
+  const promptEl = document.createElement('div');
+  promptEl.className = 'qcard-prompt'; promptEl.style.marginBottom = '4px';
+  promptEl.textContent = g.prompt;
+  main.appendChild(promptEl);
+  if(g.rubric){
+    const rubricEl = document.createElement('div');
+    rubricEl.className = 'tr-sub'; rubricEl.style.marginBottom = '14px'; rubricEl.style.fontStyle = 'italic';
+    rubricEl.textContent = 'Yêu cầu: ' + g.rubric;
+    main.appendChild(rubricEl);
+  }
+
+  main.appendChild(egBuildStepper(g));
+  main.appendChild(g.step === n ? egBuildSummary(g) : egBuildPageStep(g, g.step));
 
   wrap.appendChild(main);
   return wrap;
 }
 
-async function saveEssayGrade(canvasCtxs){
+/* ---- xuất 1 ảnh đã chấm: ảnh (đã xoay) + nét vẽ + dải nhận xét in ngay dưới ảnh ---- */
+const EG_FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+
+function egWrapText(ctx, text, maxW){
+  const lines = [];
+  const measure = (s)=> ctx.measureText(s).width;
+  text.normalize('NFC').split(/\r?\n/).forEach((par)=>{
+    if(!par.trim()){ lines.push(''); return; }
+    let line = '';
+    par.split(/\s+/).filter(Boolean).forEach((word)=>{
+      const test = line ? line + ' ' + word : word;
+      if(measure(test) <= maxW){ line = test; return; }
+      if(line) lines.push(line);
+      if(measure(word) <= maxW){ line = word; return; }
+      // từ dài hơn cả 1 dòng → bẻ theo ký tự
+      let chunk = '';
+      for(const ch of word){
+        if(chunk && measure(chunk + ch) > maxW){ lines.push(chunk); chunk = ch; }
+        else chunk += ch;
+      }
+      line = chunk;
+    });
+    lines.push(line);
+  });
+  return lines;
+}
+
+function egExportPage(img, page){
+  if(!(img.complete && img.naturalWidth)) throw new Error('Không đọc được 1 trong các ảnh bài làm');
+  const sz = egCanvasSize(img, page.rot);
+  const text = (page.comment || '').trim();
+
+  let lines = [], fs = 0, pad = 0, lh = 0, band = 0;
+  if(text){
+    fs = Math.max(20, Math.round(sz.w / 32));
+    pad = Math.round(fs * 0.7);
+    lh = Math.round(fs * 1.35);
+    const m = document.createElement('canvas').getContext('2d');
+    m.font = fs + 'px ' + EG_FONT;
+    lines = egWrapText(m, text, sz.w - pad * 2);
+    band = pad * 2 + lh * (lines.length + 1);      // +1 dòng tiêu đề "Nhận xét của giáo viên"
+  }
+
+  const out = document.createElement('canvas');
+  out.width = sz.w; out.height = sz.h + band;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, out.width, out.height);
+  egPaint(ctx, img, page);
+
+  if(text){
+    ctx.fillStyle = '#fffaf0'; ctx.fillRect(0, sz.h, sz.w, band);
+    ctx.fillStyle = '#d92d20'; ctx.fillRect(0, sz.h, sz.w, Math.max(2, Math.round(fs / 10)));
+    ctx.textBaseline = 'top';
+    ctx.font = '700 ' + fs + 'px ' + EG_FONT;
+    ctx.fillText('Nhận xét của giáo viên', pad, sz.h + pad);
+    ctx.font = fs + 'px ' + EG_FONT;
+    ctx.fillStyle = '#1f1b16';
+    lines.forEach((ln, i)=> ctx.fillText(ln, pad, sz.h + pad + lh * (i + 1)));
+  }
+  return out.toDataURL('image/jpeg', 0.85);
+}
+
+async function saveEssayGrade(){
   const g = essayGradeOpen;
+  if(!g || g.busy) return;
   g.busy = true; render();
   try{
-    // Gộp từng ảnh gốc với nét vẽ của giáo viên thành 1 ảnh mới.
-    const gradedImages = canvasCtxs.map(({canvas, img})=>{
-      const out = document.createElement('canvas');
-      out.width = canvas.width; out.height = canvas.height;
-      const ctx = out.getContext('2d');
-      ctx.drawImage(img, 0, 0, out.width, out.height);
-      ctx.drawImage(canvas, 0, 0);
-      return out.toDataURL('image/jpeg', 0.85);
-    });
+    const gradedImages = [];
+    for(let i = 0; i < g.submittedImages.length; i++){
+      const img = egImageOf(g, i);
+      if(!(img.complete && img.naturalWidth)){
+        await new Promise((res)=>{ img.onload = res; img.onerror = res; });
+      }
+      gradedImages.push(egExportPage(img, g.pages[i]));
+      await new Promise((r)=> setTimeout(r, 0));   // nhường luồng cho giao diện giữa các ảnh
+    }
     const res = await authorizedRequest('/tests/essay/grade', {
       testId: submissionDetailOpen.testId, studentId: submissionDetailOpen.studentId,
       questionId: g.questionId, status: g.status, gradedImages, note: g.note
     });
     const target = (submissionDetailOpen.detail||[]).find(d=>d.questionId===g.questionId);
+    const wasPending = !!target && target.status === 'pending';
     if(target){ target.status = res.status; target.gradedImages = res.gradedImages; target.note = res.note; }
     const listRow = TEST_SUBMISSIONS.find(s=>s.studentId===submissionDetailOpen.studentId);
-    if(listRow && listRow.essayPendingCount>0) listRow.essayPendingCount--;
+    if(wasPending && listRow && listRow.essayPendingCount>0) listRow.essayPendingCount--;
     essayGradeOpen = null;
     toast('Đã lưu kết quả chấm ✓');
   }catch(e){
