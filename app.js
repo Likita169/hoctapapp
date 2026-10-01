@@ -8884,6 +8884,36 @@ let dictationVocabValue = '';      // đang gõ gì ở chế độ "Nghe – g�
 let dictationVocabChecked = false; // đã bấm "Kiểm tra" cho từ hiện tại chưa
 let dictationVocabCorrect = false;
 let addVocabCollocations = [];     // các cụm từ đi kèm đang soạn ở màn Thêm/Sửa từ vựng: {id, phrase, meaning}
+/* ---- bản nháp từ vựng đang soạn dở (màn Thêm/Sửa từ vựng) ----
+   Các ô Từ/Loại từ/IPA/Nghĩa/Ví dụ là input "thường" — chữ chỉ nằm trong DOM,
+   mà render() xoá sạch rồi vẽ lại từ đầu (chọn Chủ đề/Họ từ, thông báo 60s,
+   quay lại app từ ứng dụng khác...) nên chữ đang gõ bị mất. Giờ mọi thay đổi
+   được đồng bộ vào addVocabDraft (+ ghi nhẹ xuống localStorage) và mỗi lần vẽ
+   lại thì điền ngược từ đây ra. forId = id từ đang sửa (null = thêm mới). */
+let addVocabDraft = { forId:null, word:'', pos:'', ipa:'', meaning:'', example:'' };
+try{
+  const _rawVocabDraft = localStorage.getItem('srs_vocab_add_draft');
+  if(_rawVocabDraft) addVocabDraft = Object.assign(addVocabDraft, JSON.parse(_rawVocabDraft), { forId:null });
+}catch(e){ /* ignore */ }
+let _vocabDraftSaveDebounce = null;
+function syncVocabDraftFromDom(){
+  const g = (id)=>{ const el = document.getElementById(id); return el ? el.value : null; };
+  const m = { word:'vocabWordInput', pos:'vocabPosInput', ipa:'vocabIpaInput', meaning:'vocabMeaningInput', example:'vocabExampleInput' };
+  Object.keys(m).forEach(k=>{ const v = g(m[k]); if(v!==null) addVocabDraft[k] = v; });
+  clearTimeout(_vocabDraftSaveDebounce);
+  _vocabDraftSaveDebounce = setTimeout(()=>{
+    try{
+      if(addVocabDraft.forId===null && (addVocabDraft.word||addVocabDraft.meaning||addVocabDraft.example||addVocabDraft.ipa||addVocabDraft.pos).trim())
+        localStorage.setItem('srs_vocab_add_draft', JSON.stringify(addVocabDraft));
+      else if(addVocabDraft.forId===null) localStorage.removeItem('srs_vocab_add_draft');
+    }catch(e){ /* ignore */ }
+  }, 250);
+}
+function clearVocabDraft(){
+  addVocabDraft = { forId:null, word:'', pos:'', ipa:'', meaning:'', example:'' };
+  clearTimeout(_vocabDraftSaveDebounce);
+  try{ localStorage.removeItem('srs_vocab_add_draft'); }catch(e){ /* ignore */ }
+}
 let vocabAddLoadedFor = undefined; // id của từ mà addVocabCollocations đã nạp cho (undefined = chưa nạp lần nào, null = đang thêm từ mới)
 
 // -- Chế độ ôn tập từ vựng: 'flip' (lật thẻ) | 'quiz' (trắc nghiệm 4 đáp án)
@@ -9703,6 +9733,13 @@ function renderVocabAdd(){
     addVocabCollocations = editing ? (editing.collocations||[]).map(c=>({...c})) : [];
     vocabAddLoadedFor = vocabAddKey;
   }
+  // Bản nháp chữ: chỉ reset khi chuyển sang sửa từ khác / vừa chuyển giữa
+  // sửa <-> thêm mới; còn lại giữ nguyên để render() lại không mất chữ.
+  if(addVocabDraft.forId !== vocabAddKey){
+    addVocabDraft = editing
+      ? { forId:vocabAddKey, word:editing.word||'', pos:editing.pos||'', ipa:editing.ipa||'', meaning:editing.meaning||'', example:editing.example||'' }
+      : { forId:null, word:'', pos:'', ipa:'', meaning:'', example:'' };
+  }
 
   const header = document.createElement('header');
   header.className = 'topbar';
@@ -9725,13 +9762,14 @@ function renderVocabAdd(){
     el.id = id;
     el.placeholder = placeholder || '';
     el.value = value || '';
+    el.addEventListener('input', syncVocabDraftFromDom);
     f.appendChild(el);
     main.appendChild(f);
     return el;
   }
 
-  const wordEl = field('Từ (tiếng Anh)', 'vocabWordInput', 'Ví dụ: ubiquitous', editing ? editing.word : '');
-  const posEl = field('Loại từ (tuỳ chọn)', 'vocabPosInput', 'n. / v. / adj. / adv. ...', editing ? editing.pos : '');
+  const wordEl = field('Từ (tiếng Anh)', 'vocabWordInput', 'Ví dụ: ubiquitous', addVocabDraft.word);
+  const posEl = field('Loại từ (tuỳ chọn)', 'vocabPosInput', 'n. / v. / adj. / adv. ...', addVocabDraft.pos);
   const posChips = document.createElement('div');
   posChips.style.cssText = 'display:flex; gap:8px; margin:-10px 0 4px;';
   POS_QUICK_PICKS.forEach(p=>{
@@ -9741,6 +9779,7 @@ function renderVocabAdd(){
     chip.textContent = p;
     chip.onclick = ()=>{
       posEl.value = p;
+      syncVocabDraftFromDom();
       posChips.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
       chip.classList.add('active');
     };
@@ -9843,7 +9882,7 @@ function renderVocabAdd(){
     main.appendChild(preview);
   }
 
-  const ipaEl = field('Phiên âm IPA (tuỳ chọn)', 'vocabIpaInput', 'Ví dụ: /juːˈbɪkwɪtəs/', editing ? editing.ipa : '');
+  const ipaEl = field('Phiên âm IPA (tuỳ chọn)', 'vocabIpaInput', 'Ví dụ: /juːˈbɪkwɪtəs/', addVocabDraft.ipa);
 
   // Tự động điền phiên âm: khi rời khỏi ô "Từ" mà ô IPA đang trống, tự tra
   // và điền vào — không ghi đè nếu người dùng đã tự gõ (hoặc đã có sẵn lúc
@@ -9855,7 +9894,7 @@ function renderVocabAdd(){
     const myToken = ++ipaFetchToken;
     const ipa = await fetchIpaFor(w);
     if(myToken !== ipaFetchToken) return; // đã đổi từ khác trong lúc chờ
-    if(ipa && !ipaEl.value.trim()) ipaEl.value = ipa;
+    if(ipa && !ipaEl.value.trim()){ ipaEl.value = ipa; syncVocabDraftFromDom(); }
   });
 
   const ipaAutoRow = document.createElement('div');
@@ -9874,14 +9913,14 @@ function renderVocabAdd(){
     if(myToken === ipaFetchToken){
       ipaAutoBtn.disabled = false;
       ipaAutoBtn.textContent = '🔎 Tự động điền phiên âm';
-      if(ipa) ipaEl.value = ipa;
+      if(ipa){ ipaEl.value = ipa; syncVocabDraftFromDom(); }
       else toast('Không tra được phiên âm cho từ này');
     }
   };
   ipaAutoRow.appendChild(ipaAutoBtn);
   main.appendChild(ipaAutoRow);
 
-  const meaningEl = field('Nghĩa', 'vocabMeaningInput', 'Ví dụ: có mặt khắp nơi', editing ? editing.meaning : '', true);
+  const meaningEl = field('Nghĩa', 'vocabMeaningInput', 'Ví dụ: có mặt khắp nơi', addVocabDraft.meaning, true);
 
   // Tự động điền nghĩa tiếng Việt: dịch từ/cụm tiếng Anh sang tiếng Việt.
   // Đây là bản dịch máy nên chỉ mang tính gợi ý — người dùng nên xem lại và
@@ -9903,14 +9942,14 @@ function renderVocabAdd(){
     if(myToken === meaningFetchToken){
       meaningAutoBtn.disabled = false;
       meaningAutoBtn.textContent = '🌐 Tự động điền nghĩa';
-      if(meaning) meaningEl.value = meaning;
+      if(meaning){ meaningEl.value = meaning; syncVocabDraftFromDom(); }
       else toast('Không dịch được từ này, hãy tự nhập nghĩa nhé');
     }
   };
   meaningAutoRow.appendChild(meaningAutoBtn);
   main.appendChild(meaningAutoRow);
 
-  field('Câu ví dụ (tuỳ chọn)', 'vocabExampleInput', 'Ví dụ: Smartphones have become ubiquitous.', editing ? editing.example : '', true);
+  field('Câu ví dụ (tuỳ chọn)', 'vocabExampleInput', 'Ví dụ: Smartphones have become ubiquitous.', addVocabDraft.example, true);
 
   // -- Cụm từ hay đi kèm (collocation) — vd: make a decision, heavy rain...
   // Sát với dạng bài đề thi THPT hay kiểm tra collocation. Có gợi ý dựng
@@ -10029,15 +10068,26 @@ function renderVocabAdd(){
     if(editing){
       Object.assign(editing, {word, meaning, ipa, pos, example, topicId, familyId, collocations});
       toast('Đã lưu thay đổi ✓');
-    } else {
-      DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
-      toast('Đã thêm từ vựng ✓');
+      clearVocabDraft();
+      editVocabId = null;
+      addVocabCollocations = [];
+      vocabAddLoadedFor = undefined;
+      await saveData();
+      setView('vocab');
+      return;
     }
-    editVocabId = null;
+    DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
+    toast('Đã thêm "' + word + '" ✓');
+    // Thêm từ MỚI: ở lại màn này, xoá trắng các ô (giữ nguyên Chủ đề/Họ từ để
+    // thêm liền nhiều từ cùng nhóm), đưa con trỏ về ô "Từ" để gõ từ tiếp theo.
+    clearVocabDraft();
     addVocabCollocations = [];
-    vocabAddLoadedFor = undefined;
+    vocabAddLoadedFor = null;
     await saveData();
-    setView('vocab');
+    render();
+    window.scrollTo(0,0);
+    const mainEl = $app.querySelector('main'); if(mainEl) mainEl.scrollTop = 0;
+    const wEl = document.getElementById('vocabWordInput'); if(wEl) wEl.focus();
   };
   main.appendChild(saveBtn);
 
