@@ -10671,12 +10671,22 @@ function renderVocabAdd(){
       DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
       toast('Đã thêm từ vựng ✓');
     }
+    const wasEditing = !!editing;
     editVocabId = null;
     addVocabCollocations = [];
     vocabAddLoadedFor = undefined;
     resetVocabAddDraft();
     await saveData();
-    setView('vocab');
+    if(wasEditing){
+      setView('vocab');
+    } else {
+      // Thêm từ mới: Ở LẠI màn này với form trống để gõ tiếp từ kế (giữ nguyên
+      // chủ đề/họ từ đang chọn) — muốn xem danh sách thì bấm "← Quay lại".
+      setView('vocab-add');
+      const m = document.querySelector('main'); if(m) m.scrollTop = 0;
+      window.scrollTo(0, 0);
+      setTimeout(()=>{ const el = document.getElementById('vocabWordInput'); if(el) el.focus(); }, 80);
+    }
   };
   main.appendChild(saveBtn);
 
