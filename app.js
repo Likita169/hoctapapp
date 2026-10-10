@@ -707,7 +707,7 @@ let _renderPendingAfterTyping = false;
 function renderUnlessTyping(){
   const active = document.activeElement;
   const isTyping = active && (active.tagName==='TEXTAREA' || active.tagName==='INPUT') && document.body.contains(active);
-  const isComposingCard = VIEW === 'add' && addCardDraftHasContent();
+  const isComposingCard = (VIEW === 'add' && addCardDraftHasContent()) || VIEW === 'vocab-add' || VIEW === 'vocab-bulk';
   if(isTyping || isComposingCard){
     if(_renderPendingAfterTyping) return; // đã xếp hàng chờ 1 lượt rồi
     _renderPendingAfterTyping = true;
@@ -730,6 +730,7 @@ function currentRenderSig(){
 }
 
 function render(){
+  try{ if(VIEW === 'vocab-add') syncVocabAddDraft(); }catch(e){ /* bỏ qua */ }
   const prevMainEl = $app.querySelector('main');
   const prevScrollTop = prevMainEl ? prevMainEl.scrollTop : 0;
   const newSig = currentRenderSig();
@@ -832,7 +833,7 @@ function render(){
               vocabTopicModalOpen = true; render();
             } },
           { icon:'📝', label:'Tạo từ', onClick: ()=>{
-              editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; setView('vocab-add');
+              editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; vocabAddDraft = null; setView('vocab-add');
             } },
           { icon:'📥', label:'Thêm nhiều từ cùng lúc', onClick: ()=>{
               vocabBulkRows = []; vocabBulkBusy = false; setView('vocab-bulk');
@@ -8888,6 +8889,21 @@ let dictationVocabValue = '';      // đang gõ gì ở chế độ "Nghe – g�
 let dictationVocabChecked = false; // đã bấm "Kiểm tra" cho từ hiện tại chưa
 let dictationVocabCorrect = false;
 let addVocabCollocations = [];     // các cụm từ đi kèm đang soạn ở màn Thêm/Sửa từ vựng: {id, phrase, meaning}
+// Bản nháp các ô đang gõ ở màn Thêm/Sửa từ. render() luôn xoá sạch giao diện rồi
+// dựng lại, mà các ô này trước đây chỉ lấy giá trị từ từ đang sửa (rỗng khi thêm
+// mới) → bất kỳ lần vẽ lại nền nào (chuông thông báo tải mỗi 60 giây...) cũng làm
+// MẤT hết chữ đang gõ. Giờ giá trị được đọc từ DOM vào bản nháp ngay trước mỗi
+// lần render() và đổ lại vào ô sau khi dựng — kể cả giá trị do nút "tự động
+// điền" gán bằng code.
+let vocabAddDraft = null; // {key, word, pos, ipa, meaning, example}
+function syncVocabAddDraft(){
+  if(!vocabAddDraft) return;
+  const ids = { word:'vocabWordInput', pos:'vocabPosInput', ipa:'vocabIpaInput', meaning:'vocabMeaningInput', example:'vocabExampleInput' };
+  for(const k in ids){
+    const el = document.getElementById(ids[k]);
+    if(el) vocabAddDraft[k] = el.value;
+  }
+}
 let vocabAddLoadedFor = undefined; // id của từ mà addVocabCollocations đã nạp cho (undefined = chưa nạp lần nào, null = đang thêm từ mới)
 
 // -- Chế độ ôn tập từ vựng: 'flip' (lật thẻ) | 'quiz' (trắc nghiệm 4 đáp án)
@@ -9499,7 +9515,7 @@ function renderVocabList(list){
     `;
     item.querySelector('.vocab-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(w.word); };
     item.querySelector('.mi-del').onclick = (e)=>{ e.stopPropagation(); deleteVocabId = w.id; render(); };
-    item.onclick = ()=>{ editVocabId = w.id; setView('vocab-add'); };
+    item.onclick = ()=>{ editVocabId = w.id; vocabAddDraft = null; setView('vocab-add'); };
     list.appendChild(item);
   });
 }
@@ -10082,6 +10098,16 @@ function renderVocabAdd(){
     vocabAddLoadedFor = vocabAddKey;
   }
 
+  if(!vocabAddDraft || vocabAddDraft.key !== vocabAddKey){
+    vocabAddDraft = {
+      key: vocabAddKey,
+      word: editing ? editing.word : '', pos: editing ? editing.pos : '',
+      ipa: editing ? editing.ipa : '', meaning: editing ? editing.meaning : '',
+      example: editing ? editing.example : ''
+    };
+  }
+  const draft = vocabAddDraft;
+
   const header = document.createElement('header');
   header.className = 'topbar';
   header.innerHTML = `<h1 class="display">${editing ? 'Sửa từ vựng' : 'Từ vựng mới'}</h1>`;
@@ -10091,7 +10117,7 @@ function renderVocabAdd(){
 
   const back = document.createElement('button');
   back.className = 'back-link'; back.textContent = '← Quay lại';
-  back.onclick = ()=>{ editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; setView('vocab'); };
+  back.onclick = ()=>{ editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; vocabAddDraft = null; setView('vocab'); };
   main.appendChild(back);
 
   function field(labelText, id, placeholder, value, isTextarea){
@@ -10108,8 +10134,8 @@ function renderVocabAdd(){
     return el;
   }
 
-  const wordEl = field('Từ (tiếng Anh)', 'vocabWordInput', 'Ví dụ: ubiquitous', editing ? editing.word : '');
-  const posEl = field('Loại từ (tuỳ chọn)', 'vocabPosInput', 'n. / v. / adj. / adv. ...', editing ? editing.pos : '');
+  const wordEl = field('Từ (tiếng Anh)', 'vocabWordInput', 'Ví dụ: ubiquitous', draft.word);
+  const posEl = field('Loại từ (tuỳ chọn)', 'vocabPosInput', 'n. / v. / adj. / adv. ...', draft.pos);
   const posChips = document.createElement('div');
   posChips.style.cssText = 'display:flex; gap:8px; margin:-10px 0 4px;';
   POS_QUICK_PICKS.forEach(p=>{
@@ -10271,7 +10297,7 @@ function renderVocabAdd(){
     main.appendChild(preview);
   }
 
-  const ipaEl = field('Phiên âm IPA (tuỳ chọn)', 'vocabIpaInput', 'Ví dụ: /juːˈbɪkwɪtəs/', editing ? editing.ipa : '');
+  const ipaEl = field('Phiên âm IPA (tuỳ chọn)', 'vocabIpaInput', 'Ví dụ: /juːˈbɪkwɪtəs/', draft.ipa);
 
   // Tự động điền phiên âm: khi rời khỏi ô "Từ" mà ô IPA đang trống, tự tra
   // và điền vào — không ghi đè nếu người dùng đã tự gõ (hoặc đã có sẵn lúc
@@ -10309,7 +10335,7 @@ function renderVocabAdd(){
   ipaAutoRow.appendChild(ipaAutoBtn);
   main.appendChild(ipaAutoRow);
 
-  const meaningEl = field('Nghĩa', 'vocabMeaningInput', 'Ví dụ: có mặt khắp nơi', editing ? editing.meaning : '', true);
+  const meaningEl = field('Nghĩa', 'vocabMeaningInput', 'Ví dụ: có mặt khắp nơi', draft.meaning, true);
 
   // Tự động điền nghĩa tiếng Việt: dịch từ/cụm tiếng Anh sang tiếng Việt.
   // Đây là bản dịch máy nên chỉ mang tính gợi ý — người dùng nên xem lại và
@@ -10337,6 +10363,36 @@ function renderVocabAdd(){
   };
   meaningAutoRow.appendChild(meaningAutoBtn);
   main.appendChild(meaningAutoRow);
+
+  // Tự động dịch: rời khỏi ô "Từ" mà ô Nghĩa còn trống → tự tra loại từ + dịch
+  // nghĩa (theo loại từ đầu tiên) và điền vào. Không ghi đè nếu bạn đã tự gõ,
+  // kể cả khi bạn gõ trong lúc app đang tra.
+  let autoMeaningToken = 0;
+  wordEl.addEventListener('blur', async ()=>{
+    const w = wordEl.value.trim();
+    if(!w || meaningEl.value.trim()) return;
+    const myToken = ++autoMeaningToken;
+    const oldPlaceholder = meaningEl.placeholder;
+    meaningEl.placeholder = 'Đang dịch…';
+    let pos = '', meaning = '';
+    try{
+      const info = await fetchWordInfo(w);
+      if(info && info.length){
+        pos = info[0].pos;
+        meaning = (await guessMeaningForPos(w, info[0])) || '';
+      }
+      if(!meaning) meaning = (await fetchMeaningFor(w)) || '';
+    }catch(e){ /* bỏ qua, để bạn tự nhập */ }
+    if(myToken !== autoMeaningToken) return;
+    meaningEl.placeholder = oldPlaceholder;
+    if(wordEl.value.trim() !== w) return; // đã đổi sang từ khác
+    if(meaning && !meaningEl.value.trim()) meaningEl.value = meaning;
+    if(pos && !posEl.value.trim()){
+      posEl.value = pos;
+      posChips.querySelectorAll('.chip').forEach(c=>c.classList.toggle('active', c.textContent===pos));
+    }
+    syncVocabAddDraft();
+  });
 
   // ---- Tra loại từ + nghĩa theo TỪNG loại từ (n./v./adj./...) ----
   const posInfoRow = document.createElement('div');
@@ -10402,7 +10458,7 @@ function renderVocabAdd(){
   main.appendChild(posInfoRow);
   main.appendChild(posInfoPanel);
 
-  field('Câu ví dụ (tuỳ chọn)', 'vocabExampleInput', 'Ví dụ: Smartphones have become ubiquitous.', editing ? editing.example : '', true);
+  field('Câu ví dụ (tuỳ chọn)', 'vocabExampleInput', 'Ví dụ: Smartphones have become ubiquitous.', draft.example, true);
 
   // -- Cụm từ hay đi kèm (collocation) — vd: make a decision, heavy rain...
   // Sát với dạng bài đề thi THPT hay kiểm tra collocation. Có gợi ý dựng
@@ -10528,6 +10584,7 @@ function renderVocabAdd(){
     editVocabId = null;
     addVocabCollocations = [];
     vocabAddLoadedFor = undefined;
+    vocabAddDraft = null;
     await saveData();
     setView('vocab');
   };
