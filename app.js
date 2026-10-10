@@ -749,6 +749,7 @@ function render(){
     else if(VIEW==='match') main.appendChild(renderMatchGame());
     else if(VIEW==='vocab') main.appendChild(renderVocabHome());
     else if(VIEW==='vocab-add') main.appendChild(renderVocabAdd());
+    else if(VIEW==='vocab-bulk') main.appendChild(renderVocabBulk());
     else if(VIEW==='vocab-review') main.appendChild(renderVocabReview());
     else if(VIEW==='vocab-stress') main.appendChild(renderVocabStressGame());
   }catch(e){
@@ -833,6 +834,9 @@ function render(){
           { icon:'📝', label:'Tạo từ', onClick: ()=>{
               editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; setView('vocab-add');
             } },
+          { icon:'📥', label:'Thêm nhiều từ cùng lúc', onClick: ()=>{
+              vocabBulkRows = []; vocabBulkBusy = false; setView('vocab-bulk');
+            } },
         ];
         render();
       };
@@ -862,7 +866,7 @@ function renderTabbar(){
   ];
   tabs.forEach(t=>{
     const b = document.createElement('button');
-    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-review'||VIEW==='vocab-stress') : VIEW===t.id;
+    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-bulk'||VIEW==='vocab-review'||VIEW==='vocab-stress') : VIEW===t.id;
     b.className = isActive ? 'active' : '';
     b.innerHTML = `<span class="icon">${t.icon}</span><span>${t.label}</span>`;
     b.onclick = ()=>{ if(t.id==='manage') manageFilterSubjectId = null; setView(t.id); };
@@ -8884,36 +8888,6 @@ let dictationVocabValue = '';      // đang gõ gì ở chế độ "Nghe – g�
 let dictationVocabChecked = false; // đã bấm "Kiểm tra" cho từ hiện tại chưa
 let dictationVocabCorrect = false;
 let addVocabCollocations = [];     // các cụm từ đi kèm đang soạn ở màn Thêm/Sửa từ vựng: {id, phrase, meaning}
-/* ---- bản nháp từ vựng đang soạn dở (màn Thêm/Sửa từ vựng) ----
-   Các ô Từ/Loại từ/IPA/Nghĩa/Ví dụ là input "thường" — chữ chỉ nằm trong DOM,
-   mà render() xoá sạch rồi vẽ lại từ đầu (chọn Chủ đề/Họ từ, thông báo 60s,
-   quay lại app từ ứng dụng khác...) nên chữ đang gõ bị mất. Giờ mọi thay đổi
-   được đồng bộ vào addVocabDraft (+ ghi nhẹ xuống localStorage) và mỗi lần vẽ
-   lại thì điền ngược từ đây ra. forId = id từ đang sửa (null = thêm mới). */
-let addVocabDraft = { forId:null, word:'', pos:'', ipa:'', meaning:'', example:'' };
-try{
-  const _rawVocabDraft = localStorage.getItem('srs_vocab_add_draft');
-  if(_rawVocabDraft) addVocabDraft = Object.assign(addVocabDraft, JSON.parse(_rawVocabDraft), { forId:null });
-}catch(e){ /* ignore */ }
-let _vocabDraftSaveDebounce = null;
-function syncVocabDraftFromDom(){
-  const g = (id)=>{ const el = document.getElementById(id); return el ? el.value : null; };
-  const m = { word:'vocabWordInput', pos:'vocabPosInput', ipa:'vocabIpaInput', meaning:'vocabMeaningInput', example:'vocabExampleInput' };
-  Object.keys(m).forEach(k=>{ const v = g(m[k]); if(v!==null) addVocabDraft[k] = v; });
-  clearTimeout(_vocabDraftSaveDebounce);
-  _vocabDraftSaveDebounce = setTimeout(()=>{
-    try{
-      if(addVocabDraft.forId===null && (addVocabDraft.word||addVocabDraft.meaning||addVocabDraft.example||addVocabDraft.ipa||addVocabDraft.pos).trim())
-        localStorage.setItem('srs_vocab_add_draft', JSON.stringify(addVocabDraft));
-      else if(addVocabDraft.forId===null) localStorage.removeItem('srs_vocab_add_draft');
-    }catch(e){ /* ignore */ }
-  }, 250);
-}
-function clearVocabDraft(){
-  addVocabDraft = { forId:null, word:'', pos:'', ipa:'', meaning:'', example:'' };
-  clearTimeout(_vocabDraftSaveDebounce);
-  try{ localStorage.removeItem('srs_vocab_add_draft'); }catch(e){ /* ignore */ }
-}
 let vocabAddLoadedFor = undefined; // id của từ mà addVocabCollocations đã nạp cho (undefined = chưa nạp lần nào, null = đang thêm từ mới)
 
 // -- Chế độ ôn tập từ vựng: 'flip' (lật thẻ) | 'quiz' (trắc nghiệm 4 đáp án)
@@ -9620,6 +9594,47 @@ async function parseIpaFromDictionaryApiResponse(res){
   return null;
 }
 
+// ---- Ghép phiên âm cho CỤM TỪ / TỪ GHÉP từ bộ từ điển IPA đã tải về (offline) ----
+// - Cụm có khoảng trắng hoặc gạch nối ("ice cream", "well-known"): tra từng
+//   từ rồi ghép lại.
+// - Từ ghép viết liền ("toothbrush"): thử mọi điểm cắt thành 2 phần mà cả 2
+//   đều có trong từ điển, chọn điểm cắt cân đối nhất; trọng âm chính chỉ
+//   giữ ở phần đầu (phần sau hạ thành trọng âm phụ ˌ) — đúng với đa số từ ghép.
+// Kết quả chỉ là GỢI Ý (trọng âm có thể lệch) nên lastIpaComposed = true để
+// giao diện nhắc người dùng kiểm tra lại.
+let lastIpaComposed = false;
+function ipaStripSlashes(s){ return String(s).replace(/^\/|\/$/g, ''); }
+function composeClosedCompoundIpa(map, w){
+  if(w.length < 6) return null;
+  let best = null, bestScore = 0;
+  for(let i=3; i<=w.length-3; i++){
+    const a = w.slice(0,i), b = w.slice(i);
+    const ia = map.get(a), ib = map.get(b);
+    if(ia && ib){
+      const score = Math.min(a.length, b.length);
+      if(score > bestScore){ bestScore = score; best = [ia, ib]; }
+    }
+  }
+  if(!best) return null;
+  return '/' + ipaStripSlashes(best[0]) + ipaStripSlashes(best[1]).replace(/ˈ/g, 'ˌ') + '/';
+}
+function composeIpaFromDict(map, text){
+  const t = (text||'').trim().toLowerCase();
+  if(!t) return null;
+  if(/[\s\-]/.test(t)){
+    const parts = t.split(/[\s\-]+/).filter(Boolean);
+    if(parts.length < 2) return null;
+    const out = [];
+    for(const part of parts){
+      const v = map.get(part) || composeClosedCompoundIpa(map, part);
+      if(!v) return null;
+      out.push(ipaStripSlashes(v));
+    }
+    return '/' + out.join(/\s/.test(t) ? ' ' : '') + '/';
+  }
+  return composeClosedCompoundIpa(map, t);
+}
+
 async function fetchIpaFor(word){
   const w = (word||'').trim();
   if(!w) return null;
@@ -9627,7 +9642,14 @@ async function fetchIpaFor(word){
 
   // Nguồn 1: bộ từ điển lớn đã tải về máy — tra tức thì, không cần mạng.
   const bigDict = await loadIpaBigDict();
+  lastIpaComposed = false;
   if(bigDict && bigDict.has(wLower)) return bigDict.get(wLower);
+
+  // Cụm từ / từ ghép không có sẵn nguyên cụm → thử ghép từ các từ thành phần.
+  if(bigDict){
+    const composed = composeIpaFromDict(bigDict, wLower);
+    if(composed){ lastIpaComposed = true; return composed; }
+  }
 
   // Nguồn 2 (dự phòng): API trực tuyến, dùng khi từ không có trong bộ từ
   // điển lớn ở trên. dictionaryapi.dev thỉnh thoảng quá tải và trả lỗi 522
@@ -9707,6 +9729,332 @@ async function fetchMeaningFor(word){
   return null;
 }
 
+// Tra TỪ LOẠI + nghĩa tiếng Anh theo từng từ loại bằng dictionaryapi.dev
+// (miễn phí, không cần khoá). Trả về mảng [{pos:'n.', def:'...', example:'...'}],
+// mỗi từ loại lấy nghĩa đầu tiên. Lỗi mạng/không có từ → null.
+const POS_LABEL_MAP = {noun:'n.', verb:'v.', adjective:'adj.', adverb:'adv.', preposition:'prep.', pronoun:'pron.', conjunction:'conj.', interjection:'interj.', exclamation:'interj.', article:'art.', determiner:'det.', numeral:'num.', particle:'part.'};
+async function fetchWordInfo(word){
+  const w = (word||'').trim();
+  if(!w) return null;
+  const apiUrl = 'https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(w);
+  const tryFetch = async (url, ms)=>{
+    try{
+      const res = await fetchWithTimeout(url, ms);
+      if(!res.ok) return null;
+      const d = await res.json();
+      return Array.isArray(d) ? d : null;
+    }catch(e){ return null; }
+  };
+  const data = (await tryFetch(apiUrl, 6000)) || (await tryFetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(apiUrl), 8000));
+  if(!data) return null;
+  const byPos = new Map();
+  for(const entry of data){
+    for(const m of (entry.meanings || [])){
+      const raw = (m.partOfSpeech || '').toLowerCase();
+      const pos = POS_LABEL_MAP[raw] || raw;
+      if(!pos || byPos.has(pos)) continue;
+      const d = (m.definitions || [])[0];
+      if(!d || !d.definition) continue;
+      byPos.set(pos, { pos, def: d.definition, example: d.example || '' });
+    }
+  }
+  return Array.from(byPos.values());
+}
+
+// Gợi ý nghĩa tiếng Việt CHO TỪNG LOẠI TỪ: dịch kèm "dấu hiệu" loại từ để máy
+// dịch đúng nghĩa (động từ → "to run", danh từ → "the run"), rồi bỏ các tiền
+// tố thừa. Không dịch được thì dịch nguyên câu định nghĩa tiếng Anh.
+async function guessMeaningForPos(w, item){
+  let vi = null;
+  if(['n.','v.','adj.','adv.'].includes(item.pos)){
+    const hint = item.pos==='v.' ? 'to ' + w : item.pos==='n.' ? 'the ' + w : w;
+    vi = await fetchMeaningFor(hint);
+    if(vi) vi = vi.replace(/^(để|phải|cái|việc)\s+/i, '').trim();
+  }
+  if(!vi) vi = await fetchMeaningFor(item.def);
+  return vi;
+}
+
+// Gợi ý HỌ TỪ bằng quy tắc hậu tố, chỉ giữ từ CÓ THẬT trong bộ từ điển IPA
+// (~135.000 từ) — miễn phí, offline. Chỉ là gợi ý, sẽ sót vài từ bất quy tắc.
+const FAMILY_SUFFIXES = [
+  ['tion','n.'],['sion','n.'],['ion','n.'],['ment','n.'],['ness','n.'],['ity','n.'],['ance','n.'],['ence','n.'],
+  ['er','n.'],['or','n.'],['ist','n.'],['ism','n.'],['ship','n.'],['hood','n.'],['dom','n.'],['ure','n.'],
+  ['ful','adj.'],['less','adj.'],['able','adj.'],['ible','adj.'],['ive','adj.'],['al','adj.'],['ous','adj.'],
+  ['ic','adj.'],['ish','adj.'],['ent','adj.'],['ant','adj.'],['y','adj.'],
+  ['ly','adv.'],['ize','v.'],['ise','v.'],['ify','v.'],['en','v.']
+];
+function wordFamilyCandidates(word){
+  const map = ipaBigDictMap;
+  const w = (word||'').trim().toLowerCase();
+  if(!map || !/^[a-z]{3,}$/.test(w)) return null;
+  const has = (x)=> x.length >= 3 && map.has(x);
+  // 1) tìm các "gốc" khả dĩ bằng cách bỏ hậu tố khỏi từ đang nhập
+  const bases = new Set([w]);
+  for(const [suf] of FAMILY_SUFFIXES){
+    if(w.length > suf.length + 2 && w.endsWith(suf)){
+      const stem = w.slice(0, -suf.length);
+      const variants = [stem, stem + 'e', stem + 'ate', stem.replace(/i$/, 'y'), stem.replace(/s$/, 'de')];
+      if(/(.)\1$/.test(stem)) variants.push(stem.slice(0, -1));
+      variants.forEach(v=>{ if(has(v)) bases.add(v); });
+    }
+  }
+  // 2) từ mỗi gốc, thêm hậu tố và giữ lại những từ có thật
+  const found = new Map(); // word -> pos đoán theo hậu tố
+  bases.forEach(b=>{
+    if(b !== w) found.set(b, '');
+    for(const [suf, pos] of FAMILY_SUFFIXES){
+      const forms = [b + suf, b.replace(/e$/, '') + suf, b.replace(/y$/, 'i') + suf];
+      if(/[^aeiou][aeiou][^aeiouwxy]$/.test(b)) forms.push(b + b.slice(-1) + suf);
+      if(/de$/.test(b)) forms.push(b.slice(0,-2) + suf.replace(/^(ion|ive)$/, 's$1').replace(/^tion$/, 'sion'));
+      forms.forEach(f=>{
+        if(f !== w && has(f) && !found.has(f)) found.set(f, pos);
+      });
+    }
+  });
+  // vòng 2: tính từ thêm -ly thành trạng từ (decisive → decisively)
+  Array.from(found.entries()).forEach(([fw, fp])=>{
+    if(fp === 'adj.'){
+      const adv = fw.replace(/(ic)$/, '$1al') + 'ly';
+      [fw + 'ly', fw.replace(/le$/, 'ly'), adv].forEach(f=>{ if(f !== w && has(f) && !found.has(f)) found.set(f, 'adv.'); });
+    }
+  });
+  const items = Array.from(found.entries()).slice(0, 12).map(([word,pos])=>({ word, pos, ipa: map.get(word) || '' }));
+  if(!items.length) return null;
+  const root = Array.from(bases).sort((a,b)=>a.length-b.length)[0];
+  return { root, items };
+}
+
+/* ---------------- Thêm NHIỀU từ cùng lúc ---------------- */
+// Dán danh sách (mỗi dòng 1 từ/cụm) → app tự tra phiên âm, loại từ, nghĩa cho
+// từng dòng → bạn xem lại/sửa/bỏ chọn → lưu 1 lượt. Dòng dạng "word - nghĩa"
+// (hoặc "word = nghĩa") thì dùng luôn nghĩa bạn gõ, không dịch máy.
+let vocabBulkText = '';
+let vocabBulkRows = [];        // {id, word, pos, ipa, meaning, composed, dup, selected}
+let vocabBulkBusy = false;
+let vocabBulkTopic = null;
+let vocabBulkProgress = '';
+
+function parseBulkLines(text){
+  const seen = new Set();
+  const out = [];
+  String(text||'').split(/\r?\n/).forEach(raw=>{
+    const line = raw.trim();
+    if(!line) return;
+    const m = line.split(/\s+[-–—=:]\s+|\s*=\s*/);
+    const word = (m[0]||'').trim();
+    const meaning = m.slice(1).join(' - ').trim();
+    const key = word.toLowerCase();
+    if(!word || seen.has(key)) return;
+    seen.add(key);
+    out.push({ word, meaning });
+  });
+  return out;
+}
+
+async function lookupBulkEntry(entry){
+  const w = entry.word;
+  const lower = w.toLowerCase();
+  const row = { id: uid(), word: w, pos: '', ipa: '', meaning: entry.meaning || '', composed: false, dup: false, selected: true };
+  // Phiên âm: từ điển offline → ghép cụm → API dự phòng (không dùng cờ toàn cục vì chạy song song)
+  const dict = await loadIpaBigDict();
+  if(dict && dict.has(lower)) row.ipa = dict.get(lower);
+  else if(dict){
+    const comp = composeIpaFromDict(dict, lower);
+    if(comp){ row.ipa = comp; row.composed = true; }
+  }
+  if(!row.ipa){ try{ row.ipa = (await fetchIpaFor(w)) || ''; }catch(e){ /* bỏ qua */ } }
+  // Loại từ + nghĩa
+  let info = null;
+  try{ info = await fetchWordInfo(w); }catch(e){ /* bỏ qua */ }
+  if(info && info.length){
+    row.pos = info[0].pos;
+    if(!row.meaning){ try{ row.meaning = (await guessMeaningForPos(w, info[0])) || ''; }catch(e){ /* bỏ qua */ } }
+  }
+  if(!row.meaning){ try{ row.meaning = (await fetchMeaningFor(w)) || ''; }catch(e){ /* bỏ qua */ } }
+  return row;
+}
+
+function renderVocabBulk(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `<h1 class="display">Thêm nhiều từ</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+  const back = document.createElement('button');
+  back.className = 'back-link'; back.textContent = '← Quay lại';
+  back.onclick = ()=>{ vocabBulkRows = []; vocabBulkBusy = false; setView('vocab'); };
+  main.appendChild(back);
+
+  const inputStyle = 'width:100%; box-sizing:border-box; border:1px solid var(--line); background:var(--bg-elev); color:inherit; border-radius:10px; padding:8px 10px; font:inherit; font-size:14px;';
+
+  // ---- Bước 1: dán danh sách ----
+  const f = document.createElement('div');
+  f.className = 'field';
+  f.innerHTML = `<label>Danh sách từ (mỗi dòng 1 từ hoặc cụm từ)</label>`;
+  const ta = document.createElement('textarea');
+  ta.rows = 6;
+  ta.placeholder = 'ubiquitous\nice cream\nmake a decision - đưa ra quyết định';
+  ta.value = vocabBulkText;
+  ta.oninput = ()=>{ vocabBulkText = ta.value; };
+  f.appendChild(ta);
+  main.appendChild(f);
+
+  const hint = document.createElement('div');
+  hint.style.cssText = 'font-size:12px; color:var(--ink-faint); margin:-6px 0 10px;';
+  hint.textContent = 'Muốn tự đặt nghĩa thì gõ "từ - nghĩa" hoặc "từ = nghĩa"; không có thì app tự dịch.';
+  main.appendChild(hint);
+
+  // chủ đề chung cho cả lượt
+  const topicRow = document.createElement('label');
+  topicRow.className = 'select-row';
+  topicRow.innerHTML = `<span class="select-row-label">Chủ đề</span><span class="select-row-value">${vocabBulkTopic && vocabTopicById(vocabBulkTopic) ? escapeHtml(vocabTopicPath(vocabBulkTopic).map(t=>t.name).join(' › ')) : 'Chưa phân loại'}</span>`;
+  const topicSel = document.createElement('select');
+  topicSel.className = 'select-row-input';
+  const none = document.createElement('option'); none.value = ''; none.textContent = 'Chưa phân loại';
+  topicSel.appendChild(none);
+  flattenVocabTopics(null).forEach(({topic:t, depth})=>{
+    const o = document.createElement('option');
+    o.value = t.id; o.textContent = (depth>0 ? '—'.repeat(depth)+' ' : '') + t.name;
+    if(t.id===vocabBulkTopic) o.selected = true;
+    topicSel.appendChild(o);
+  });
+  topicSel.onchange = ()=>{ vocabBulkTopic = topicSel.value || null; render(); };
+  topicRow.appendChild(topicSel);
+  const topicGroup = document.createElement('div');
+  topicGroup.className = 'select-row-group';
+  topicGroup.appendChild(topicRow);
+  main.appendChild(topicGroup);
+
+  const lookupBtn = document.createElement('button');
+  lookupBtn.className = 'save-btn';
+  lookupBtn.textContent = vocabBulkBusy ? 'Đang tra…' : '🔎 Tra tất cả';
+  lookupBtn.disabled = vocabBulkBusy;
+  const progress = document.createElement('div');
+  progress.id = 'vocabBulkProgress';
+  progress.style.cssText = 'font-size:13px; color:var(--ink-faint); margin:8px 0;';
+  progress.textContent = vocabBulkProgress;
+
+  lookupBtn.onclick = async ()=>{
+    const entries = parseBulkLines(ta.value).slice(0, 60);
+    if(!entries.length){ toast('Hãy dán ít nhất 1 từ'); return; }
+    vocabBulkText = ta.value;
+    vocabBulkBusy = true; vocabBulkRows = [];
+    const existing = new Set(DATA.vocab.map(w=>w.word.trim().toLowerCase()));
+    const results = new Array(entries.length);
+    let done = 0, next = 0;
+    vocabBulkProgress = 'Đang tra 0/' + entries.length;
+    render();
+    const setProg = ()=>{
+      vocabBulkProgress = 'Đang tra ' + done + '/' + entries.length;
+      const el = document.getElementById('vocabBulkProgress');
+      if(el) el.textContent = vocabBulkProgress;
+    };
+    const worker = async ()=>{
+      while(next < entries.length){
+        const i = next++;
+        let row;
+        try{ row = await lookupBulkEntry(entries[i]); }
+        catch(e){ row = { id: uid(), word: entries[i].word, pos:'', ipa:'', meaning: entries[i].meaning||'', composed:false, dup:false, selected:true }; }
+        if(existing.has(row.word.toLowerCase())){ row.dup = true; row.selected = false; }
+        results[i] = row; done++; setProg();
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    vocabBulkRows = results.filter(Boolean);
+    vocabBulkBusy = false; vocabBulkProgress = '';
+    if(VIEW === 'vocab-bulk') render();
+  };
+  main.appendChild(lookupBtn);
+  main.appendChild(progress);
+
+  // ---- Bước 2: xem lại, sửa, bỏ chọn ----
+  if(vocabBulkRows.length){
+    const title = document.createElement('div');
+    title.className = 'section-label';
+    title.textContent = 'Xem lại trước khi lưu (bản dịch máy — nên kiểm tra)';
+    main.appendChild(title);
+
+    const counter = document.createElement('div');
+    const updateCounter = ()=>{
+      const n = vocabBulkRows.filter(r=>r.selected).length;
+      counter.textContent = 'Đã chọn ' + n + '/' + vocabBulkRows.length + ' từ';
+      saveBtn.textContent = 'Lưu ' + n + ' từ';
+      saveBtn.disabled = n === 0;
+    };
+    counter.style.cssText = 'font-size:13px; color:var(--ink-faint); margin-bottom:8px;';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'save-btn';
+
+    vocabBulkRows.forEach(r=>{
+      const card = document.createElement('div');
+      card.style.cssText = 'background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:10px 12px; margin-bottom:10px; display:flex; flex-direction:column; gap:6px;';
+      const top = document.createElement('label');
+      top.style.cssText = 'display:flex; align-items:center; gap:8px; font-size:13px;';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = r.selected;
+      cb.onchange = ()=>{ r.selected = cb.checked; updateCounter(); };
+      top.appendChild(cb);
+      const wordIn = document.createElement('input');
+      wordIn.type = 'text'; wordIn.value = r.word; wordIn.style.cssText = inputStyle + 'font-weight:600;';
+      wordIn.oninput = ()=>{ r.word = wordIn.value; };
+      top.appendChild(wordIn);
+      card.appendChild(top);
+      if(r.dup){
+        const d = document.createElement('div');
+        d.style.cssText = 'font-size:12px; color:var(--ink-faint);';
+        d.textContent = 'Từ này đã có trong kho — mặc định không lưu lại.';
+        card.appendChild(d);
+      }
+      const line2 = document.createElement('div');
+      line2.style.cssText = 'display:flex; gap:6px;';
+      const posIn = document.createElement('input');
+      posIn.type = 'text'; posIn.placeholder = 'loại từ'; posIn.value = r.pos; posIn.style.cssText = inputStyle + 'width:80px; flex:none;';
+      posIn.oninput = ()=>{ r.pos = posIn.value; };
+      const ipaIn = document.createElement('input');
+      ipaIn.type = 'text'; ipaIn.placeholder = 'phiên âm'; ipaIn.value = r.ipa; ipaIn.style.cssText = inputStyle;
+      ipaIn.oninput = ()=>{ r.ipa = ipaIn.value; };
+      line2.appendChild(posIn); line2.appendChild(ipaIn);
+      card.appendChild(line2);
+      if(r.composed){
+        const c = document.createElement('div');
+        c.style.cssText = 'font-size:12px; color:var(--ink-faint);';
+        c.textContent = 'Phiên âm ghép tự động — kiểm tra lại trọng âm.';
+        card.appendChild(c);
+      }
+      const meaningIn = document.createElement('input');
+      meaningIn.type = 'text'; meaningIn.placeholder = 'nghĩa (bắt buộc)'; meaningIn.value = r.meaning; meaningIn.style.cssText = inputStyle;
+      meaningIn.oninput = ()=>{ r.meaning = meaningIn.value; };
+      card.appendChild(meaningIn);
+      main.appendChild(card);
+    });
+    main.appendChild(counter);
+
+    saveBtn.onclick = async ()=>{
+      const picked = vocabBulkRows.filter(r=>r.selected);
+      const missing = picked.filter(r=>!r.word.trim() || !r.meaning.trim());
+      if(missing.length){ toast('Còn ' + missing.length + ' từ chưa có nghĩa — hãy điền hoặc bỏ chọn'); return; }
+      const now = Date.now();
+      picked.forEach(r=>{
+        DATA.vocab.push({id:uid(), word:r.word.trim(), meaning:r.meaning.trim(), ipa:r.ipa.trim(), pos:r.pos.trim(), example:'', topicId:vocabBulkTopic || null, familyId:null, collocations:[], ease:2.5, interval:0, reps:0, due:now});
+      });
+      toast('Đã thêm ' + picked.length + ' từ vựng ✓');
+      vocabBulkRows = []; vocabBulkText = '';
+      await saveData();
+      setView('vocab');
+    };
+    main.appendChild(saveBtn);
+    updateCounter();
+  }
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
 function renderVocabAdd(){
   const wrap = document.createElement('div');
   wrap.style.display = 'contents';
@@ -9733,13 +10081,6 @@ function renderVocabAdd(){
     addVocabCollocations = editing ? (editing.collocations||[]).map(c=>({...c})) : [];
     vocabAddLoadedFor = vocabAddKey;
   }
-  // Bản nháp chữ: chỉ reset khi chuyển sang sửa từ khác / vừa chuyển giữa
-  // sửa <-> thêm mới; còn lại giữ nguyên để render() lại không mất chữ.
-  if(addVocabDraft.forId !== vocabAddKey){
-    addVocabDraft = editing
-      ? { forId:vocabAddKey, word:editing.word||'', pos:editing.pos||'', ipa:editing.ipa||'', meaning:editing.meaning||'', example:editing.example||'' }
-      : { forId:null, word:'', pos:'', ipa:'', meaning:'', example:'' };
-  }
 
   const header = document.createElement('header');
   header.className = 'topbar';
@@ -9762,14 +10103,13 @@ function renderVocabAdd(){
     el.id = id;
     el.placeholder = placeholder || '';
     el.value = value || '';
-    el.addEventListener('input', syncVocabDraftFromDom);
     f.appendChild(el);
     main.appendChild(f);
     return el;
   }
 
-  const wordEl = field('Từ (tiếng Anh)', 'vocabWordInput', 'Ví dụ: ubiquitous', addVocabDraft.word);
-  const posEl = field('Loại từ (tuỳ chọn)', 'vocabPosInput', 'n. / v. / adj. / adv. ...', addVocabDraft.pos);
+  const wordEl = field('Từ (tiếng Anh)', 'vocabWordInput', 'Ví dụ: ubiquitous', editing ? editing.word : '');
+  const posEl = field('Loại từ (tuỳ chọn)', 'vocabPosInput', 'n. / v. / adj. / adv. ...', editing ? editing.pos : '');
   const posChips = document.createElement('div');
   posChips.style.cssText = 'display:flex; gap:8px; margin:-10px 0 4px;';
   POS_QUICK_PICKS.forEach(p=>{
@@ -9779,7 +10119,6 @@ function renderVocabAdd(){
     chip.textContent = p;
     chip.onclick = ()=>{
       posEl.value = p;
-      syncVocabDraftFromDom();
       posChips.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
       chip.classList.add('active');
     };
@@ -9867,6 +10206,56 @@ function renderVocabAdd(){
   familyGroup.appendChild(familyRow);
   main.appendChild(familyGroup);
 
+  // ---- Gợi ý họ từ tự động (quy tắc hậu tố + lọc theo từ điển, offline) ----
+  const famSuggestRow = document.createElement('div');
+  famSuggestRow.style.cssText = 'margin:-6px 0 4px;';
+  const famSuggestBtn = document.createElement('button');
+  famSuggestBtn.type = 'button';
+  famSuggestBtn.className = 'chip';
+  famSuggestBtn.textContent = '🧬 Gợi ý họ từ';
+  const famSuggestPanel = document.createElement('div');
+  famSuggestPanel.style.cssText = 'display:none; background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin:8px 0 4px; font-size:13px;';
+  famSuggestBtn.onclick = async ()=>{
+    const w = wordEl.value.trim();
+    if(!w){ toast('Hãy nhập từ tiếng Anh trước'); return; }
+    famSuggestBtn.disabled = true;
+    famSuggestBtn.textContent = 'Đang tìm…';
+    await loadIpaBigDict();
+    const res = wordFamilyCandidates(w);
+    famSuggestBtn.disabled = false;
+    famSuggestBtn.textContent = '🧬 Gợi ý họ từ';
+    if(!res){
+      famSuggestPanel.style.display = 'none';
+      toast('Không tìm thấy từ cùng họ trong từ điển');
+      return;
+    }
+    famSuggestPanel.style.display = 'block';
+    famSuggestPanel.innerHTML = '<div style="color:var(--ink-faint); margin-bottom:6px;">Các từ có thể cùng họ (đoán theo hậu tố, hãy tự kiểm tra):</div>' +
+      res.items.map(it=>`<div style="padding:3px 0;"><b>${escapeHtml(it.word)}</b>${it.pos ? ` <span style="color:var(--ink-faint);">(${escapeHtml(it.pos)}?)</span>` : ''} <span style="color:var(--ink-faint);">${escapeHtml(it.ipa)}</span></div>`).join('');
+    const mkBtn = document.createElement('button');
+    mkBtn.type = 'button'; mkBtn.className = 'chip'; mkBtn.style.marginTop = '8px';
+    mkBtn.textContent = `Tạo/chọn họ từ “${res.root}”`;
+    mkBtn.onclick = async ()=>{
+      let f = DATA.wordFamilies.find(x=>x.name.toLowerCase() === res.root.toLowerCase());
+      if(!f){ f = { id: uid(), name: res.root }; DATA.wordFamilies.push(f); await saveData(); }
+      addVocabFamilyChoice = f.id;
+      // Cập nhật ô chọn tại chỗ (không render() lại để khỏi mất chữ đang gõ dở)
+      if(![...familySelect.options].some(o=>o.value===f.id)){
+        const o = document.createElement('option');
+        o.value = f.id; o.textContent = f.name;
+        familySelect.insertBefore(o, newFamilyOpt);
+      }
+      familySelect.value = f.id;
+      const valSpan = familyRow.querySelector('.select-row-value');
+      if(valSpan) valSpan.textContent = f.name;
+      toast('Đã chọn họ từ “' + f.name + '”');
+    };
+    famSuggestPanel.appendChild(mkBtn);
+  };
+  famSuggestRow.appendChild(famSuggestBtn);
+  main.appendChild(famSuggestRow);
+  main.appendChild(famSuggestPanel);
+
   // Xem trước các từ khác đã có trong họ này ngay khi chọn — để biết mình
   // đang gom đúng nhóm, không cần lưu rồi mới xem lại.
   if(addVocabFamilyChoice){
@@ -9882,7 +10271,7 @@ function renderVocabAdd(){
     main.appendChild(preview);
   }
 
-  const ipaEl = field('Phiên âm IPA (tuỳ chọn)', 'vocabIpaInput', 'Ví dụ: /juːˈbɪkwɪtəs/', addVocabDraft.ipa);
+  const ipaEl = field('Phiên âm IPA (tuỳ chọn)', 'vocabIpaInput', 'Ví dụ: /juːˈbɪkwɪtəs/', editing ? editing.ipa : '');
 
   // Tự động điền phiên âm: khi rời khỏi ô "Từ" mà ô IPA đang trống, tự tra
   // và điền vào — không ghi đè nếu người dùng đã tự gõ (hoặc đã có sẵn lúc
@@ -9894,7 +10283,7 @@ function renderVocabAdd(){
     const myToken = ++ipaFetchToken;
     const ipa = await fetchIpaFor(w);
     if(myToken !== ipaFetchToken) return; // đã đổi từ khác trong lúc chờ
-    if(ipa && !ipaEl.value.trim()){ ipaEl.value = ipa; syncVocabDraftFromDom(); }
+    if(ipa && !ipaEl.value.trim()){ ipaEl.value = ipa; if(lastIpaComposed) toast('Phiên âm được ghép tự động từ các từ thành phần — nên kiểm tra lại trọng âm'); }
   });
 
   const ipaAutoRow = document.createElement('div');
@@ -9913,14 +10302,14 @@ function renderVocabAdd(){
     if(myToken === ipaFetchToken){
       ipaAutoBtn.disabled = false;
       ipaAutoBtn.textContent = '🔎 Tự động điền phiên âm';
-      if(ipa){ ipaEl.value = ipa; syncVocabDraftFromDom(); }
+      if(ipa){ ipaEl.value = ipa; if(lastIpaComposed) toast('Phiên âm được ghép tự động từ các từ thành phần — nên kiểm tra lại trọng âm'); }
       else toast('Không tra được phiên âm cho từ này');
     }
   };
   ipaAutoRow.appendChild(ipaAutoBtn);
   main.appendChild(ipaAutoRow);
 
-  const meaningEl = field('Nghĩa', 'vocabMeaningInput', 'Ví dụ: có mặt khắp nơi', addVocabDraft.meaning, true);
+  const meaningEl = field('Nghĩa', 'vocabMeaningInput', 'Ví dụ: có mặt khắp nơi', editing ? editing.meaning : '', true);
 
   // Tự động điền nghĩa tiếng Việt: dịch từ/cụm tiếng Anh sang tiếng Việt.
   // Đây là bản dịch máy nên chỉ mang tính gợi ý — người dùng nên xem lại và
@@ -9942,14 +10331,78 @@ function renderVocabAdd(){
     if(myToken === meaningFetchToken){
       meaningAutoBtn.disabled = false;
       meaningAutoBtn.textContent = '🌐 Tự động điền nghĩa';
-      if(meaning){ meaningEl.value = meaning; syncVocabDraftFromDom(); }
+      if(meaning) meaningEl.value = meaning;
       else toast('Không dịch được từ này, hãy tự nhập nghĩa nhé');
     }
   };
   meaningAutoRow.appendChild(meaningAutoBtn);
   main.appendChild(meaningAutoRow);
 
-  field('Câu ví dụ (tuỳ chọn)', 'vocabExampleInput', 'Ví dụ: Smartphones have become ubiquitous.', addVocabDraft.example, true);
+  // ---- Tra loại từ + nghĩa theo TỪNG loại từ (n./v./adj./...) ----
+  const posInfoRow = document.createElement('div');
+  posInfoRow.style.cssText = 'margin:-6px 0 4px;';
+  const posInfoBtn = document.createElement('button');
+  posInfoBtn.type = 'button';
+  posInfoBtn.className = 'chip';
+  const POS_INFO_LABEL = '📚 Tra loại từ & nghĩa theo loại từ';
+  posInfoBtn.textContent = POS_INFO_LABEL;
+  const posInfoPanel = document.createElement('div');
+  posInfoPanel.style.cssText = 'display:none; background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin:8px 0 4px; font-size:13px;';
+  let posInfoToken = 0;
+  posInfoBtn.onclick = async ()=>{
+    const w = wordEl.value.trim();
+    if(!w){ toast('Hãy nhập từ tiếng Anh trước'); return; }
+    const myToken = ++posInfoToken;
+    posInfoBtn.disabled = true;
+    posInfoBtn.textContent = 'Đang tra…';
+    const items = await fetchWordInfo(w);
+    let rows = [];
+    if(items && items.length){
+      rows = await Promise.all(items.map(async it => ({ ...it, vi: await guessMeaningForPos(w, it) })));
+    }
+    if(myToken !== posInfoToken) return;
+    posInfoBtn.disabled = false;
+    posInfoBtn.textContent = POS_INFO_LABEL;
+    if(!rows.length){
+      posInfoPanel.style.display = 'none';
+      toast('Không tra được loại từ cho từ này — hãy tự nhập nhé');
+      return;
+    }
+    posInfoPanel.style.display = 'block';
+    posInfoPanel.innerHTML = '<div style="color:var(--ink-faint); margin-bottom:8px;">Chọn nghĩa đúng với loại từ bạn cần (bản dịch máy — nên xem lại):</div>';
+    const exampleEl = document.getElementById('vocabExampleInput');
+    rows.forEach(r=>{
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:8px 0; border-top:1px solid var(--line);';
+      row.innerHTML = `<div><b>${escapeHtml(r.pos)}</b> ${r.vi ? escapeHtml(r.vi) : '<span style="color:var(--ink-faint);">(chưa dịch được)</span>'}</div>
+        <div style="color:var(--ink-faint); font-size:12px; margin:2px 0 6px;">${escapeHtml(r.def)}</div>`;
+      const useBtn = document.createElement('button');
+      useBtn.type = 'button'; useBtn.className = 'chip'; useBtn.textContent = 'Dùng nghĩa này';
+      useBtn.onclick = ()=>{
+        posEl.value = r.pos;
+        if(r.vi) meaningEl.value = r.vi;
+        if(exampleEl && !exampleEl.value.trim() && r.example) exampleEl.value = r.example;
+        posChips.querySelectorAll('.chip').forEach(c=>c.classList.toggle('active', c.textContent===r.pos));
+      };
+      row.appendChild(useBtn);
+      posInfoPanel.appendChild(row);
+    });
+    if(rows.length > 1){
+      const allBtn = document.createElement('button');
+      allBtn.type = 'button'; allBtn.className = 'chip'; allBtn.style.marginTop = '8px';
+      allBtn.textContent = 'Ghép tất cả loại từ vào 1 thẻ';
+      allBtn.onclick = ()=>{
+        posEl.value = rows.map(r=>r.pos).join('/');
+        meaningEl.value = rows.filter(r=>r.vi).map(r=>`(${r.pos}) ${r.vi}`).join('\n');
+      };
+      posInfoPanel.appendChild(allBtn);
+    }
+  };
+  posInfoRow.appendChild(posInfoBtn);
+  main.appendChild(posInfoRow);
+  main.appendChild(posInfoPanel);
+
+  field('Câu ví dụ (tuỳ chọn)', 'vocabExampleInput', 'Ví dụ: Smartphones have become ubiquitous.', editing ? editing.example : '', true);
 
   // -- Cụm từ hay đi kèm (collocation) — vd: make a decision, heavy rain...
   // Sát với dạng bài đề thi THPT hay kiểm tra collocation. Có gợi ý dựng
@@ -10068,26 +10521,15 @@ function renderVocabAdd(){
     if(editing){
       Object.assign(editing, {word, meaning, ipa, pos, example, topicId, familyId, collocations});
       toast('Đã lưu thay đổi ✓');
-      clearVocabDraft();
-      editVocabId = null;
-      addVocabCollocations = [];
-      vocabAddLoadedFor = undefined;
-      await saveData();
-      setView('vocab');
-      return;
+    } else {
+      DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
+      toast('Đã thêm từ vựng ✓');
     }
-    DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
-    toast('Đã thêm "' + word + '" ✓');
-    // Thêm từ MỚI: ở lại màn này, xoá trắng các ô (giữ nguyên Chủ đề/Họ từ để
-    // thêm liền nhiều từ cùng nhóm), đưa con trỏ về ô "Từ" để gõ từ tiếp theo.
-    clearVocabDraft();
+    editVocabId = null;
     addVocabCollocations = [];
-    vocabAddLoadedFor = null;
+    vocabAddLoadedFor = undefined;
     await saveData();
-    render();
-    window.scrollTo(0,0);
-    const mainEl = $app.querySelector('main'); if(mainEl) mainEl.scrollTop = 0;
-    const wEl = document.getElementById('vocabWordInput'); if(wEl) wEl.focus();
+    setView('vocab');
   };
   main.appendChild(saveBtn);
 
