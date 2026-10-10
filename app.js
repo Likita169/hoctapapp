@@ -398,9 +398,9 @@ function reviewsToday(){
 // Dự báo số thẻ đến hạn ôn mỗi ngày trong `days` ngày tới (mặc định 30).
 // Ngày đầu tiên (hôm nay) gộp cả thẻ đã quá hạn từ trước, để khớp với số ở
 // ô "Đến hạn hôm nay"; các ngày sau chỉ tính thẻ rơi đúng vào ngày đó.
-function forecastDueByDay(days, subjectId){
+function forecastDueByDay(days, subjectId, items){
   days = days || 30;
-  const cards = subjectId ? subjectCards(subjectId) : DATA.cards;
+  const cards = items || (subjectId ? subjectCards(subjectId) : DATA.cards);
   const startOfToday = new Date();
   startOfToday.setHours(0,0,0,0);
   const startMs = startOfToday.getTime();
@@ -833,7 +833,7 @@ function render(){
               vocabTopicModalOpen = true; render();
             } },
           { icon:'📝', label:'Tạo từ', onClick: ()=>{
-              editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; vocabAddDraft = null; setView('vocab-add');
+              editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; resetVocabAddDraft(); setView('vocab-add');
             } },
           { icon:'📥', label:'Thêm nhiều từ cùng lúc', onClick: ()=>{
               vocabBulkRows = []; vocabBulkBusy = false; setView('vocab-bulk');
@@ -2553,9 +2553,10 @@ function renderManageList(list){
 }
 
 /* ---------------- STATS: biểu đồ dự báo ôn tập ---------------- */
-function renderForecastChart(subjectId){
+function renderForecastChart(subjectId, items, unit){
+  unit = unit || 'thẻ';
   const FORECAST_DAYS = 30;
-  const buckets = forecastDueByDay(FORECAST_DAYS, subjectId);
+  const buckets = forecastDueByDay(FORECAST_DAYS, subjectId, items);
   const max = Math.max(1, ...buckets.map(b=>b.count));
   const next7 = buckets.slice(0,7).reduce((s,b)=>s+b.count,0);
   const next30 = buckets.reduce((s,b)=>s+b.count,0);
@@ -2566,7 +2567,7 @@ function renderForecastChart(subjectId){
 
   const summary = document.createElement('div');
   summary.className = 'forecast-summary';
-  summary.innerHTML = `<b>${next7}</b> thẻ trong 7 ngày tới · <b>${next30}</b> thẻ trong 30 ngày tới`;
+  summary.innerHTML = `<b>${next7}</b> ${unit} trong 7 ngày tới · <b>${next30}</b> ${unit} trong 30 ngày tới`;
   wrap.appendChild(summary);
 
   const chart = document.createElement('div');
@@ -2579,7 +2580,7 @@ function renderForecastChart(subjectId){
     const pct = Math.max(4, Math.round((b.count / max) * 100));
     const col = document.createElement('div');
     col.className = 'forecast-col' + (isToday ? ' today' : '');
-    col.title = `${weekdayLabelVi(b.date)} ${b.date.getDate()}/${b.date.getMonth()+1}: ${b.count} thẻ`;
+    col.title = `${weekdayLabelVi(b.date)} ${b.date.getDate()}/${b.date.getMonth()+1}: ${b.count} ${unit}`;
     col.innerHTML = `
       <div class="forecast-count">${b.count>0 ? b.count : ''}</div>
       <div class="forecast-track"><div class="forecast-bar" style="height:${pct}%"></div></div>
@@ -7541,7 +7542,7 @@ function applyUpdate(worker){
   // đang gõ trong Ô NÀO — người dùng bấm sang ô khác (Mặt trước -> Mặt sau)
   // vẫn tính là blur nhưng họ CHƯA soạn xong thẻ. Đợi tới khi lưu xong/huỷ
   // (addCardDraft rỗng) hoặc rời màn này hẳn rồi mới khởi động lại.
-  const isComposingCard = VIEW === 'add' && addCardDraftHasContent();
+  const isComposingCard = (VIEW === 'add' && addCardDraftHasContent()) || VIEW === 'vocab-add' || VIEW === 'vocab-bulk';
   if(isTyping || isComposingCard){
     const retry = ()=> applyUpdate(worker);
     if(isTyping) active.addEventListener('blur', retry, {once:true});
@@ -7575,7 +7576,12 @@ function initServiceWorkerUpdates(){
       if(document.visibilityState === 'visible') reg.update();
     });
   }).catch(()=>{ /* ignore, e.g. running from file:// */ });
-  navigator.serviceWorker.addEventListener('controllerchange', ()=> hardRestart());
+  navigator.serviceWorker.addEventListener('controllerchange', ()=>{
+    // Đang soạn từ vựng → chờ tới khi rời màn đó rồi mới khởi động lại.
+    const busy = ()=> VIEW === 'vocab-add' || VIEW === 'vocab-bulk';
+    if(!busy()){ hardRestart(); return; }
+    const t = setInterval(()=>{ if(!busy()){ clearInterval(t); hardRestart(); } }, 3000);
+  });
 }
 
 function applyTheme(){
@@ -7791,8 +7797,11 @@ function renderMatchGame(){
     if(addCardDraft.type) addCardType = addCardDraft.type;
     if(addCardDraft.subjectId) addSubjectChoice = addCardDraft.subjectId;
   }
+  let _restoringVocab = false;
+  if(!_restoringDraft) _restoringVocab = restoreVocabAddDraft();
   render();
   if(_restoringDraft) toast('Đã khôi phục thẻ bạn đang soạn dở');
+  else if(_restoringVocab) toast('Đã khôi phục từ vựng bạn đang soạn dở');
   initServiceWorkerUpdates();
   preloadIpaBigDict();
   silentInitialSync();
@@ -8896,6 +8905,40 @@ let addVocabCollocations = [];     // các cụm từ đi kèm đang soạn ở 
 // lần render() và đổ lại vào ô sau khi dựng — kể cả giá trị do nút "tự động
 // điền" gán bằng code.
 let vocabAddDraft = null; // {key, word, pos, ipa, meaning, example}
+const VOCAB_ADD_DRAFT_KEY = 'srs_vocab_add_draft';
+function persistVocabAddDraft(){
+  try{
+    syncVocabAddDraft();
+    const d = vocabAddDraft;
+    if(VIEW==='vocab-add' && d && ((d.word||'').trim() || (d.meaning||'').trim() || (d.ipa||'').trim() || (d.example||'').trim())){
+      localStorage.setItem(VOCAB_ADD_DRAFT_KEY, JSON.stringify({ draft: d, topic: addVocabTopicChoice||null, family: addVocabFamilyChoice||null, collocations: addVocabCollocations||[] }));
+    }
+  }catch(e){ /* bỏ qua */ }
+}
+function resetVocabAddDraft(){
+  vocabAddDraft = null;
+  try{ localStorage.removeItem(VOCAB_ADD_DRAFT_KEY); }catch(e){ /* bỏ qua */ }
+}
+// Gọi lúc khởi động app: nếu lần trước đang soạn dở 1 từ mà app bị tắt/khởi động
+// lại (cập nhật phiên bản, hệ điều hành thu hồi bộ nhớ...) → mở lại đúng màn đó.
+function restoreVocabAddDraft(){
+  try{
+    const raw = localStorage.getItem(VOCAB_ADD_DRAFT_KEY);
+    if(!raw) return false;
+    const saved = JSON.parse(raw);
+    if(!saved || !saved.draft) return false;
+    editVocabId = (saved.draft.key && vocabById(saved.draft.key)) ? saved.draft.key : null;
+    vocabAddDraft = Object.assign({}, saved.draft, { key: editVocabId });
+    addVocabTopicChoice = saved.topic || null;
+    addVocabFamilyChoice = saved.family || null;
+    addVocabCollocations = Array.isArray(saved.collocations) ? saved.collocations : [];
+    vocabAddLoadedFor = editVocabId;
+    VIEW = 'vocab-add';
+    return true;
+  }catch(e){ return false; }
+}
+window.addEventListener('pagehide', persistVocabAddDraft);
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='hidden') persistVocabAddDraft(); });
 function syncVocabAddDraft(){
   if(!vocabAddDraft) return;
   const ids = { word:'vocabWordInput', pos:'vocabPosInput', ipa:'vocabIpaInput', meaning:'vocabMeaningInput', example:'vocabExampleInput' };
@@ -9303,6 +9346,21 @@ function renderVocabHome(){
   stressEntry.appendChild(stressBtn);
   main.appendChild(stressEntry);
 
+  // Dự báo số từ đến hạn ôn mỗi ngày (giống phần Dự báo ôn tập của thẻ thường).
+  // Đang lọc theo chủ đề thì chỉ tính các từ thuộc chủ đề đó (kể cả chủ đề con).
+  if(DATA.vocab.length > 0){
+    const forecastLabel = document.createElement('div');
+    forecastLabel.className = 'section-label';
+    forecastLabel.textContent = 'Dự báo ôn tập từ vựng';
+    main.appendChild(forecastLabel);
+    let forecastItems = DATA.vocab;
+    if(vocabTopicFilter && vocabTopicById(vocabTopicFilter)){
+      const ids = new Set(vocabTopicSubtreeIds(vocabTopicFilter));
+      forecastItems = DATA.vocab.filter(w => w.topicId && ids.has(w.topicId));
+    }
+    main.appendChild(renderForecastChart(null, forecastItems, 'từ'));
+  }
+
   const label = document.createElement('div');
   label.className = 'section-label';
   label.textContent = `Từ vựng đã lưu (${DATA.vocab.length})`;
@@ -9515,7 +9573,7 @@ function renderVocabList(list){
     `;
     item.querySelector('.vocab-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(w.word); };
     item.querySelector('.mi-del').onclick = (e)=>{ e.stopPropagation(); deleteVocabId = w.id; render(); };
-    item.onclick = ()=>{ editVocabId = w.id; vocabAddDraft = null; setView('vocab-add'); };
+    item.onclick = ()=>{ editVocabId = w.id; resetVocabAddDraft(); setView('vocab-add'); };
     list.appendChild(item);
   });
 }
@@ -10114,10 +10172,12 @@ function renderVocabAdd(){
   wrap.appendChild(header);
 
   const main = document.createElement('main');
+  let _draftTimer = null;
+  main.addEventListener('input', ()=>{ clearTimeout(_draftTimer); _draftTimer = setTimeout(persistVocabAddDraft, 500); });
 
   const back = document.createElement('button');
   back.className = 'back-link'; back.textContent = '← Quay lại';
-  back.onclick = ()=>{ editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; vocabAddDraft = null; setView('vocab'); };
+  back.onclick = ()=>{ editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; resetVocabAddDraft(); setView('vocab'); };
   main.appendChild(back);
 
   function field(labelText, id, placeholder, value, isTextarea){
@@ -10364,13 +10424,18 @@ function renderVocabAdd(){
   meaningAutoRow.appendChild(meaningAutoBtn);
   main.appendChild(meaningAutoRow);
 
-  // Tự động dịch: rời khỏi ô "Từ" mà ô Nghĩa còn trống → tự tra loại từ + dịch
-  // nghĩa (theo loại từ đầu tiên) và điền vào. Không ghi đè nếu bạn đã tự gõ,
-  // kể cả khi bạn gõ trong lúc app đang tra.
+  // Tự động dịch: tự tra loại từ + dịch nghĩa khi bạn gõ xong từ (ngừng gõ ~0,7
+  // giây, hoặc rời ô "Từ"). Chỉ điền khi ô Nghĩa/Loại từ còn trống HOẶC vẫn đang
+  // là giá trị app tự điền lần trước (nên đổi sang từ khác thì nghĩa cũ được
+  // thay mới); nếu bạn đã tự gõ/sửa thì không ghi đè.
   let autoMeaningToken = 0;
-  wordEl.addEventListener('blur', async ()=>{
+  const lastAuto = { word: '', meaning: '', pos: '' };
+  async function autoFillMeaningNow(userInitiated){
     const w = wordEl.value.trim();
-    if(!w || meaningEl.value.trim()) return;
+    if(w.length < 2) return;
+    const meaningFree = !meaningEl.value.trim() || meaningEl.value === lastAuto.meaning;
+    if(!meaningFree) return;
+    if(w.toLowerCase() === lastAuto.word && meaningEl.value === lastAuto.meaning) return;
     const myToken = ++autoMeaningToken;
     const oldPlaceholder = meaningEl.placeholder;
     meaningEl.placeholder = 'Đang dịch…';
@@ -10382,17 +10447,42 @@ function renderVocabAdd(){
         meaning = (await guessMeaningForPos(w, info[0])) || '';
       }
       if(!meaning) meaning = (await fetchMeaningFor(w)) || '';
-    }catch(e){ /* bỏ qua, để bạn tự nhập */ }
+    }catch(e){ /* xử lý bên dưới */ }
     if(myToken !== autoMeaningToken) return;
     meaningEl.placeholder = oldPlaceholder;
     if(wordEl.value.trim() !== w) return; // đã đổi sang từ khác
-    if(meaning && !meaningEl.value.trim()) meaningEl.value = meaning;
-    if(pos && !posEl.value.trim()){
+    if(!meaning){
+      toast('Không tự dịch được — kiểm tra mạng rồi bấm 🌐 Tự động điền nghĩa');
+      return;
+    }
+    if(!meaningEl.value.trim() || meaningEl.value === lastAuto.meaning){
+      meaningEl.value = meaning;
+      lastAuto.meaning = meaning;
+    }
+    if(pos && (!posEl.value.trim() || posEl.value === lastAuto.pos)){
       posEl.value = pos;
+      lastAuto.pos = pos;
       posChips.querySelectorAll('.chip').forEach(c=>c.classList.toggle('active', c.textContent===pos));
     }
+    lastAuto.word = w.toLowerCase();
     syncVocabAddDraft();
+    persistVocabAddDraft();
+  }
+  let autoMeaningTimer = null;
+  wordEl.addEventListener('input', ()=>{
+    clearTimeout(autoMeaningTimer);
+    autoMeaningTimer = setTimeout(async ()=>{
+      autoFillMeaningNow(false);
+      // phiên âm cũng tự điền luôn khi ngừng gõ (không đợi rời ô)
+      const w = wordEl.value.trim();
+      if(w.length >= 2 && !ipaEl.value.trim()){
+        const ipa = await fetchIpaFor(w);
+        if(ipa && wordEl.value.trim() === w && !ipaEl.value.trim()){ ipaEl.value = ipa; syncVocabAddDraft(); persistVocabAddDraft(); }
+      }
+    }, 700);
   });
+  wordEl.addEventListener('blur', ()=>{ clearTimeout(autoMeaningTimer); autoFillMeaningNow(true); });
+  wordEl.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); wordEl.blur(); } });
 
   // ---- Tra loại từ + nghĩa theo TỪNG loại từ (n./v./adj./...) ----
   const posInfoRow = document.createElement('div');
@@ -10584,7 +10674,7 @@ function renderVocabAdd(){
     editVocabId = null;
     addVocabCollocations = [];
     vocabAddLoadedFor = undefined;
-    vocabAddDraft = null;
+    resetVocabAddDraft();
     await saveData();
     setView('vocab');
   };
