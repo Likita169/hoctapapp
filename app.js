@@ -46,7 +46,7 @@ const PUSH_SERVER_URL = 'https://on-tap-push.nguyenngochuy8816.workers.dev';
 // (xem mục "Tài khoản & đồng bộ" trong HUONG-DAN.md) — thay bằng URL thật
 // sau khi deploy worker trong thư mục sync-server/
 const SYNC_SERVER_URL = 'https://on-tap-sync.nguyenngochuy8816.workers.dev/';
-const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true };
+const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true, vocabNewPerDay: 20 };
 // Streak + XP + huy hiệu — tiến trình học tập lâu dài, tách riêng khỏi từng
 // thẻ để không ảnh hưởng thuật toán ôn tập ngắt quãng ở trên.
 const DEFAULT_PROGRESS = {
@@ -3119,6 +3119,25 @@ function renderSettings(){
   };
   main.appendChild(speakRow);
 
+  const limitOpts = [10,20,30,50,100,100000];
+  const curLimit = vocabNewLimit();
+  const limitRow = document.createElement('div');
+  limitRow.className='toggle-row';
+  limitRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">🆕 Số từ mới mỗi ngày</div>
+      <div class="tr-sub">Từ chưa học được mở dần theo số này, tránh hàng nghìn từ đến hạn cùng lúc.</div>
+    </div>
+    <select class="vocab-limit-select">
+      ${limitOpts.map(n=>`<option value="${n}" ${n===curLimit?'selected':''}>${n>=100000?'Không giới hạn':n}</option>`).join('')}
+    </select>
+  `;
+  limitRow.querySelector('select').onchange = async (e)=>{
+    DATA.settings.vocabNewPerDay = Number(e.target.value);
+    await saveData();
+  };
+  main.appendChild(limitRow);
+
   const versionTag = document.createElement('div');
   versionTag.className='mono';
   versionTag.style.textAlign = 'center';
@@ -3237,7 +3256,7 @@ async function afterLogin(suffix){
   }
   try{
     const remote = await fetchSync();
-    const localHasContent = DATA.cards.length>0 || DATA.subjects.length>0;
+    const localHasContent = DATA.cards.length>0 || DATA.subjects.length>0 || DATA.vocab.length>0;
     const remoteHasContent = !!(remote && remote.data);
     if(remoteHasContent && localHasContent){
       // Data exists on both sides — don't silently pick one, ask the person.
@@ -3262,15 +3281,38 @@ async function fetchSync(){
   return await res.json(); // {data, updatedAt}
 }
 
-function applyRemoteData(remote){
+// Khi kéo dữ liệu máy chủ về mà bản trên máy này có từ/thẻ vừa được ôn MỚI HƠN
+// (lastReview lớn hơn) thì giữ lại tiến độ ôn của máy này, thay vì để bản cũ
+// trên server ghi đè làm "mất" những gì vừa học.
+function mergeNewerLocalProgress(parsed){
+  let kept = false;
+  ['vocab','cards'].forEach(key=>{
+    const remoteArr = parsed[key], localArr = DATA[key];
+    if(!Array.isArray(remoteArr) || !Array.isArray(localArr)) return;
+    const byId = new Map(localArr.map(x=>[x.id, x]));
+    remoteArr.forEach(rw=>{
+      const lw = byId.get(rw.id);
+      if(lw && (lw.lastReview||0) > (rw.lastReview||0)){
+        ['ease','interval','reps','due','lastReview','firstSeen'].forEach(k=>{ if(lw[k]!==undefined) rw[k] = lw[k]; });
+        kept = true;
+      }
+    });
+  });
+  return kept;
+}
+
+function applyRemoteData(remote, mergeLocal){
   try{
     const parsed = JSON.parse(remote.data);
     parsed.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings || {});
     parsed.updatedAt = remote.updatedAt || Date.now();
+    const keptLocal = mergeLocal ? mergeNewerLocalProgress(parsed) : false;
     DATA = parsed;
     normalizeSubjects();
     normalizeProgress();
-    idbSet(STORE_KEY, JSON.stringify(DATA)); // write straight to disk, skip re-triggering a push
+    normalizeVocab();
+    if(keptLocal) saveData(); // có tiến độ máy này mới hơn → đẩy lại lên server
+    else idbSet(STORE_KEY, JSON.stringify(DATA)); // write straight to disk, skip re-triggering a push
   }catch(e){ toast('Lỗi khi đọc dữ liệu từ máy chủ'); }
 }
 
@@ -3296,7 +3338,7 @@ async function pushSync(force){
       // Server has a newer copy than we started from — pull it instead of
       // clobbering someone else's edits from another device.
       const remote = await fetchSync();
-      applyRemoteData(remote);
+      applyRemoteData(remote, true);
       syncStatus = 'synced';
       render();
     } else if(body.ok){
@@ -3314,7 +3356,7 @@ async function manualSync(){
   try{
     const remote = await fetchSync();
     if(remote && remote.data && remote.updatedAt > (DATA.updatedAt||0)){
-      applyRemoteData(remote);
+      applyRemoteData(remote, true);
       toast('Đã tải dữ liệu mới nhất ✓');
     } else {
       await pushSync(true);
@@ -3333,7 +3375,7 @@ async function silentInitialSync(){
   try{
     const remote = await fetchSync();
     if(remote && remote.data && remote.updatedAt > (DATA.updatedAt||0)){
-      applyRemoteData(remote);
+      applyRemoteData(remote, true);
       syncStatus = 'synced';
       renderUnlessTyping();
     } else {
@@ -8621,9 +8663,29 @@ function normalizeVocab(){
   // lưu từ trước khi có chủ đề con.
   DATA.vocabTopics.forEach(t=>{ if(t.parentId===undefined) t.parentId = null; });
 }
+// Số từ MỚI (chưa học lần nào) được mở mỗi ngày. Có hàng nghìn từ cùng lúc
+// "đến hạn" thì số đếm gần như không nhúc nhích dù đã học xong cả buổi — nên
+// chỉ mở dần từng đợt từ mới mỗi ngày, còn từ đã học thì đến hạn là ôn lại.
+function vocabNewLimit(){
+  const n = Number(DATA.settings && DATA.settings.vocabNewPerDay);
+  return Number.isFinite(n) && n>=0 ? n : 20;
+}
+function vocabStats(){
+  const now = Date.now(), today = todayKey();
+  const review = [], fresh = [];
+  let newToday = 0;
+  DATA.vocab.forEach(w=>{
+    const seen = w.lastReview!==undefined || w.reps>0;
+    if(w.firstSeen && dateKey(new Date(w.firstSeen))===today) newToday++;
+    if(w.due<=now) (seen ? review : fresh).push(w);
+  });
+  review.sort((a,b)=>a.due-b.due);
+  const newLeft = Math.max(0, vocabNewLimit()-newToday);
+  return { review, newWords: fresh.slice(0,newLeft), newTotal: fresh.length };
+}
 function dueVocab(){
-  const now = Date.now();
-  return DATA.vocab.filter(w=>w.due<=now);
+  const s = vocabStats();
+  return s.review.concat(s.newWords);
 }
 function vocabById(id){ return DATA.vocab.find(w=>w.id===id); }
 function vocabTopicById(id){ return DATA.vocabTopics.find(t=>t.id===id); }
@@ -9303,13 +9365,15 @@ function renderVocabHome(){
   wrap.appendChild(header);
 
   const main = document.createElement('main');
-  const due = dueVocab().length;
+  const vst = vocabStats();
+  const due = vst.review.length + vst.newWords.length;
 
   const hero = document.createElement('div');
   hero.className = 'hero-card';
   hero.innerHTML = `
     <div class="hero-number">${due}</div>
     <div class="hero-label">từ đến hạn ôn hôm nay</div>
+    <div style="font-size:12.5px; color:var(--ink-faint); margin:4px 0 10px;">${vst.review.length} ôn lại · ${vst.newWords.length} từ mới${vst.newTotal>vst.newWords.length ? ` · còn ${vst.newTotal-vst.newWords.length} từ chưa học (mở dần các ngày sau)` : ''}</div>
     <button class="hero-btn" ${due===0?'disabled':''}>${due===0 ? 'Đã ôn hết — quay lại sau' : 'Bắt đầu ôn tập →'}</button>
   `;
   hero.querySelector('button').onclick = ()=>{ if(due>0) startVocabReview(); };
@@ -10671,22 +10735,12 @@ function renderVocabAdd(){
       DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
       toast('Đã thêm từ vựng ✓');
     }
-    const wasEditing = !!editing;
     editVocabId = null;
     addVocabCollocations = [];
     vocabAddLoadedFor = undefined;
     resetVocabAddDraft();
     await saveData();
-    if(wasEditing){
-      setView('vocab');
-    } else {
-      // Thêm từ mới: Ở LẠI màn này với form trống để gõ tiếp từ kế (giữ nguyên
-      // chủ đề/họ từ đang chọn) — muốn xem danh sách thì bấm "← Quay lại".
-      setView('vocab-add');
-      const m = document.querySelector('main'); if(m) m.scrollTop = 0;
-      window.scrollTo(0, 0);
-      setTimeout(()=>{ const el = document.getElementById('vocabWordInput'); if(el) el.focus(); }, 80);
-    }
+    setView('vocab');
   };
   main.appendChild(saveBtn);
 
@@ -10917,7 +10971,7 @@ function renderDeleteVocabModal(){
 
 /* ---------------- ôn tập từ vựng ---------------- */
 function startVocabReview(){
-  vocabReviewQueue = dueVocab().sort((a,b)=>a.due-b.due);
+  vocabReviewQueue = dueVocab();
   vocabReviewIdx = 0;
   vocabFlipped = false;
   vocabSessionXpEarned = 0;
@@ -11183,7 +11237,10 @@ function renderVocabReview(){
     row.querySelectorAll('.grade-btn').forEach((btn,i)=>{
       btn.onclick = async ()=>{
         const quality = qualities[i];
+        if(!w.firstSeen) w.firstSeen = Date.now();
         grade(w, quality);
+        // "Quên" → xếp lại cuối phiên để gặp lại ngay trong buổi học này.
+        if(quality===0 && vocabReviewQueue[vocabReviewIdx]===w) vocabReviewQueue.push(w);
         recordXpAndStreak(quality);
         vocabSessionXpEarned += (XP_PER_GRADE[quality] || 0);
         await saveData();
