@@ -836,7 +836,7 @@ function render(){
               editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; resetVocabAddDraft(); setView('vocab-add');
             } },
           { icon:'📥', label:'Thêm nhiều từ cùng lúc', onClick: ()=>{
-              vocabBulkRows = []; vocabBulkBusy = false; setView('vocab-bulk');
+              vocabBulkRows = []; vocabBulkBusy = false; vocabBulkQuick = false; vocabBulkRemaining = ''; setView('vocab-bulk');
             } },
         ];
         render();
@@ -9972,6 +9972,8 @@ let vocabBulkRows = [];        // {id, word, pos, ipa, meaning, composed, dup, s
 let vocabBulkBusy = false;
 let vocabBulkTopic = null;
 let vocabBulkProgress = '';
+let vocabBulkQuick = false;      // lượt hiện tại là nhập nhanh (không tra mạng)
+let vocabBulkRemaining = '';     // phần chưa xử lý khi dán hơn 20 từ
 
 function parseBulkLines(text){
   const seen = new Set();
@@ -9988,6 +9990,32 @@ function parseBulkLines(text){
     out.push({ word, meaning });
   });
   return out;
+}
+
+// Nhập nhanh: dán theo mẫu
+//   tourism /ˈtʊə.rɪ.zəm/ (n): Ngành du lịch.
+//   Ex: Tourism plays a crucial role. (Du lịch đóng vai trò quan trọng.)
+// → tách sẵn Từ, Phiên âm, Loại từ, Nghĩa, Ví dụ — không cần tra mạng.
+const QUICK_IMPORT_MAX = 20;
+function parseQuickEntries(text){
+  const lines = String(text||'').split(/\r?\n/);
+  const exRe = /^\s*(?:ex|eg|e\.g\.|example|ví dụ|vd)\s*[:：]\s*(.*)$/i;
+  const headRe = /^\s*([^:：\/\[(]+?)\s*(\/[^\/]+\/|\[[^\]]+\])?\s*(?:\(([^)]*)\))?\s*[:：]\s*(.+?)\s*$/;
+  const entries = [];
+  let cur = null;
+  lines.forEach((raw, i)=>{
+    if(!raw.trim()) return;
+    const ex = raw.match(exRe);
+    if(ex){ if(cur) cur.example = (cur.example ? cur.example+' ' : '') + ex[1].trim(); return; }
+    const h = raw.match(headRe);
+    if(h && (h[2] || h[3] || h[1].trim().split(/\s+/).length <= 4)){
+      cur = { word:h[1].trim(), ipa:(h[2]||'').trim(), pos:(h[3]||'').trim(), meaning:h[4].trim(), example:'', line:i };
+      entries.push(cur);
+    } else if(cur && !cur.example){
+      cur.meaning += ' ' + raw.trim(); // dòng nghĩa bị xuống dòng
+    }
+  });
+  return entries.filter(e=>e.word && e.meaning && (e.ipa || e.pos || e.example));
 }
 
 async function lookupBulkEntry(entry){
@@ -10033,18 +10061,21 @@ function renderVocabBulk(){
   // ---- Bước 1: dán danh sách ----
   const f = document.createElement('div');
   f.className = 'field';
-  f.innerHTML = `<label>Danh sách từ (mỗi dòng 1 từ hoặc cụm từ)</label>`;
+  f.innerHTML = `<label>Danh sách từ (mỗi dòng 1 từ, hoặc dán theo mẫu Nhập nhanh)</label>`;
   const ta = document.createElement('textarea');
   ta.rows = 6;
-  ta.placeholder = 'ubiquitous\nice cream\nmake a decision - đưa ra quyết định';
+  ta.placeholder = 'Nhập nhanh (tối đa ' + QUICK_IMPORT_MAX + ' từ/lượt):\ntourism /ˈtʊə.rɪ.zəm/ (n): Ngành du lịch.\nEx: Tourism plays a crucial role. (Du lịch đóng vai trò quan trọng.)\n\nHoặc mỗi dòng 1 từ:\nubiquitous\nmake a decision - đưa ra quyết định';
   ta.value = vocabBulkText;
-  ta.oninput = ()=>{ vocabBulkText = ta.value; };
+  ta.oninput = ()=>{
+    vocabBulkText = ta.value;
+    if(typeof lookupBtn !== 'undefined' && !vocabBulkBusy) lookupBtn.textContent = parseQuickEntries(ta.value).length ? '⚡ Nhập nhanh' : '🔎 Tra tất cả';
+  };
   f.appendChild(ta);
   main.appendChild(f);
 
   const hint = document.createElement('div');
   hint.style.cssText = 'font-size:12px; color:var(--ink-faint); margin:-6px 0 10px;';
-  hint.textContent = 'Muốn tự đặt nghĩa thì gõ "từ - nghĩa" hoặc "từ = nghĩa"; không có thì app tự dịch.';
+  hint.textContent = 'Nhập nhanh: "từ /phiên âm/ (loại từ): nghĩa" rồi dòng "Ex: ví dụ" — tách sẵn, không cần tra. Kiểu 1 từ/dòng thì gõ "từ - nghĩa" hoặc để app tự dịch.';
   main.appendChild(hint);
 
   // chủ đề chung cho cả lượt
@@ -10070,7 +10101,7 @@ function renderVocabBulk(){
 
   const lookupBtn = document.createElement('button');
   lookupBtn.className = 'save-btn';
-  lookupBtn.textContent = vocabBulkBusy ? 'Đang tra…' : '🔎 Tra tất cả';
+  lookupBtn.textContent = vocabBulkBusy ? 'Đang tra…' : (parseQuickEntries(vocabBulkText).length ? '⚡ Nhập nhanh' : '🔎 Tra tất cả');
   lookupBtn.disabled = vocabBulkBusy;
   const progress = document.createElement('div');
   progress.id = 'vocabBulkProgress';
@@ -10078,6 +10109,26 @@ function renderVocabBulk(){
   progress.textContent = vocabBulkProgress;
 
   lookupBtn.onclick = async ()=>{
+    const quick = parseQuickEntries(ta.value);
+    if(quick.length){
+      const picked = quick.slice(0, QUICK_IMPORT_MAX);
+      const existing = new Set(DATA.vocab.map(w=>w.word.trim().toLowerCase()));
+      const seen = new Set();
+      vocabBulkRows = picked.map(e=>{
+        const key = e.word.toLowerCase();
+        const dup = existing.has(key) || seen.has(key);
+        seen.add(key);
+        return { id: uid(), word:e.word, pos:e.pos, ipa:e.ipa, meaning:e.meaning, example:e.example, composed:false, dup, selected:!dup };
+      });
+      vocabBulkQuick = true;
+      // Còn dư (dán hơn 20 từ) → giữ lại phần chưa xử lý trong ô nhập cho lượt sau.
+      const rest = quick.slice(QUICK_IMPORT_MAX);
+      vocabBulkRemaining = rest.length ? ta.value.split(/\r?\n/).slice(rest[0].line).join('\n') : '';
+      if(rest.length) toast('Chỉ xử lý ' + QUICK_IMPORT_MAX + ' từ mỗi lượt — còn ' + rest.length + ' từ để lượt sau');
+      render();
+      return;
+    }
+    vocabBulkQuick = false; vocabBulkRemaining = '';
     const entries = parseBulkLines(ta.value).slice(0, 60);
     if(!entries.length){ toast('Hãy dán ít nhất 1 từ'); return; }
     vocabBulkText = ta.value;
@@ -10114,7 +10165,7 @@ function renderVocabBulk(){
   if(vocabBulkRows.length){
     const title = document.createElement('div');
     title.className = 'section-label';
-    title.textContent = 'Xem lại trước khi lưu (bản dịch máy — nên kiểm tra)';
+    title.textContent = vocabBulkQuick ? 'Xem lại trước khi lưu' : 'Xem lại trước khi lưu (bản dịch máy — nên kiểm tra)';
     main.appendChild(title);
 
     const counter = document.createElement('div');
@@ -10168,6 +10219,10 @@ function renderVocabBulk(){
       meaningIn.type = 'text'; meaningIn.placeholder = 'nghĩa (bắt buộc)'; meaningIn.value = r.meaning; meaningIn.style.cssText = inputStyle;
       meaningIn.oninput = ()=>{ r.meaning = meaningIn.value; };
       card.appendChild(meaningIn);
+      const exIn = document.createElement('input');
+      exIn.type = 'text'; exIn.placeholder = 'ví dụ (tuỳ chọn)'; exIn.value = r.example || ''; exIn.style.cssText = inputStyle;
+      exIn.oninput = ()=>{ r.example = exIn.value; };
+      card.appendChild(exIn);
       main.appendChild(card);
     });
     main.appendChild(counter);
@@ -10178,12 +10233,16 @@ function renderVocabBulk(){
       if(missing.length){ toast('Còn ' + missing.length + ' từ chưa có nghĩa — hãy điền hoặc bỏ chọn'); return; }
       const now = Date.now();
       picked.forEach(r=>{
-        DATA.vocab.push({id:uid(), word:r.word.trim(), meaning:r.meaning.trim(), ipa:r.ipa.trim(), pos:r.pos.trim(), example:'', topicId:vocabBulkTopic || null, familyId:null, collocations:[], ease:2.5, interval:0, reps:0, due:now});
+        DATA.vocab.push({id:uid(), word:r.word.trim(), meaning:r.meaning.trim(), ipa:r.ipa.trim(), pos:r.pos.trim(), example:(r.example||'').trim(), topicId:vocabBulkTopic || null, familyId:null, collocations:[], ease:2.5, interval:0, reps:0, due:now});
       });
       toast('Đã thêm ' + picked.length + ' từ vựng ✓');
-      vocabBulkRows = []; vocabBulkText = '';
+      const wasQuick = vocabBulkQuick;
+      vocabBulkRows = [];
+      vocabBulkText = wasQuick ? vocabBulkRemaining : '';
+      vocabBulkRemaining = ''; vocabBulkQuick = false;
       await saveData();
-      setView('vocab');
+      // Nhập nhanh → ở lại màn này để dán lượt tiếp theo; kiểu cũ thì về danh sách.
+      if(wasQuick){ render(); window.scrollTo(0,0); } else setView('vocab');
     };
     main.appendChild(saveBtn);
     updateCounter();
@@ -10735,12 +10794,22 @@ function renderVocabAdd(){
       DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
       toast('Đã thêm từ vựng ✓');
     }
+    const wasEditing = !!editing;
     editVocabId = null;
     addVocabCollocations = [];
     vocabAddLoadedFor = undefined;
     resetVocabAddDraft();
     await saveData();
-    setView('vocab');
+    if(wasEditing){
+      setView('vocab');
+    } else {
+      // Thêm từ mới → ở lại màn này, xoá trắng form (giữ Chủ đề đang chọn) để
+      // gõ từ tiếp theo luôn; bấm "← Quay lại" khi xong.
+      addVocabFamilyChoice = null;
+      render();
+      window.scrollTo(0,0);
+      setTimeout(()=>{ const el = document.getElementById('vocabWordInput'); if(el) el.focus(); }, 50);
+    }
   };
   main.appendChild(saveBtn);
 
