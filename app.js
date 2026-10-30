@@ -8689,6 +8689,24 @@ function dueVocab(){
 }
 function vocabById(id){ return DATA.vocab.find(w=>w.id===id); }
 function vocabTopicById(id){ return DATA.vocabTopics.find(t=>t.id===id); }
+// Số từ của MỌI chủ đề (gồm cả chủ đề con) tính 1 lượt duy nhất — trước đây mỗi
+// chủ đề lại quét lại cả kho từ nên số chủ đề × số từ làm màn Từ vựng chậm hẳn.
+let _vocabTopicCounts = null;
+function computeVocabTopicCounts(){
+  const direct = new Map();
+  DATA.vocab.forEach(w=>{ if(w.topicId) direct.set(w.topicId, (direct.get(w.topicId)||0)+1); });
+  const memo = new Map();
+  const total = (id)=>{
+    if(memo.has(id)) return memo.get(id);
+    memo.set(id, 0); // chặn vòng lặp nếu dữ liệu chủ đề bị lỗi
+    let n = direct.get(id)||0;
+    childVocabTopics(id).forEach(c=>{ n += total(c.id); });
+    memo.set(id, n);
+    return n;
+  };
+  DATA.vocabTopics.forEach(t=>total(t.id));
+  return memo;
+}
 function childVocabTopics(parentId){
   return DATA.vocabTopics.filter(t => (t.parentId||null) === (parentId||null));
 }
@@ -9365,6 +9383,7 @@ function renderVocabHome(){
   wrap.appendChild(header);
 
   const main = document.createElement('main');
+  _vocabTopicCounts = computeVocabTopicCounts();
   const vst = vocabStats();
   const due = vst.review.length + vst.newWords.length;
 
@@ -9434,7 +9453,8 @@ function renderVocabHome(){
   search.className = 'search-box';
   search.placeholder = 'Tìm từ hoặc nghĩa...';
   search.value = vocabSearch;
-  search.oninput = (e)=>{ vocabSearch = e.target.value; renderVocabList(list); };
+  let _searchTimer = null;
+  search.oninput = (e)=>{ vocabSearch = e.target.value; clearTimeout(_searchTimer); _searchTimer = setTimeout(()=>renderVocabList(list), 200); };
   main.appendChild(search);
 
   // Không còn chủ đề đang lọc (vừa bị xoá ở nơi khác) → quay về "Tất cả".
@@ -9494,7 +9514,7 @@ function renderVocabTopicTree(main, parentId, depth){
     const kids = childVocabTopics(t.id).length;
     const isOpen = expandedVocabTopics.has(t.id);
     const isSelected = vocabTopicFilter === t.id;
-    const wordCount = DATA.vocab.filter(w=>w.topicId && vocabTopicSubtreeIds(t.id).includes(w.topicId)).length;
+    const wordCount = (_vocabTopicCounts || (_vocabTopicCounts = computeVocabTopicCounts())).get(t.id) || 0;
 
     const row = document.createElement('div');
     row.className = 'subject-row' + (isSelected ? ' topic-selected' : '');
@@ -9595,10 +9615,23 @@ function attachVocabTopicLongPress(chip, topic){
   chip.addEventListener('click', (e)=>{ if(fired){ e.preventDefault(); e.stopPropagation(); } });
 }
 
+// Danh sách từ chỉ vẽ từng đợt VOCAB_PAGE từ (kéo xuống cuối / bấm "Hiện thêm"
+// mới vẽ tiếp) thay vì vẽ cả nghìn từ cùng lúc — vẽ hết là nguyên nhân chính
+// gây lag khi kho có nhiều từ. Các tra cứu (đường dẫn chủ đề, họ từ) được
+// tính sẵn 1 lần cho cả lượt vẽ, và dùng 1 trình xử lý bấm chung cho cả danh
+// sách thay vì gắn riêng cho từng từ.
+const VOCAB_PAGE = 40;
+let vocabListLimit = VOCAB_PAGE;
+let _vocabListSig = null;
 function renderVocabList(list){
+  if(list._io){ try{ list._io.disconnect(); }catch(e){ /* bỏ qua */ } list._io = null; }
   list.innerHTML = '';
   const q = vocabSearch.trim().toLowerCase();
-  let words = DATA.vocab.slice().sort((a,b)=>a.due-b.due);
+  // Đổi từ khoá tìm / chủ đề lọc → quay về đợt đầu; vẽ lại vì lý do khác thì giữ nguyên số từ đã mở.
+  const sig = (vocabTopicFilter||'') + '|' + q;
+  if(sig !== _vocabListSig){ _vocabListSig = sig; vocabListLimit = VOCAB_PAGE; }
+
+  let words = DATA.vocab;
   if(vocabTopicFilter){
     const allowed = new Set(vocabTopicSubtreeIds(vocabTopicFilter));
     words = words.filter(w => w.topicId && allowed.has(w.topicId));
@@ -9606,19 +9639,32 @@ function renderVocabList(list){
   if(q) words = words.filter(w =>
     w.word.toLowerCase().includes(q) || w.meaning.toLowerCase().includes(q)
   );
+  words = words.slice().sort((a,b)=>a.due-b.due);
 
   if(words.length===0){
     list.appendChild(emptyState('🔤', q ? 'Không tìm thấy từ nào phù hợp.' : 'Chưa có từ vựng nào. Nhấn + để thêm từ đầu tiên.'));
     return;
   }
 
-  words.forEach(w=>{
+  // Tính sẵn 1 lần: họ từ + số từ mỗi họ, đường dẫn chủ đề.
+  const famById = new Map(DATA.wordFamilies.map(f=>[f.id, f]));
+  const famCount = new Map();
+  DATA.vocab.forEach(w=>{ if(w.familyId) famCount.set(w.familyId, (famCount.get(w.familyId)||0)+1); });
+  const pathCache = new Map();
+  const pathOf = (id)=>{
+    let p = pathCache.get(id);
+    if(p === undefined){ p = vocabTopicPath(id).map(t=>t.name).join(' › '); pathCache.set(id, p); }
+    return p;
+  };
+
+  const makeItem = (w)=>{
     const item = document.createElement('div');
     item.className = 'manage-item';
-    const topicPath = w.topicId ? vocabTopicPath(w.topicId).map(t=>t.name).join(' › ') : '';
+    item.dataset.id = w.id;
+    const topicPath = w.topicId ? pathOf(w.topicId) : '';
     const subInfo = [w.ipa, w.pos, topicPath].filter(Boolean).join('  ·  ');
-    const family = w.familyId ? wordFamilyById(w.familyId) : null;
-    const familyCount = family ? wordsInFamily(family.id, w.id).length : 0;
+    const family = w.familyId ? famById.get(w.familyId) : null;
+    const familyCount = family ? Math.max(0, (famCount.get(family.id)||1) - 1) : 0;
     item.innerHTML = `
       <div class="mi-top">
         <div>
@@ -9635,11 +9681,46 @@ function renderVocabList(list){
         <button class="mi-del">✕</button>
       </div>
     `;
-    item.querySelector('.vocab-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(w.word); };
-    item.querySelector('.mi-del').onclick = (e)=>{ e.stopPropagation(); deleteVocabId = w.id; render(); };
-    item.onclick = ()=>{ editVocabId = w.id; resetVocabAddDraft(); setView('vocab-add'); };
-    list.appendChild(item);
-  });
+    return item;
+  };
+
+  list.onclick = (e)=>{
+    const item = e.target.closest('.manage-item');
+    if(!item || !list.contains(item)) return;
+    const w = vocabById(item.dataset.id);
+    if(!w) return;
+    if(e.target.closest('.vocab-speak-btn')){ e.stopPropagation(); speakWord(w.word); return; }
+    if(e.target.closest('.mi-del')){ e.stopPropagation(); deleteVocabId = w.id; render(); return; }
+    editVocabId = w.id; resetVocabAddDraft(); setView('vocab-add');
+  };
+
+  let shown = 0;
+  let moreBtn = null;
+  const showMore = (upTo)=>{
+    const target = Math.min(words.length, upTo);
+    const frag = document.createDocumentFragment();
+    for(; shown < target; shown++) frag.appendChild(makeItem(words[shown]));
+    if(moreBtn){ moreBtn.remove(); moreBtn = null; }
+    if(list._io){ try{ list._io.disconnect(); }catch(e){ /* bỏ qua */ } list._io = null; }
+    list.appendChild(frag);
+    vocabListLimit = Math.max(vocabListLimit, shown);
+    if(shown < words.length){
+      moreBtn = document.createElement('button');
+      moreBtn.type = 'button';
+      moreBtn.className = 'chip';
+      moreBtn.style.cssText = 'width:100%; justify-content:center; text-align:center; padding:12px; margin:8px 0 16px;';
+      moreBtn.textContent = 'Hiện thêm ' + Math.min(VOCAB_PAGE, words.length-shown) + ' từ (còn ' + (words.length-shown) + ')';
+      moreBtn.onclick = ()=> showMore(shown + VOCAB_PAGE);
+      list.appendChild(moreBtn);
+      if('IntersectionObserver' in window){
+        list._io = new IntersectionObserver((entries)=>{
+          if(entries.some(en=>en.isIntersecting)) showMore(shown + VOCAB_PAGE);
+        }, { rootMargin:'300px' });
+        list._io.observe(moreBtn);
+      }
+    }
+  };
+  showMore(Math.max(VOCAB_PAGE, vocabListLimit));
 }
 
 /* ---------------- màn Thêm/Sửa từ vựng ---------------- */
@@ -9694,7 +9775,12 @@ async function loadIpaBigDict(){
       if(!res.ok) throw new Error('bad status ' + res.status);
       const text = await res.text();
       const map = new Map();
-      for(const line of text.split('\n')){
+      const allLines = text.split('\n');
+      for(let li = 0; li < allLines.length; li++){
+        // Cứ ~6000 dòng lại nhường luồng chính 1 nhịp để app không bị đứng hình
+        // khi đang dựng bộ từ điển 135.000 từ (nhất là trên điện thoại).
+        if(li % 6000 === 5999) await new Promise(r=>setTimeout(r,0));
+        const line = allLines[li];
         const tab = line.indexOf('\t');
         if(tab < 0) continue;
         const word = line.slice(0, tab).trim().toLowerCase();
@@ -9716,7 +9802,13 @@ async function loadIpaBigDict(){
 
 // Tải trước bộ từ điển ngay khi app khởi động (không chặn UI) để lần đầu
 // bấm "Tự động điền phiên âm" đã có sẵn, tra tức thì.
-function preloadIpaBigDict(){ loadIpaBigDict(); }
+// Chờ app rảnh (vài giây sau khi mở) mới tải/dựng từ điển, tránh tranh CPU với
+// lúc app đang vẽ màn hình đầu tiên.
+function preloadIpaBigDict(){
+  const go = ()=>{ loadIpaBigDict(); };
+  if('requestIdleCallback' in window) requestIdleCallback(go, { timeout: 8000 });
+  else setTimeout(go, 3000);
+}
 
 async function parseIpaFromDictionaryApiResponse(res){
   if(!res.ok) return null;
@@ -10799,8 +10891,8 @@ function renderVocabAdd(){
     addVocabCollocations = [];
     vocabAddLoadedFor = undefined;
     resetVocabAddDraft();
-    await saveData();
     if(wasEditing){
+      await saveData();
       setView('vocab');
     } else {
       // Thêm từ mới → ở lại màn này, xoá trắng form (giữ Chủ đề đang chọn) để
@@ -10809,6 +10901,7 @@ function renderVocabAdd(){
       render();
       window.scrollTo(0,0);
       setTimeout(()=>{ const el = document.getElementById('vocabWordInput'); if(el) el.focus(); }, 50);
+      await saveData(); // lưu sau khi form mới đã hiện, không bắt người dùng chờ
     }
   };
   main.appendChild(saveBtn);
