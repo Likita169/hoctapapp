@@ -361,7 +361,30 @@ async function loadData(){
   await saveData();
 }
 
+// Lưu "chậm 1 nhịp" cho những thao tác dồn dập (chấm điểm từng thẻ lúc ôn tập):
+// mỗi lần bấm chỉ đánh dấu, gom lại ~0.6 giây sau mới ghi 1 lần — thay vì mỗi
+// cái bấm lại stringify + ghi cả kho dữ liệu lớn. Có chốt chặn: ghi ngay khi
+// ẩn app/đóng tab, và saveData() thường luôn ghi tức thì (kèm huỷ lượt chờ).
+let _saveSoonTimer = null, _saveSoonDirty = false;
+function saveDataSoon(){
+  DATA.updatedAt = Date.now();
+  _saveSoonDirty = true;
+  clearTimeout(_saveSoonTimer);
+  _saveSoonTimer = setTimeout(flushSaveSoon, 600);
+  schedulePush();
+}
+async function flushSaveSoon(){
+  clearTimeout(_saveSoonTimer);
+  if(!_saveSoonDirty) return;
+  _saveSoonDirty = false;
+  try{ await idbSet(STORE_KEY, JSON.stringify(DATA)); }
+  catch(e){ console.error('save failed', e); toast('Lỗi lưu dữ liệu'); }
+}
+window.addEventListener('pagehide', ()=>{ flushSaveSoon(); });
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='hidden') flushSaveSoon(); });
+
 async function saveData(){
+  clearTimeout(_saveSoonTimer); _saveSoonDirty = false; // lần ghi này đã bao gồm mọi thay đổi đang chờ
   DATA.updatedAt = Date.now();
   try{ await idbSet(STORE_KEY, JSON.stringify(DATA)); }
   catch(e){ console.error('save failed', e); toast('Lỗi lưu dữ liệu'); }
@@ -8687,7 +8710,16 @@ function dueVocab(){
   const s = vocabStats();
   return s.review.concat(s.newWords);
 }
-function vocabById(id){ return DATA.vocab.find(w=>w.id===id); }
+let _vocabIdCache = { arr:null, len:-1, map:null };
+function vocabById(id){
+  const arr = DATA.vocab;
+  if(_vocabIdCache.arr !== arr || _vocabIdCache.len !== arr.length){
+    _vocabIdCache = { arr, len: arr.length, map: new Map(arr.map(w=>[w.id, w])) };
+  }
+  const w = _vocabIdCache.map.get(id);
+  // chốt chặn: nếu có từ bị đổi id/thay thế mà cache chưa kịp biết thì tra thẳng
+  return (w && w.id===id) ? w : arr.find(x=>x.id===id);
+}
 function vocabTopicById(id){ return DATA.vocabTopics.find(t=>t.id===id); }
 // Số từ của MỌI chủ đề (gồm cả chủ đề con) tính 1 lượt duy nhất — trước đây mỗi
 // chủ đề lại quét lại cả kho từ nên số chủ đề × số từ làm màn Từ vựng chậm hẳn.
@@ -9075,29 +9107,28 @@ function checkVocabDictation(){
 // toàn bộ kho từ vựng. Giống hệt cách buildQuizChoices() làm với thẻ.
 function buildVocabQuizChoices(word){
   const correct = word.meaning;
-  function answerPool(list){
-    return list
-      .filter(w=>w.id!==word.id)
-      .map(w=>(w.meaning||'').trim())
-      .filter(s=> s && normalizeForCompare(s)!==normalizeForCompare(correct));
-  }
-  function pickUnique(arr, n, alreadyUsed){
-    const seen = new Set(alreadyUsed.map(normalizeForCompare));
-    const out = [];
-    const shuffled = arr.slice().sort(()=>Math.random()-0.5);
-    for(const s of shuffled){
-      const key = normalizeForCompare(s);
+  const correctKey = normalizeForCompare(correct);
+  const seen = new Set([correctKey]);
+  const distractors = [];
+  // Bốc ngẫu nhiên từng từ rồi kiểm tra tại chỗ (chỉ chuẩn hoá chuỗi cho các
+  // từ được bốc) — không lọc/sắp xếp cả kho mỗi lần ra câu hỏi, nên 10.000 từ
+  // vẫn ra đáp án tức thì.
+  const draw = (pool, tries)=>{
+    if(!pool.length) return;
+    for(let t=0; t<tries && distractors.length<3; t++){
+      const w = pool[Math.floor(Math.random()*pool.length)];
+      if(!w || w.id===word.id) continue;
+      const m = (w.meaning||'').trim();
+      if(!m) continue;
+      const key = normalizeForCompare(m);
       if(seen.has(key)) continue;
-      seen.add(key); out.push(s);
-      if(out.length>=n) break;
+      seen.add(key); distractors.push(m);
     }
-    return out;
+  };
+  if(word.topicId){
+    draw(DATA.vocab.filter(w=>w.topicId===word.topicId), 40);
   }
-  const sameTopicPool = word.topicId ? answerPool(DATA.vocab.filter(w=>w.topicId===word.topicId)) : [];
-  let distractors = pickUnique(sameTopicPool, 3, [correct]);
-  if(distractors.length < 3){
-    distractors = distractors.concat(pickUnique(answerPool(DATA.vocab), 3-distractors.length, [correct, ...distractors]));
-  }
+  if(distractors.length < 3) draw(DATA.vocab, 120);
   const choices = [correct, ...distractors];
   for(let i=choices.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [choices[i],choices[j]]=[choices[j],choices[i]]; }
   return choices;
@@ -11405,7 +11436,7 @@ function renderVocabReview(){
         if(quality===0 && vocabReviewQueue[vocabReviewIdx]===w) vocabReviewQueue.push(w);
         recordXpAndStreak(quality);
         vocabSessionXpEarned += (XP_PER_GRADE[quality] || 0);
-        await saveData();
+        saveDataSoon();
         vocabReviewIdx += 1;
         vocabFlipped = false;
         resetVocabAnswerInputState();
