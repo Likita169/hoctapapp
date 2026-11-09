@@ -46,7 +46,7 @@ const PUSH_SERVER_URL = 'https://on-tap-push.nguyenngochuy8816.workers.dev';
 // (xem mục "Tài khoản & đồng bộ" trong HUONG-DAN.md) — thay bằng URL thật
 // sau khi deploy worker trong thư mục sync-server/
 const SYNC_SERVER_URL = 'https://on-tap-sync.nguyenngochuy8816.workers.dev/';
-const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true };
+const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true, vocabNewPerDay: 20, vocabBatchSize: 20 };
 // Streak + XP + huy hiệu — tiến trình học tập lâu dài, tách riêng khỏi từng
 // thẻ để không ảnh hưởng thuật toán ôn tập ngắt quãng ở trên.
 const DEFAULT_PROGRESS = {
@@ -361,7 +361,30 @@ async function loadData(){
   await saveData();
 }
 
+// Lưu "chậm 1 nhịp" cho những thao tác dồn dập (chấm điểm từng thẻ lúc ôn tập):
+// mỗi lần bấm chỉ đánh dấu, gom lại ~0.6 giây sau mới ghi 1 lần — thay vì mỗi
+// cái bấm lại stringify + ghi cả kho dữ liệu lớn. Có chốt chặn: ghi ngay khi
+// ẩn app/đóng tab, và saveData() thường luôn ghi tức thì (kèm huỷ lượt chờ).
+let _saveSoonTimer = null, _saveSoonDirty = false;
+function saveDataSoon(){
+  DATA.updatedAt = Date.now();
+  _saveSoonDirty = true;
+  clearTimeout(_saveSoonTimer);
+  _saveSoonTimer = setTimeout(flushSaveSoon, 600);
+  schedulePush();
+}
+async function flushSaveSoon(){
+  clearTimeout(_saveSoonTimer);
+  if(!_saveSoonDirty) return;
+  _saveSoonDirty = false;
+  try{ await idbSet(STORE_KEY, JSON.stringify(DATA)); }
+  catch(e){ console.error('save failed', e); toast('Lỗi lưu dữ liệu'); }
+}
+window.addEventListener('pagehide', ()=>{ flushSaveSoon(); });
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='hidden') flushSaveSoon(); });
+
 async function saveData(){
+  clearTimeout(_saveSoonTimer); _saveSoonDirty = false; // lần ghi này đã bao gồm mọi thay đổi đang chờ
   DATA.updatedAt = Date.now();
   try{ await idbSet(STORE_KEY, JSON.stringify(DATA)); }
   catch(e){ console.error('save failed', e); toast('Lỗi lưu dữ liệu'); }
@@ -836,7 +859,7 @@ function render(){
               editVocabId = null; addVocabCollocations = []; vocabAddLoadedFor = undefined; resetVocabAddDraft(); setView('vocab-add');
             } },
           { icon:'📥', label:'Thêm nhiều từ cùng lúc', onClick: ()=>{
-              vocabBulkRows = []; vocabBulkBusy = false; setView('vocab-bulk');
+              vocabBulkRows = []; vocabBulkBusy = false; vocabBulkQuick = false; vocabBulkRemaining = ''; setView('vocab-bulk');
             } },
         ];
         render();
@@ -3119,6 +3142,71 @@ function renderSettings(){
   };
   main.appendChild(speakRow);
 
+  const limitOpts = [10,20,30,50,100,100000];
+  const curLimit = vocabNewLimit();
+  const limitRow = document.createElement('div');
+  limitRow.className='toggle-row';
+  limitRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">🆕 Số từ mới mỗi ngày</div>
+      <div class="tr-sub">Từ chưa học được mở dần theo số này, tránh hàng nghìn từ đến hạn cùng lúc.</div>
+    </div>
+    <select class="vocab-limit-select">
+      ${limitOpts.map(n=>`<option value="${n}" ${n===curLimit?'selected':''}>${n>=100000?'Không giới hạn':n}</option>`).join('')}
+    </select>
+  `;
+  limitRow.querySelector('select').onchange = async (e)=>{
+    DATA.settings.vocabNewPerDay = Number(e.target.value);
+    await saveData();
+  };
+  main.appendChild(limitRow);
+
+  const batchOpts = [10,20,30,50,100000];
+  const curBatch = vocabBatchSize();
+  const batchRow = document.createElement('div');
+  batchRow.className='toggle-row';
+  batchRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">💧 Học nhỏ giọt — số từ mỗi lượt</div>
+      <div class="tr-sub">Mỗi lượt chỉ học ngẫu nhiên từng này từ đến hạn; học xong được nghỉ rồi học tiếp lượt khác.</div>
+    </div>
+    <select class="vocab-batch-select">
+      ${batchOpts.map(n=>`<option value="${n}" ${n===curBatch?'selected':''}>${n>=100000?'Không giới hạn':n}</option>`).join('')}
+    </select>
+  `;
+  batchRow.querySelector('select').onchange = async (e)=>{
+    DATA.settings.vocabBatchSize = Number(e.target.value);
+    await saveData();
+  };
+  main.appendChild(batchRow);
+
+  const ttsRow = document.createElement('div');
+  ttsRow.className = 'toggle-row';
+  const curSrc = ttsSource();
+  ttsRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">🔊 Nguồn phát âm (riêng từng thiết bị)</div>
+      <div class="tr-sub">Tự động: dùng giọng của máy, nếu máy không đọc được thì phát qua mạng. Chọn "Qua mạng" nếu điện thoại vẫn im lặng.</div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <select class="tts-source-select">
+        <option value="auto" ${curSrc==='auto'?'selected':''}>Tự động</option>
+        <option value="device" ${curSrc==='device'?'selected':''}>Giọng của máy</option>
+        <option value="online" ${curSrc==='online'?'selected':''}>Qua mạng</option>
+      </select>
+      <button class="chip" type="button">Thử</button>
+    </div>
+  `;
+  ttsRow.querySelector('select').onchange = (e)=>{ setTtsSource(e.target.value); toast('Đã đổi nguồn phát âm'); };
+  ttsRow.querySelector('button').onclick = ()=>{
+    refreshTtsVoices();
+    const n = _ttsVoices.filter(v=>/^en([-_]|$)/i.test(v.lang||'')).length;
+    speakWord('hello');
+    if(ttsSource()==='online' || (ttsSource()==='auto' && ttsAutoOnline())) toast('Đang phát qua mạng');
+    else setTimeout(()=>toast(n===0 ? 'Máy chưa có giọng tiếng Anh nào' : n + ' giọng tiếng Anh · đang thử: ' + (_ttsLastVoice||'mặc định')), 300);
+  };
+  main.appendChild(ttsRow);
+
   const versionTag = document.createElement('div');
   versionTag.className='mono';
   versionTag.style.textAlign = 'center';
@@ -3237,7 +3325,7 @@ async function afterLogin(suffix){
   }
   try{
     const remote = await fetchSync();
-    const localHasContent = DATA.cards.length>0 || DATA.subjects.length>0;
+    const localHasContent = DATA.cards.length>0 || DATA.subjects.length>0 || DATA.vocab.length>0;
     const remoteHasContent = !!(remote && remote.data);
     if(remoteHasContent && localHasContent){
       // Data exists on both sides — don't silently pick one, ask the person.
@@ -3262,15 +3350,38 @@ async function fetchSync(){
   return await res.json(); // {data, updatedAt}
 }
 
-function applyRemoteData(remote){
+// Khi kéo dữ liệu máy chủ về mà bản trên máy này có từ/thẻ vừa được ôn MỚI HƠN
+// (lastReview lớn hơn) thì giữ lại tiến độ ôn của máy này, thay vì để bản cũ
+// trên server ghi đè làm "mất" những gì vừa học.
+function mergeNewerLocalProgress(parsed){
+  let kept = false;
+  ['vocab','cards'].forEach(key=>{
+    const remoteArr = parsed[key], localArr = DATA[key];
+    if(!Array.isArray(remoteArr) || !Array.isArray(localArr)) return;
+    const byId = new Map(localArr.map(x=>[x.id, x]));
+    remoteArr.forEach(rw=>{
+      const lw = byId.get(rw.id);
+      if(lw && (lw.lastReview||0) > (rw.lastReview||0)){
+        ['ease','interval','reps','due','lastReview','firstSeen'].forEach(k=>{ if(lw[k]!==undefined) rw[k] = lw[k]; });
+        kept = true;
+      }
+    });
+  });
+  return kept;
+}
+
+function applyRemoteData(remote, mergeLocal){
   try{
     const parsed = JSON.parse(remote.data);
     parsed.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings || {});
     parsed.updatedAt = remote.updatedAt || Date.now();
+    const keptLocal = mergeLocal ? mergeNewerLocalProgress(parsed) : false;
     DATA = parsed;
     normalizeSubjects();
     normalizeProgress();
-    idbSet(STORE_KEY, JSON.stringify(DATA)); // write straight to disk, skip re-triggering a push
+    normalizeVocab();
+    if(keptLocal) saveData(); // có tiến độ máy này mới hơn → đẩy lại lên server
+    else idbSet(STORE_KEY, JSON.stringify(DATA)); // write straight to disk, skip re-triggering a push
   }catch(e){ toast('Lỗi khi đọc dữ liệu từ máy chủ'); }
 }
 
@@ -3296,7 +3407,7 @@ async function pushSync(force){
       // Server has a newer copy than we started from — pull it instead of
       // clobbering someone else's edits from another device.
       const remote = await fetchSync();
-      applyRemoteData(remote);
+      applyRemoteData(remote, true);
       syncStatus = 'synced';
       render();
     } else if(body.ok){
@@ -3314,7 +3425,7 @@ async function manualSync(){
   try{
     const remote = await fetchSync();
     if(remote && remote.data && remote.updatedAt > (DATA.updatedAt||0)){
-      applyRemoteData(remote);
+      applyRemoteData(remote, true);
       toast('Đã tải dữ liệu mới nhất ✓');
     } else {
       await pushSync(true);
@@ -3333,7 +3444,7 @@ async function silentInitialSync(){
   try{
     const remote = await fetchSync();
     if(remote && remote.data && remote.updatedAt > (DATA.updatedAt||0)){
-      applyRemoteData(remote);
+      applyRemoteData(remote, true);
       syncStatus = 'synced';
       renderUnlessTyping();
     } else {
@@ -8621,12 +8732,59 @@ function normalizeVocab(){
   // lưu từ trước khi có chủ đề con.
   DATA.vocabTopics.forEach(t=>{ if(t.parentId===undefined) t.parentId = null; });
 }
-function dueVocab(){
-  const now = Date.now();
-  return DATA.vocab.filter(w=>w.due<=now);
+// Số từ MỚI (chưa học lần nào) được mở mỗi ngày. Có hàng nghìn từ cùng lúc
+// "đến hạn" thì số đếm gần như không nhúc nhích dù đã học xong cả buổi — nên
+// chỉ mở dần từng đợt từ mới mỗi ngày, còn từ đã học thì đến hạn là ôn lại.
+function vocabNewLimit(){
+  const n = Number(DATA.settings && DATA.settings.vocabNewPerDay);
+  return Number.isFinite(n) && n>=0 ? n : 20;
 }
-function vocabById(id){ return DATA.vocab.find(w=>w.id===id); }
+function vocabStats(){
+  const now = Date.now(), today = todayKey();
+  const review = [], fresh = [];
+  let newToday = 0;
+  DATA.vocab.forEach(w=>{
+    const seen = w.lastReview!==undefined || w.reps>0;
+    if(w.firstSeen && dateKey(new Date(w.firstSeen))===today) newToday++;
+    if(w.due<=now) (seen ? review : fresh).push(w);
+  });
+  review.sort((a,b)=>a.due-b.due);
+  const newLeft = Math.max(0, vocabNewLimit()-newToday);
+  return { review, newWords: fresh.slice(0,newLeft), newTotal: fresh.length };
+}
+function dueVocab(){
+  const s = vocabStats();
+  return s.review.concat(s.newWords);
+}
+let _vocabIdCache = { arr:null, len:-1, map:null };
+function vocabById(id){
+  const arr = DATA.vocab;
+  if(_vocabIdCache.arr !== arr || _vocabIdCache.len !== arr.length){
+    _vocabIdCache = { arr, len: arr.length, map: new Map(arr.map(w=>[w.id, w])) };
+  }
+  const w = _vocabIdCache.map.get(id);
+  // chốt chặn: nếu có từ bị đổi id/thay thế mà cache chưa kịp biết thì tra thẳng
+  return (w && w.id===id) ? w : arr.find(x=>x.id===id);
+}
 function vocabTopicById(id){ return DATA.vocabTopics.find(t=>t.id===id); }
+// Số từ của MỌI chủ đề (gồm cả chủ đề con) tính 1 lượt duy nhất — trước đây mỗi
+// chủ đề lại quét lại cả kho từ nên số chủ đề × số từ làm màn Từ vựng chậm hẳn.
+let _vocabTopicCounts = null;
+function computeVocabTopicCounts(){
+  const direct = new Map();
+  DATA.vocab.forEach(w=>{ if(w.topicId) direct.set(w.topicId, (direct.get(w.topicId)||0)+1); });
+  const memo = new Map();
+  const total = (id)=>{
+    if(memo.has(id)) return memo.get(id);
+    memo.set(id, 0); // chặn vòng lặp nếu dữ liệu chủ đề bị lỗi
+    let n = direct.get(id)||0;
+    childVocabTopics(id).forEach(c=>{ n += total(c.id); });
+    memo.set(id, n);
+    return n;
+  };
+  DATA.vocabTopics.forEach(t=>total(t.id));
+  return memo;
+}
 function childVocabTopics(parentId){
   return DATA.vocabTopics.filter(t => (t.parentId||null) === (parentId||null));
 }
@@ -8995,29 +9153,28 @@ function checkVocabDictation(){
 // toàn bộ kho từ vựng. Giống hệt cách buildQuizChoices() làm với thẻ.
 function buildVocabQuizChoices(word){
   const correct = word.meaning;
-  function answerPool(list){
-    return list
-      .filter(w=>w.id!==word.id)
-      .map(w=>(w.meaning||'').trim())
-      .filter(s=> s && normalizeForCompare(s)!==normalizeForCompare(correct));
-  }
-  function pickUnique(arr, n, alreadyUsed){
-    const seen = new Set(alreadyUsed.map(normalizeForCompare));
-    const out = [];
-    const shuffled = arr.slice().sort(()=>Math.random()-0.5);
-    for(const s of shuffled){
-      const key = normalizeForCompare(s);
+  const correctKey = normalizeForCompare(correct);
+  const seen = new Set([correctKey]);
+  const distractors = [];
+  // Bốc ngẫu nhiên từng từ rồi kiểm tra tại chỗ (chỉ chuẩn hoá chuỗi cho các
+  // từ được bốc) — không lọc/sắp xếp cả kho mỗi lần ra câu hỏi, nên 10.000 từ
+  // vẫn ra đáp án tức thì.
+  const draw = (pool, tries)=>{
+    if(!pool.length) return;
+    for(let t=0; t<tries && distractors.length<3; t++){
+      const w = pool[Math.floor(Math.random()*pool.length)];
+      if(!w || w.id===word.id) continue;
+      const m = (w.meaning||'').trim();
+      if(!m) continue;
+      const key = normalizeForCompare(m);
       if(seen.has(key)) continue;
-      seen.add(key); out.push(s);
-      if(out.length>=n) break;
+      seen.add(key); distractors.push(m);
     }
-    return out;
+  };
+  if(word.topicId){
+    draw(DATA.vocab.filter(w=>w.topicId===word.topicId), 40);
   }
-  const sameTopicPool = word.topicId ? answerPool(DATA.vocab.filter(w=>w.topicId===word.topicId)) : [];
-  let distractors = pickUnique(sameTopicPool, 3, [correct]);
-  if(distractors.length < 3){
-    distractors = distractors.concat(pickUnique(answerPool(DATA.vocab), 3-distractors.length, [correct, ...distractors]));
-  }
+  if(distractors.length < 3) draw(DATA.vocab, 120);
   const choices = [correct, ...distractors];
   for(let i=choices.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [choices[i],choices[j]]=[choices[j],choices[i]]; }
   return choices;
@@ -9303,14 +9460,17 @@ function renderVocabHome(){
   wrap.appendChild(header);
 
   const main = document.createElement('main');
-  const due = dueVocab().length;
+  _vocabTopicCounts = computeVocabTopicCounts();
+  const vst = vocabStats();
+  const due = vst.review.length + vst.newWords.length;
 
   const hero = document.createElement('div');
   hero.className = 'hero-card';
   hero.innerHTML = `
     <div class="hero-number">${due}</div>
     <div class="hero-label">từ đến hạn ôn hôm nay</div>
-    <button class="hero-btn" ${due===0?'disabled':''}>${due===0 ? 'Đã ôn hết — quay lại sau' : 'Bắt đầu ôn tập →'}</button>
+    <div style="font-size:12.5px; color:var(--ink-faint); margin:4px 0 10px;">${vst.review.length} ôn lại · ${vst.newWords.length} từ mới${vst.newTotal>vst.newWords.length ? ` · còn ${vst.newTotal-vst.newWords.length} từ chưa học (mở dần các ngày sau)` : ''}</div>
+    <button class="hero-btn" ${due===0?'disabled':''}>${due===0 ? 'Đã ôn hết — quay lại sau' : (due>vocabBatchSize() ? 'Học lượt ' + vocabBatchSize() + ' từ →' : 'Bắt đầu ôn tập →')}</button>
   `;
   hero.querySelector('button').onclick = ()=>{ if(due>0) startVocabReview(); };
   // 2 lối tắt vào thẳng đúng chế độ ôn muốn dùng, khỏi phải mở màn ôn tập
@@ -9370,7 +9530,8 @@ function renderVocabHome(){
   search.className = 'search-box';
   search.placeholder = 'Tìm từ hoặc nghĩa...';
   search.value = vocabSearch;
-  search.oninput = (e)=>{ vocabSearch = e.target.value; renderVocabList(list); };
+  let _searchTimer = null;
+  search.oninput = (e)=>{ vocabSearch = e.target.value; clearTimeout(_searchTimer); _searchTimer = setTimeout(()=>renderVocabList(list), 200); };
   main.appendChild(search);
 
   // Không còn chủ đề đang lọc (vừa bị xoá ở nơi khác) → quay về "Tất cả".
@@ -9430,7 +9591,7 @@ function renderVocabTopicTree(main, parentId, depth){
     const kids = childVocabTopics(t.id).length;
     const isOpen = expandedVocabTopics.has(t.id);
     const isSelected = vocabTopicFilter === t.id;
-    const wordCount = DATA.vocab.filter(w=>w.topicId && vocabTopicSubtreeIds(t.id).includes(w.topicId)).length;
+    const wordCount = (_vocabTopicCounts || (_vocabTopicCounts = computeVocabTopicCounts())).get(t.id) || 0;
 
     const row = document.createElement('div');
     row.className = 'subject-row' + (isSelected ? ' topic-selected' : '');
@@ -9531,10 +9692,23 @@ function attachVocabTopicLongPress(chip, topic){
   chip.addEventListener('click', (e)=>{ if(fired){ e.preventDefault(); e.stopPropagation(); } });
 }
 
+// Danh sách từ chỉ vẽ từng đợt VOCAB_PAGE từ (kéo xuống cuối / bấm "Hiện thêm"
+// mới vẽ tiếp) thay vì vẽ cả nghìn từ cùng lúc — vẽ hết là nguyên nhân chính
+// gây lag khi kho có nhiều từ. Các tra cứu (đường dẫn chủ đề, họ từ) được
+// tính sẵn 1 lần cho cả lượt vẽ, và dùng 1 trình xử lý bấm chung cho cả danh
+// sách thay vì gắn riêng cho từng từ.
+const VOCAB_PAGE = 40;
+let vocabListLimit = VOCAB_PAGE;
+let _vocabListSig = null;
 function renderVocabList(list){
+  if(list._io){ try{ list._io.disconnect(); }catch(e){ /* bỏ qua */ } list._io = null; }
   list.innerHTML = '';
   const q = vocabSearch.trim().toLowerCase();
-  let words = DATA.vocab.slice().sort((a,b)=>a.due-b.due);
+  // Đổi từ khoá tìm / chủ đề lọc → quay về đợt đầu; vẽ lại vì lý do khác thì giữ nguyên số từ đã mở.
+  const sig = (vocabTopicFilter||'') + '|' + q;
+  if(sig !== _vocabListSig){ _vocabListSig = sig; vocabListLimit = VOCAB_PAGE; }
+
+  let words = DATA.vocab;
   if(vocabTopicFilter){
     const allowed = new Set(vocabTopicSubtreeIds(vocabTopicFilter));
     words = words.filter(w => w.topicId && allowed.has(w.topicId));
@@ -9542,19 +9716,32 @@ function renderVocabList(list){
   if(q) words = words.filter(w =>
     w.word.toLowerCase().includes(q) || w.meaning.toLowerCase().includes(q)
   );
+  words = words.slice().sort((a,b)=>a.due-b.due);
 
   if(words.length===0){
     list.appendChild(emptyState('🔤', q ? 'Không tìm thấy từ nào phù hợp.' : 'Chưa có từ vựng nào. Nhấn + để thêm từ đầu tiên.'));
     return;
   }
 
-  words.forEach(w=>{
+  // Tính sẵn 1 lần: họ từ + số từ mỗi họ, đường dẫn chủ đề.
+  const famById = new Map(DATA.wordFamilies.map(f=>[f.id, f]));
+  const famCount = new Map();
+  DATA.vocab.forEach(w=>{ if(w.familyId) famCount.set(w.familyId, (famCount.get(w.familyId)||0)+1); });
+  const pathCache = new Map();
+  const pathOf = (id)=>{
+    let p = pathCache.get(id);
+    if(p === undefined){ p = vocabTopicPath(id).map(t=>t.name).join(' › '); pathCache.set(id, p); }
+    return p;
+  };
+
+  const makeItem = (w)=>{
     const item = document.createElement('div');
     item.className = 'manage-item';
-    const topicPath = w.topicId ? vocabTopicPath(w.topicId).map(t=>t.name).join(' › ') : '';
+    item.dataset.id = w.id;
+    const topicPath = w.topicId ? pathOf(w.topicId) : '';
     const subInfo = [w.ipa, w.pos, topicPath].filter(Boolean).join('  ·  ');
-    const family = w.familyId ? wordFamilyById(w.familyId) : null;
-    const familyCount = family ? wordsInFamily(family.id, w.id).length : 0;
+    const family = w.familyId ? famById.get(w.familyId) : null;
+    const familyCount = family ? Math.max(0, (famCount.get(family.id)||1) - 1) : 0;
     item.innerHTML = `
       <div class="mi-top">
         <div>
@@ -9571,11 +9758,46 @@ function renderVocabList(list){
         <button class="mi-del">✕</button>
       </div>
     `;
-    item.querySelector('.vocab-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(w.word); };
-    item.querySelector('.mi-del').onclick = (e)=>{ e.stopPropagation(); deleteVocabId = w.id; render(); };
-    item.onclick = ()=>{ editVocabId = w.id; resetVocabAddDraft(); setView('vocab-add'); };
-    list.appendChild(item);
-  });
+    return item;
+  };
+
+  list.onclick = (e)=>{
+    const item = e.target.closest('.manage-item');
+    if(!item || !list.contains(item)) return;
+    const w = vocabById(item.dataset.id);
+    if(!w) return;
+    if(e.target.closest('.vocab-speak-btn')){ e.stopPropagation(); speakWord(w.word); return; }
+    if(e.target.closest('.mi-del')){ e.stopPropagation(); deleteVocabId = w.id; render(); return; }
+    editVocabId = w.id; resetVocabAddDraft(); setView('vocab-add');
+  };
+
+  let shown = 0;
+  let moreBtn = null;
+  const showMore = (upTo)=>{
+    const target = Math.min(words.length, upTo);
+    const frag = document.createDocumentFragment();
+    for(; shown < target; shown++) frag.appendChild(makeItem(words[shown]));
+    if(moreBtn){ moreBtn.remove(); moreBtn = null; }
+    if(list._io){ try{ list._io.disconnect(); }catch(e){ /* bỏ qua */ } list._io = null; }
+    list.appendChild(frag);
+    vocabListLimit = Math.max(vocabListLimit, shown);
+    if(shown < words.length){
+      moreBtn = document.createElement('button');
+      moreBtn.type = 'button';
+      moreBtn.className = 'chip';
+      moreBtn.style.cssText = 'width:100%; justify-content:center; text-align:center; padding:12px; margin:8px 0 16px;';
+      moreBtn.textContent = 'Hiện thêm ' + Math.min(VOCAB_PAGE, words.length-shown) + ' từ (còn ' + (words.length-shown) + ')';
+      moreBtn.onclick = ()=> showMore(shown + VOCAB_PAGE);
+      list.appendChild(moreBtn);
+      if('IntersectionObserver' in window){
+        list._io = new IntersectionObserver((entries)=>{
+          if(entries.some(en=>en.isIntersecting)) showMore(shown + VOCAB_PAGE);
+        }, { rootMargin:'300px' });
+        list._io.observe(moreBtn);
+      }
+    }
+  };
+  showMore(Math.max(VOCAB_PAGE, vocabListLimit));
 }
 
 /* ---------------- màn Thêm/Sửa từ vựng ---------------- */
@@ -9583,115 +9805,183 @@ function renderVocabList(list){
 // API) — chạy hoàn toàn trên máy, không gọi mạng nên không dính lỗi CORS
 // như phần tra IPA. Nếu thiết bị/trình duyệt không hỗ trợ thì im lặng bỏ
 // qua (không toast, không throw) vì đây chỉ là tính năng hỗ trợ thêm.
+// Trên điện thoại (Chrome Android, Safari iOS) Web Speech API hay "câm" im lặng vì:
+//  - danh sách giọng nạp trễ (getVoices() rỗng cho tới khi có sự kiện voiceschanged);
+//  - gọi cancel() rồi speak() liền nhau → lệnh speak bị nuốt mất;
+//  - đối tượng utterance bị trình duyệt dọn rác trước khi đọc xong;
+//  - bộ máy đọc kẹt ở trạng thái paused;
+//  - giọng mặc định cho en-US lỗi/chưa cài dữ liệu sau khi hệ điều hành cập nhật.
+// Nên: chọn giọng tiếng Anh cụ thể, giữ tham chiếu, chờ nhịp sau cancel, resume
+// khi kẹt, và nếu giọng lỗi thì tự thử giọng tiếng Anh khác 1 lần.
 let _ttsVoices = [];
-let _speakToken = 0;
+let _ttsUtter = null;
+let _ttsWarned = false;
+let _ttsLastVoice = '';
+let _ttsAudio = null;
+// Cài đặt này lưu RIÊNG TỪNG THIẾT BỊ (localStorage, không đồng bộ) vì máy tính
+// có thể đọc tốt trong khi điện thoại thì không.
+//   auto   : dùng giọng của máy; nếu máy không đọc được thì tự chuyển sang phát âm qua mạng
+//   device : chỉ dùng giọng của máy
+//   online : luôn phát âm bằng âm thanh tải qua mạng
+function ttsSource(){ try{ return localStorage.getItem('tts_source') || 'auto'; }catch(e){ return 'auto'; } }
+function setTtsSource(v){ try{ localStorage.setItem('tts_source', v); localStorage.removeItem('tts_online_until'); }catch(e){ /* bỏ qua */ } }
+function ttsAutoOnline(){ try{ return Number(localStorage.getItem('tts_online_until')||0) > Date.now(); }catch(e){ return false; } }
+function markTtsAutoOnline(){ try{ localStorage.setItem('tts_online_until', String(Date.now() + 7*24*3600*1000)); }catch(e){ /* bỏ qua */ } }
 
-function _loadVoices(){
-  try{ _ttsVoices = window.speechSynthesis.getVoices() || []; }catch(e){}
+function refreshTtsVoices(){
+  try{ _ttsVoices = window.speechSynthesis.getVoices() || []; }catch(e){ _ttsVoices = []; }
 }
 if('speechSynthesis' in window){
-  _loadVoices();
-  // Trên di động danh sách giọng thường nạp trễ, phải nghe sự kiện này
-  window.speechSynthesis.onvoiceschanged = _loadVoices;
+  refreshTtsVoices();
+  try{ window.speechSynthesis.addEventListener('voiceschanged', refreshTtsVoices); }
+  catch(e){ window.speechSynthesis.onvoiceschanged = refreshTtsVoices; }
+}
+function pickEnglishVoice(skipName){
+  const score = (v)=>{
+    const l = (v.lang||'').replace('_','-').toLowerCase();
+    let sc = 0;
+    if(l==='en-us') sc += 10; else if(l==='en-gb') sc += 5;
+    if(v.localService) sc += 3; // giọng cài sẵn trên máy ổn định hơn giọng tải qua mạng
+    if(/google|samantha|enhanced|premium/i.test(v.name||'')) sc += 1;
+    return sc;
+  };
+  return _ttsVoices
+    .filter(v=>/^en([-_]|$)/i.test(v.lang||'') && v.name!==skipName)
+    .sort((x,y)=>score(y)-score(x))[0] || null;
 }
 
-// Giọng tiếng Anh, xếp: offline en-US > offline en-khác > mạng en-US > mạng khác
-function _englishVoices(){
-  if(!_ttsVoices.length) _loadVoices();
-  const score = v => (v.localService ? 0 : 2) + (/^en[-_]US$/i.test(v.lang) ? 0 : 1);
-  return _ttsVoices.filter(v => /^en[-_]/i.test(v.lang)).sort((a,b)=>score(a)-score(b));
+// Làm sạch chuỗi trước khi đọc: bỏ ký hiệu mà bộ đọc không hiểu (ngoặc, gạch
+// chéo "prep/adv", "~", "…", sb/sth viết tắt) — đây là lý do nhiều cụm từ "lạ"
+// bị nguồn phát âm từ chối hoặc đọc im lặng.
+function ttsClean(text){
+  let t = String(text||'');
+  t = t.replace(/\(\s*(?:n|v|adj|adv|prep|conj|pron|det|interj|exclam|phr\.?\s*v|idiom)(?:\s*\/\s*(?:n|v|adj|adv|prep|conj|pron|det))*\.?\s*\)/gi, ' '); // bỏ nhãn loại từ như (n), (v), (prep/adv)
+  t = t.replace(/\bsb\b\.?/gi, 'somebody').replace(/\bsth\b\.?/gi, 'something');
+  t = t.replace(/[()\[\]{}<>~…\/\\|*_=+#@^"“”]/g, ' ').replace(/\.{2,}/g, ' ');
+  t = t.replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim();
+  if(t.length > 180){ t = t.slice(0, 180); const sp = t.lastIndexOf(' '); if(sp > 40) t = t.slice(0, sp); }
+  return t;
 }
 
-// Đọc 1 lần, trả về true nếu thực sự phát ra tiếng, false nếu câm/lỗi
-function _speakOnce(text, voice){
-  return new Promise(resolve=>{
-    const synth = window.speechSynthesis;
-    let done = false, started = false, timer = null;
-    const finish = ok => { if(done) return; done = true; clearTimeout(timer); resolve(ok); };
-    const u = new SpeechSynthesisUtterance(text);
-    if(voice){ u.voice = voice; u.lang = voice.lang; } else { u.lang = 'en-US'; }
-    u.rate = 0.95;
-    u.onstart = () => { started = true; };
-    u.onend   = () => finish(started);   // kết thúc mà chưa từng "start" = câm
-    u.onerror = () => finish(false);
-    timer = setTimeout(()=>{
-      if(!started){ try{ synth.cancel(); }catch(e){} finish(false); }
-    }, 1500);
-    try{ synth.resume(); synth.speak(u); }catch(e){ finish(false); }
+// Đường dự phòng: phát file âm thanh phát âm (giọng Mỹ) tải qua mạng bằng thẻ
+// <audio> — không dùng bộ đọc của máy nên chạy được cả khi máy hỏng TTS.
+// Mỗi nguồn được KIỂM TRA xem có thật sự phát ra tiếng không (có nguồn trả về
+// file rỗng/quá ngắn cho từ lạ mà không báo lỗi) — không thì sang nguồn kế tiếp.
+// Hết nguồn mà là cụm nhiều từ thì đọc lần lượt từng từ.
+let _ttsPlayToken = 0;
+let _ttsAudioWarnedAt = 0;
+function ttsAudioUrls(text){
+  const enc = encodeURIComponent(text);
+  const google = (client)=>'https://translate.google.com/translate_tts?ie=UTF-8&tl=en&total=1&idx=0&textlen=' + text.length + '&client=' + client + '&q=' + enc;
+  const youdao = 'https://dict.youdao.com/dictvoice?audio=' + enc + '&type=2';
+  // Từ đơn thông thường: Youdao (giọng tự nhiên) trước; cụm/từ lạ: Google (đọc được chuỗi bất kỳ) trước.
+  return /^[A-Za-z'-]+$/.test(text)
+    ? [youdao, google('tw-ob'), google('gtx')]
+    : [google('tw-ob'), google('gtx'), youdao];
+}
+function playOneSource(url, token){
+  return new Promise((resolve)=>{
+    const a = new Audio();
+    let done = false, played = false;
+    const finish = (ok)=>{ if(done) return; done = true; clearTimeout(timer); resolve(ok); };
+    const timer = setTimeout(()=>{ try{ a.pause(); }catch(e){ /* bỏ qua */ } finish(false); }, 7000); // 7 giây chưa phát được → bỏ
+    a.preload = 'auto';
+    a.onerror = ()=> finish(false);
+    a.onplaying = ()=>{ played = true; clearTimeout(timer); };
+    a.onloadedmetadata = ()=>{ if(isFinite(a.duration) && a.duration < 0.25){ try{ a.pause(); }catch(e){ /* bỏ qua */ } finish(false); } };
+    a.onended = ()=> finish(played && a.currentTime >= 0.2);
+    a.onpause = ()=>{ if(!a.ended && token !== _ttsPlayToken) finish(true); }; // bị lệnh phát mới ngắt
+    _ttsAudio = a;
+    a.src = url;
+    const p = a.play();
+    if(p && p.catch) p.catch((err)=>{
+      // Chưa chạm màn hình → trình duyệt chặn tự phát: không phải lỗi nguồn, đừng thử tiếp.
+      finish(!!(err && err.name === 'NotAllowedError'));
+    });
   });
 }
-
-// Tách từ ghép để đọc từng phần
-function _splitForSpeech(w){
-  const parts = w.split(/[\s\-]+/).filter(Boolean);
-  if(parts.length > 1) return parts;
-  if(ipaBigDictMap && w.length >= 6){
-    let best = null, bestScore = 0;
-    for(let i=3; i<=w.length-3; i++){
-      const a = w.slice(0,i), b = w.slice(i);
-      if(ipaBigDictMap.has(a) && ipaBigDictMap.has(b)){
-        const s = Math.min(a.length, b.length);
-        if(s > bestScore){ bestScore = s; best = [a, b]; }
-      }
+async function speakViaAudio(text){
+  const w = ttsClean(text);
+  if(!w) return;
+  const token = ++_ttsPlayToken;
+  if(_ttsAudio){ try{ _ttsAudio.pause(); }catch(e){ /* bỏ qua */ } }
+  const tryAll = async (t)=>{
+    for(const url of ttsAudioUrls(t)){
+      if(token !== _ttsPlayToken) return true;
+      if(await playOneSource(url, token)) return true;
     }
-    if(best) return best;
+    return false;
+  };
+  if(await tryAll(w)) return;
+  const parts = w.split(' ').filter(Boolean);
+  if(parts.length > 1){
+    let any = false;
+    for(const part of parts){
+      if(token !== _ttsPlayToken) return;
+      if(await tryAll(part)) any = true;
+    }
+    if(any) return;
   }
-  return [w];
+  if(token === _ttsPlayToken && Date.now() - _ttsAudioWarnedAt > 6000){
+    _ttsAudioWarnedAt = Date.now();
+    toast('Không có giọng đọc cho "' + w.slice(0, 24) + '" — kiểm tra mạng/âm lượng');
+  }
 }
 
-// Phương án cuối qua mạng (endpoint không chính thức, có thể đổi/chặn bất cứ lúc nào)
-function _playOnlineTts(w){
-  return new Promise(resolve=>{
-    try{
-      const a = new Audio('https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en&q=' + encodeURIComponent(w));
-      a.onended = () => resolve(true);
-      a.onerror = () => resolve(false);
-      a.play().catch(()=>resolve(false));
-    }catch(e){ resolve(false); }
-  });
-}
-
-// Phát âm có nhiều tầng dự phòng: nguyên từ (thử từng giọng) → tách từ ghép
-// → file âm thanh qua mạng → đánh vần từng chữ cái.
-async function speakWord(text){
-  const w = ipaCleanInput(text);
-  if(!w || !('speechSynthesis' in window)) return;
+function speakWord(text, _retry){
+  const w = ttsClean(text);
+  if(!w) return;
+  const src = ttsSource();
+  if(src==='online' || (src==='auto' && ttsAutoOnline())){ speakViaAudio(w); return; }
+  if(!('speechSynthesis' in window)){
+    if(src==='auto') speakViaAudio(w);
+    return;
+  }
   const synth = window.speechSynthesis;
-  const token = ++_speakToken;       // bấm nhanh liên tiếp thì bỏ lượt cũ
   try{
-    synth.cancel();
-    await new Promise(r => setTimeout(r, 80));
-    const voices = _englishVoices().slice(0, 3);
-    const tries = voices.length ? voices : [null];
-
-    // 1) nguyên từ/cụm, thử lần lượt từng giọng
-    for(const v of tries){
-      if(token !== _speakToken) return;
-      if(await _speakOnce(w, v)) return;
-    }
-
-    // 2) tách từ ghép, đọc từng phần
-    const parts = _splitForSpeech(w);
-    if(parts.length > 1){
-      let any = false;
-      for(const p of parts){
-        if(token !== _speakToken) return;
-        for(const v of tries){
-          if(await _speakOnce(p, v)){ any = true; break; }
+    if(!_ttsVoices.length) refreshTtsVoices();
+    if(synth.paused) synth.resume();
+    const busy = synth.speaking || synth.pending;
+    if(busy) synth.cancel(); // huỷ câu đang đọc dở nếu bấm liên tiếp/đổi thẻ nhanh
+    const doSpeak = ()=>{
+      const utter = new SpeechSynthesisUtterance(w);
+      utter.lang = 'en-US';
+      utter.rate = 0.95;
+      const v = pickEnglishVoice(_retry && _retry.skip);
+      if(v){ utter.voice = v; utter.lang = v.lang; }
+      _ttsLastVoice = v ? v.name + ' (' + v.lang + ')' : 'mặc định';
+      let started = false, failed = false;
+      const fail = (why)=>{
+        if(failed) return;
+        failed = true;
+        console.warn('[TTS] không phát được:', why, v && v.name);
+        try{ synth.cancel(); }catch(e){ /* bỏ qua */ }
+        if(!_retry){ speakWord(w, { skip: v ? v.name : '' }); return; } // thử giọng khác 1 lần
+        if(src==='auto'){
+          // Giọng của máy câm → chuyển sang phát âm qua mạng (nhớ 7 ngày trên thiết bị này).
+          markTtsAutoOnline();
+          speakViaAudio(w);
+          if(!_ttsWarned){ _ttsWarned = true; toast('Giọng đọc của máy không hoạt động — đã chuyển sang phát âm qua mạng'); }
+        } else if(!_ttsWarned){
+          _ttsWarned = true;
+          toast('Giọng đọc của máy không hoạt động — thử chọn "Qua mạng" ở Cài đặt');
         }
-      }
-      if(any) return;
-    }
-
-    // 3) file âm thanh qua mạng
-    if(token !== _speakToken) return;
-    if(await _playOnlineTts(w)) return;
-
-    // 4) đánh vần từng chữ cái
-    if(token !== _speakToken) return;
-    const letters = w.replace(/[^a-z0-9]/g, '').split('').join(', ');
-    if(letters) await _speakOnce(letters, tries[0]);
-  }catch(e){ /* một số trình duyệt/thiết bị chặn TTS — bỏ qua */ }
+      };
+      utter.onstart = ()=>{ started = true; };
+      utter.onerror = (ev)=>{
+        const err = ev && ev.error;
+        if(err==='interrupted' || err==='canceled') return;
+        fail(err || 'error');
+      };
+      _ttsUtter = utter; // giữ tham chiếu để không bị dọn rác giữa chừng
+      synth.speak(utter);
+      // Bộ đọc kẹt (không báo lỗi mà cũng không bắt đầu): sau ~2 giây coi như lỗi.
+      setTimeout(()=>{ if(!started && _ttsUtter===utter) fail('no-start'); }, 2000);
+    };
+    if(busy) setTimeout(doSpeak, 80); else doSpeak();
+  }catch(e){
+    if(src==='auto') speakViaAudio(w);
+  }
 }
 
 // Tự động tra phiên âm IPA cho 1 từ tiếng Anh. Có 2 nguồn, ưu tiên nguồn 1:
@@ -9728,7 +10018,12 @@ async function loadIpaBigDict(){
       if(!res.ok) throw new Error('bad status ' + res.status);
       const text = await res.text();
       const map = new Map();
-      for(const line of text.split('\n')){
+      const allLines = text.split('\n');
+      for(let li = 0; li < allLines.length; li++){
+        // Cứ ~6000 dòng lại nhường luồng chính 1 nhịp để app không bị đứng hình
+        // khi đang dựng bộ từ điển 135.000 từ (nhất là trên điện thoại).
+        if(li % 6000 === 5999) await new Promise(r=>setTimeout(r,0));
+        const line = allLines[li];
         const tab = line.indexOf('\t');
         if(tab < 0) continue;
         const word = line.slice(0, tab).trim().toLowerCase();
@@ -9750,7 +10045,13 @@ async function loadIpaBigDict(){
 
 // Tải trước bộ từ điển ngay khi app khởi động (không chặn UI) để lần đầu
 // bấm "Tự động điền phiên âm" đã có sẵn, tra tức thì.
-function preloadIpaBigDict(){ loadIpaBigDict(); }
+// Chờ app rảnh (vài giây sau khi mở) mới tải/dựng từ điển, tránh tranh CPU với
+// lúc app đang vẽ màn hình đầu tiên.
+function preloadIpaBigDict(){
+  const go = ()=>{ loadIpaBigDict(); };
+  if('requestIdleCallback' in window) requestIdleCallback(go, { timeout: 8000 });
+  else setTimeout(go, 3000);
+}
 
 async function parseIpaFromDictionaryApiResponse(res){
   if(!res.ok) return null;
@@ -9790,50 +10091,6 @@ function composeClosedCompoundIpa(map, w){
   if(!best) return null;
   return '/' + ipaStripSlashes(best[0]) + ipaStripSlashes(best[1]).replace(/ˈ/g, 'ˌ') + '/';
 }
-// Làm sạch input trước khi tra IPA / phát âm: bỏ ghi chú trong ngoặc,
-// sb/sth, "to " đầu cụm. Nếu làm sạch xong mà rỗng thì giữ nguyên bản gốc.
-function ipaCleanInput(raw){
-  const orig = String(raw||'').toLowerCase().trim();
-  const cleaned = orig
-    .replace(/\(.*?\)/g, ' ')
-    .replace(/\b(sb|sth)(\'s)?\b/g, ' ')
-    .replace(/[\/…\.,;:!?]/g, ' ')
-    .replace(/^to\s+/, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return cleaned || orig;
-}
-
-// Từ chia đuôi: tìm từ gốc rồi gắn đuôi phát âm (-ing, -ed, -s/-es)
-function ipaFromInflected(map, w){
-  const cands = []; let m;
-  if((m = w.match(/^(.+)ing$/))){
-    cands.push([m[1],'ing'], [m[1]+'e','ing']);
-    if(/(.)\1$/.test(m[1])) cands.push([m[1].slice(0,-1),'ing']);
-  }
-  if((m = w.match(/^(.+)ied$/))) cands.push([m[1]+'y','d']);
-  if((m = w.match(/^(.+)ed$/))){
-    cands.push([m[1],'ed'], [m[1]+'e','ed']);
-    if(/(.)\1$/.test(m[1])) cands.push([m[1].slice(0,-1),'ed']);
-  }
-  if((m = w.match(/^(.+)ies$/))) cands.push([m[1]+'y','z']);
-  if((m = w.match(/^(.+)es$/))) cands.push([m[1],'s']);
-  if((m = w.match(/^(.+)s$/))) cands.push([m[1],'s']);
-  for(const [stem, kind] of cands){
-    const base = map.get(stem);
-    if(!base) continue;
-    const b = ipaStripSlashes(base);
-    const last = b.replace(/[ˈˌ]/g,'').slice(-1);
-    let suf;
-    if(kind==='ing') suf = 'ɪŋ';
-    else if(kind==='d') suf = 'd';
-    else if(kind==='ed') suf = 'td'.includes(last) ? 'ɪd' : ('pkfsʃθ'.includes(last) ? 't' : 'd');
-    else suf = 'szʃʒ'.includes(last) ? 'ɪz' : ('pktfθ'.includes(last) ? 's' : 'z');
-    return '/' + b + suf + '/';
-  }
-  return null;
-}
-
 function composeIpaFromDict(map, text){
   const t = (text||'').trim().toLowerCase();
   if(!t) return null;
@@ -9842,20 +10099,19 @@ function composeIpaFromDict(map, text){
     if(parts.length < 2) return null;
     const out = [];
     for(const part of parts){
-      const v = map.get(part) || ipaFromInflected(map, part) || composeClosedCompoundIpa(map, part);
+      const v = map.get(part) || composeClosedCompoundIpa(map, part);
       if(!v) return null;
       out.push(ipaStripSlashes(v));
     }
     return '/' + out.join(/\s/.test(t) ? ' ' : '') + '/';
   }
-  return ipaFromInflected(map, t) || composeClosedCompoundIpa(map, t);
+  return composeClosedCompoundIpa(map, t);
 }
 
 async function fetchIpaFor(word){
   const w = (word||'').trim();
   if(!w) return null;
-  const wLower = ipaCleanInput(w);
-  if(!wLower) return null;
+  const wLower = w.toLowerCase();
 
   // Nguồn 1: bộ từ điển lớn đã tải về máy — tra tức thì, không cần mạng.
   const bigDict = await loadIpaBigDict();
@@ -10051,6 +10307,8 @@ let vocabBulkRows = [];        // {id, word, pos, ipa, meaning, composed, dup, s
 let vocabBulkBusy = false;
 let vocabBulkTopic = null;
 let vocabBulkProgress = '';
+let vocabBulkQuick = false;      // lượt hiện tại là nhập nhanh (không tra mạng)
+let vocabBulkRemaining = '';     // phần chưa xử lý khi dán hơn 20 từ
 
 function parseBulkLines(text){
   const seen = new Set();
@@ -10067,6 +10325,32 @@ function parseBulkLines(text){
     out.push({ word, meaning });
   });
   return out;
+}
+
+// Nhập nhanh: dán theo mẫu
+//   tourism /ˈtʊə.rɪ.zəm/ (n): Ngành du lịch.
+//   Ex: Tourism plays a crucial role. (Du lịch đóng vai trò quan trọng.)
+// → tách sẵn Từ, Phiên âm, Loại từ, Nghĩa, Ví dụ — không cần tra mạng.
+const QUICK_IMPORT_MAX = 20;
+function parseQuickEntries(text){
+  const lines = String(text||'').split(/\r?\n/);
+  const exRe = /^\s*(?:ex|eg|e\.g\.|example|ví dụ|vd)\s*[:：]\s*(.*)$/i;
+  const headRe = /^\s*([^:：\/\[(]+?)\s*(\/[^\/]+\/|\[[^\]]+\])?\s*(?:\(([^)]*)\))?\s*[:：]\s*(.+?)\s*$/;
+  const entries = [];
+  let cur = null;
+  lines.forEach((raw, i)=>{
+    if(!raw.trim()) return;
+    const ex = raw.match(exRe);
+    if(ex){ if(cur) cur.example = (cur.example ? cur.example+' ' : '') + ex[1].trim(); return; }
+    const h = raw.match(headRe);
+    if(h && (h[2] || h[3] || h[1].trim().split(/\s+/).length <= 4)){
+      cur = { word:h[1].trim(), ipa:(h[2]||'').trim(), pos:(h[3]||'').trim(), meaning:h[4].trim(), example:'', line:i };
+      entries.push(cur);
+    } else if(cur && !cur.example){
+      cur.meaning += ' ' + raw.trim(); // dòng nghĩa bị xuống dòng
+    }
+  });
+  return entries.filter(e=>e.word && e.meaning && (e.ipa || e.pos || e.example));
 }
 
 async function lookupBulkEntry(entry){
@@ -10112,18 +10396,21 @@ function renderVocabBulk(){
   // ---- Bước 1: dán danh sách ----
   const f = document.createElement('div');
   f.className = 'field';
-  f.innerHTML = `<label>Danh sách từ (mỗi dòng 1 từ hoặc cụm từ)</label>`;
+  f.innerHTML = `<label>Danh sách từ (mỗi dòng 1 từ, hoặc dán theo mẫu Nhập nhanh)</label>`;
   const ta = document.createElement('textarea');
   ta.rows = 6;
-  ta.placeholder = 'ubiquitous\nice cream\nmake a decision - đưa ra quyết định';
+  ta.placeholder = 'Nhập nhanh (tối đa ' + QUICK_IMPORT_MAX + ' từ/lượt):\ntourism /ˈtʊə.rɪ.zəm/ (n): Ngành du lịch.\nEx: Tourism plays a crucial role. (Du lịch đóng vai trò quan trọng.)\n\nHoặc mỗi dòng 1 từ:\nubiquitous\nmake a decision - đưa ra quyết định';
   ta.value = vocabBulkText;
-  ta.oninput = ()=>{ vocabBulkText = ta.value; };
+  ta.oninput = ()=>{
+    vocabBulkText = ta.value;
+    if(typeof lookupBtn !== 'undefined' && !vocabBulkBusy) lookupBtn.textContent = parseQuickEntries(ta.value).length ? '⚡ Nhập nhanh' : '🔎 Tra tất cả';
+  };
   f.appendChild(ta);
   main.appendChild(f);
 
   const hint = document.createElement('div');
   hint.style.cssText = 'font-size:12px; color:var(--ink-faint); margin:-6px 0 10px;';
-  hint.textContent = 'Muốn tự đặt nghĩa thì gõ "từ - nghĩa" hoặc "từ = nghĩa"; không có thì app tự dịch.';
+  hint.textContent = 'Nhập nhanh: "từ /phiên âm/ (loại từ): nghĩa" rồi dòng "Ex: ví dụ" — tách sẵn, không cần tra. Kiểu 1 từ/dòng thì gõ "từ - nghĩa" hoặc để app tự dịch.';
   main.appendChild(hint);
 
   // chủ đề chung cho cả lượt
@@ -10149,7 +10436,7 @@ function renderVocabBulk(){
 
   const lookupBtn = document.createElement('button');
   lookupBtn.className = 'save-btn';
-  lookupBtn.textContent = vocabBulkBusy ? 'Đang tra…' : '🔎 Tra tất cả';
+  lookupBtn.textContent = vocabBulkBusy ? 'Đang tra…' : (parseQuickEntries(vocabBulkText).length ? '⚡ Nhập nhanh' : '🔎 Tra tất cả');
   lookupBtn.disabled = vocabBulkBusy;
   const progress = document.createElement('div');
   progress.id = 'vocabBulkProgress';
@@ -10157,6 +10444,26 @@ function renderVocabBulk(){
   progress.textContent = vocabBulkProgress;
 
   lookupBtn.onclick = async ()=>{
+    const quick = parseQuickEntries(ta.value);
+    if(quick.length){
+      const picked = quick.slice(0, QUICK_IMPORT_MAX);
+      const existing = new Set(DATA.vocab.map(w=>w.word.trim().toLowerCase()));
+      const seen = new Set();
+      vocabBulkRows = picked.map(e=>{
+        const key = e.word.toLowerCase();
+        const dup = existing.has(key) || seen.has(key);
+        seen.add(key);
+        return { id: uid(), word:e.word, pos:e.pos, ipa:e.ipa, meaning:e.meaning, example:e.example, composed:false, dup, selected:!dup };
+      });
+      vocabBulkQuick = true;
+      // Còn dư (dán hơn 20 từ) → giữ lại phần chưa xử lý trong ô nhập cho lượt sau.
+      const rest = quick.slice(QUICK_IMPORT_MAX);
+      vocabBulkRemaining = rest.length ? ta.value.split(/\r?\n/).slice(rest[0].line).join('\n') : '';
+      if(rest.length) toast('Chỉ xử lý ' + QUICK_IMPORT_MAX + ' từ mỗi lượt — còn ' + rest.length + ' từ để lượt sau');
+      render();
+      return;
+    }
+    vocabBulkQuick = false; vocabBulkRemaining = '';
     const entries = parseBulkLines(ta.value).slice(0, 60);
     if(!entries.length){ toast('Hãy dán ít nhất 1 từ'); return; }
     vocabBulkText = ta.value;
@@ -10193,7 +10500,7 @@ function renderVocabBulk(){
   if(vocabBulkRows.length){
     const title = document.createElement('div');
     title.className = 'section-label';
-    title.textContent = 'Xem lại trước khi lưu (bản dịch máy — nên kiểm tra)';
+    title.textContent = vocabBulkQuick ? 'Xem lại trước khi lưu' : 'Xem lại trước khi lưu (bản dịch máy — nên kiểm tra)';
     main.appendChild(title);
 
     const counter = document.createElement('div');
@@ -10247,6 +10554,10 @@ function renderVocabBulk(){
       meaningIn.type = 'text'; meaningIn.placeholder = 'nghĩa (bắt buộc)'; meaningIn.value = r.meaning; meaningIn.style.cssText = inputStyle;
       meaningIn.oninput = ()=>{ r.meaning = meaningIn.value; };
       card.appendChild(meaningIn);
+      const exIn = document.createElement('input');
+      exIn.type = 'text'; exIn.placeholder = 'ví dụ (tuỳ chọn)'; exIn.value = r.example || ''; exIn.style.cssText = inputStyle;
+      exIn.oninput = ()=>{ r.example = exIn.value; };
+      card.appendChild(exIn);
       main.appendChild(card);
     });
     main.appendChild(counter);
@@ -10257,12 +10568,16 @@ function renderVocabBulk(){
       if(missing.length){ toast('Còn ' + missing.length + ' từ chưa có nghĩa — hãy điền hoặc bỏ chọn'); return; }
       const now = Date.now();
       picked.forEach(r=>{
-        DATA.vocab.push({id:uid(), word:r.word.trim(), meaning:r.meaning.trim(), ipa:r.ipa.trim(), pos:r.pos.trim(), example:'', topicId:vocabBulkTopic || null, familyId:null, collocations:[], ease:2.5, interval:0, reps:0, due:now});
+        DATA.vocab.push({id:uid(), word:r.word.trim(), meaning:r.meaning.trim(), ipa:r.ipa.trim(), pos:r.pos.trim(), example:(r.example||'').trim(), topicId:vocabBulkTopic || null, familyId:null, collocations:[], ease:2.5, interval:0, reps:0, due:now});
       });
       toast('Đã thêm ' + picked.length + ' từ vựng ✓');
-      vocabBulkRows = []; vocabBulkText = '';
+      const wasQuick = vocabBulkQuick;
+      vocabBulkRows = [];
+      vocabBulkText = wasQuick ? vocabBulkRemaining : '';
+      vocabBulkRemaining = ''; vocabBulkQuick = false;
       await saveData();
-      setView('vocab');
+      // Nhập nhanh → ở lại màn này để dán lượt tiếp theo; kiểu cũ thì về danh sách.
+      if(wasQuick){ render(); window.scrollTo(0,0); } else setView('vocab');
     };
     main.appendChild(saveBtn);
     updateCounter();
@@ -10814,12 +11129,23 @@ function renderVocabAdd(){
       DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
       toast('Đã thêm từ vựng ✓');
     }
+    const wasEditing = !!editing;
     editVocabId = null;
     addVocabCollocations = [];
     vocabAddLoadedFor = undefined;
     resetVocabAddDraft();
-    await saveData();
-    setView('vocab');
+    if(wasEditing){
+      await saveData();
+      setView('vocab');
+    } else {
+      // Thêm từ mới → ở lại màn này, xoá trắng form (giữ Chủ đề đang chọn) để
+      // gõ từ tiếp theo luôn; bấm "← Quay lại" khi xong.
+      addVocabFamilyChoice = null;
+      render();
+      window.scrollTo(0,0);
+      setTimeout(()=>{ const el = document.getElementById('vocabWordInput'); if(el) el.focus(); }, 50);
+      await saveData(); // lưu sau khi form mới đã hiện, không bắt người dùng chờ
+    }
   };
   main.appendChild(saveBtn);
 
@@ -11049,8 +11375,27 @@ function renderDeleteVocabModal(){
 }
 
 /* ---------------- ôn tập từ vựng ---------------- */
+// Học nhỏ giọt: mỗi lượt chỉ lấy ngẫu nhiên N từ trong số từ đến hạn hôm nay
+// (N chỉnh ở Cài đặt: 10/20/30/50/không giới hạn). Học xong lượt thì thoát ra,
+// bấm học tiếp sẽ được bốc một lượt từ khác — đỡ phải nhớ quá nhiều từ một phiên.
+function vocabBatchSize(){
+  const n = Number(DATA.settings && DATA.settings.vocabBatchSize);
+  return Number.isFinite(n) && n>0 ? n : 20;
+}
+function pickVocabBatch(){
+  const all = dueVocab();
+  const n = vocabBatchSize();
+  if(all.length <= n) return all;
+  // Fisher–Yates từng phần: chỉ xáo đúng n vị trí đầu, không xáo cả kho.
+  for(let i=0; i<n; i++){
+    const j = i + Math.floor(Math.random()*(all.length - i));
+    const t = all[i]; all[i] = all[j]; all[j] = t;
+  }
+  return all.slice(0, n);
+}
+
 function startVocabReview(){
-  vocabReviewQueue = dueVocab().sort((a,b)=>a.due-b.due);
+  vocabReviewQueue = pickVocabBatch();
   vocabReviewIdx = 0;
   vocabFlipped = false;
   vocabSessionXpEarned = 0;
@@ -11072,10 +11417,11 @@ function renderVocabReview(){
     }
     const p = DATA.progress;
     const lvl = computeLevel(p.xp);
+    const moreLeft = vocabReviewQueue.length>0 ? dueVocab().length : 0;
     wrap.innerHTML = `<div class="review-done">
-      <div class="glyph">🎉</div>
-      <h2 class="display">Xong hết rồi!</h2>
-      <p>Bạn đã ôn hết từ vựng đến hạn. Quay lại vào ngày mai nhé.</p>
+      <div class="glyph">${moreLeft>0 ? '🎯' : '🎉'}</div>
+      <h2 class="display">${moreLeft>0 ? 'Xong lượt này rồi!' : 'Xong hết rồi!'}</h2>
+      <p>${moreLeft>0 ? `Hôm nay còn ${moreLeft} từ cần học. Nghỉ một chút rồi học tiếp lượt mới nhé.` : 'Bạn đã ôn hết từ vựng đến hạn. Quay lại vào ngày mai nhé.'}</p>
       ${vocabReviewQueue.length>0 ? `
       <div class="session-recap">
         <div class="session-recap-item"><span class="srv">+${vocabSessionXpEarned}</span><span class="srl">XP</span></div>
@@ -11086,7 +11432,17 @@ function renderVocabReview(){
     const btn = document.createElement('button');
     btn.className = 'hero-btn'; btn.style.maxWidth = '260px'; btn.textContent = 'Về Từ vựng Anh';
     btn.onclick = ()=> setView('vocab');
-    wrap.querySelector('.review-done').appendChild(btn);
+    const doneBox = wrap.querySelector('.review-done');
+    if(moreLeft>0){
+      const nextBtn = document.createElement('button');
+      nextBtn.className = 'hero-btn'; nextBtn.style.maxWidth = '260px';
+      nextBtn.textContent = 'Học lượt tiếp (' + Math.min(vocabBatchSize(), moreLeft) + ' từ) →';
+      nextBtn.onclick = ()=> startVocabReview();
+      doneBox.appendChild(nextBtn);
+      btn.style.marginTop = '10px';
+      btn.style.opacity = '0.85';
+    }
+    doneBox.appendChild(btn);
     return wrap;
   }
 
@@ -11316,10 +11672,13 @@ function renderVocabReview(){
     row.querySelectorAll('.grade-btn').forEach((btn,i)=>{
       btn.onclick = async ()=>{
         const quality = qualities[i];
+        if(!w.firstSeen) w.firstSeen = Date.now();
         grade(w, quality);
+        // "Quên" → xếp lại cuối phiên để gặp lại ngay trong buổi học này.
+        if(quality===0 && vocabReviewQueue[vocabReviewIdx]===w) vocabReviewQueue.push(w);
         recordXpAndStreak(quality);
         vocabSessionXpEarned += (XP_PER_GRADE[quality] || 0);
-        await saveData();
+        saveDataSoon();
         vocabReviewIdx += 1;
         vocabFlipped = false;
         resetVocabAnswerInputState();
