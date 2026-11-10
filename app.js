@@ -3186,11 +3186,11 @@ function renderSettings(){
   ttsRow.innerHTML = `
     <div class="tr-text">
       <div class="tr-title">🔊 Nguồn phát âm (riêng từng thiết bị)</div>
-      <div class="tr-sub">Tự động: dùng giọng của máy, nếu máy không đọc được thì phát qua mạng. Chọn "Qua mạng" nếu điện thoại vẫn im lặng.</div>
+      <div class="tr-sub">Tự động: ưu tiên phát qua mạng, không có mạng hoặc từ không có trong thư viện thì dùng giọng của máy.</div>
     </div>
     <div style="display:flex; gap:8px; align-items:center;">
       <select class="tts-source-select">
-        <option value="auto" ${curSrc==='auto'?'selected':''}>Tự động</option>
+        <option value="auto" ${curSrc==='auto'?'selected':''}>Tự động (mạng → máy)</option>
         <option value="device" ${curSrc==='device'?'selected':''}>Giọng của máy</option>
         <option value="online" ${curSrc==='online'?'selected':''}>Qua mạng</option>
       </select>
@@ -3202,7 +3202,7 @@ function renderSettings(){
     refreshTtsVoices();
     const n = _ttsVoices.filter(v=>/^en([-_]|$)/i.test(v.lang||'')).length;
     speakWord('hello');
-    if(ttsSource()==='online' || (ttsSource()==='auto' && ttsAutoOnline())) toast('Đang phát qua mạng');
+    if(ttsSource()!=='device') toast(ttsSource()==='auto' ? 'Đang thử phát qua mạng (không được sẽ dùng giọng máy)' : 'Đang phát qua mạng');
     else setTimeout(()=>toast(n===0 ? 'Máy chưa có giọng tiếng Anh nào' : n + ' giọng tiếng Anh · đang thử: ' + (_ttsLastVoice||'mặc định')), 300);
   };
   main.appendChild(ttsRow);
@@ -9827,8 +9827,6 @@ let _ttsAudio = null;
 //   online : luôn phát âm bằng âm thanh tải qua mạng
 function ttsSource(){ try{ return localStorage.getItem('tts_source') || 'auto'; }catch(e){ return 'auto'; } }
 function setTtsSource(v){ try{ localStorage.setItem('tts_source', v); localStorage.removeItem('tts_online_until'); }catch(e){ /* bỏ qua */ } }
-function ttsAutoOnline(){ try{ return Number(localStorage.getItem('tts_online_until')||0) > Date.now(); }catch(e){ return false; } }
-function markTtsAutoOnline(){ try{ localStorage.setItem('tts_online_until', String(Date.now() + 7*24*3600*1000)); }catch(e){ /* bỏ qua */ } }
 
 function refreshTtsVoices(){
   try{ _ttsVoices = window.speechSynthesis.getVoices() || []; }catch(e){ _ttsVoices = []; }
@@ -9902,9 +9900,13 @@ function playOneSource(url, token){
     });
   });
 }
-async function speakViaAudio(text){
+// Trả về true nếu đã phát được (hoặc bị lệnh phát mới thay thế / bị trình duyệt chặn
+// tự phát), false nếu mọi nguồn đều không phát ra tiếng — để chế độ Tự động còn
+// biết đường chuyển sang giọng của máy.
+async function speakViaAudio(text, opts){
+  const silent = !!(opts && opts.silent);
   const w = ttsClean(text);
-  if(!w) return;
+  if(!w) return true;
   const token = ++_ttsPlayToken;
   if(_ttsAudio){ try{ _ttsAudio.pause(); }catch(e){ /* bỏ qua */ } }
   const tryAll = async (t)=>{
@@ -9914,29 +9916,27 @@ async function speakViaAudio(text){
     }
     return false;
   };
-  if(await tryAll(w)) return;
+  if(await tryAll(w)) return true;
   const parts = w.split(' ').filter(Boolean);
   if(parts.length > 1){
     let any = false;
     for(const part of parts){
-      if(token !== _ttsPlayToken) return;
+      if(token !== _ttsPlayToken) return true;
       if(await tryAll(part)) any = true;
     }
-    if(any) return;
+    if(any) return true;
   }
-  if(token === _ttsPlayToken && Date.now() - _ttsAudioWarnedAt > 6000){
+  if(!silent && token === _ttsPlayToken && Date.now() - _ttsAudioWarnedAt > 6000){
     _ttsAudioWarnedAt = Date.now();
     toast('Không có giọng đọc cho "' + w.slice(0, 24) + '" — kiểm tra mạng/âm lượng');
   }
+  return false;
 }
 
-function speakWord(text, _retry){
-  const w = ttsClean(text);
-  if(!w) return;
-  const src = ttsSource();
-  if(src==='online' || (src==='auto' && ttsAutoOnline())){ speakViaAudio(w); return; }
+// Giọng của máy (Web Speech API).
+function speakViaDevice(w, src, _retry){
   if(!('speechSynthesis' in window)){
-    if(src==='auto') speakViaAudio(w);
+    if(!_ttsWarned){ _ttsWarned = true; toast('Máy này không có giọng đọc — kiểm tra mạng để phát qua mạng'); }
     return;
   }
   const synth = window.speechSynthesis;
@@ -9956,17 +9956,14 @@ function speakWord(text, _retry){
       const fail = (why)=>{
         if(failed) return;
         failed = true;
-        console.warn('[TTS] không phát được:', why, v && v.name);
+        console.warn('[TTS] giọng máy không phát được:', why, v && v.name);
         try{ synth.cancel(); }catch(e){ /* bỏ qua */ }
-        if(!_retry){ speakWord(w, { skip: v ? v.name : '' }); return; } // thử giọng khác 1 lần
-        if(src==='auto'){
-          // Giọng của máy câm → chuyển sang phát âm qua mạng (nhớ 7 ngày trên thiết bị này).
-          markTtsAutoOnline();
-          speakViaAudio(w);
-          if(!_ttsWarned){ _ttsWarned = true; toast('Giọng đọc của máy không hoạt động — đã chuyển sang phát âm qua mạng'); }
-        } else if(!_ttsWarned){
+        if(!_retry){ speakViaDevice(w, src, { skip: v ? v.name : '' }); return; } // thử giọng khác 1 lần
+        if(!_ttsWarned){
           _ttsWarned = true;
-          toast('Giọng đọc của máy không hoạt động — thử chọn "Qua mạng" ở Cài đặt');
+          toast(src==='auto'
+            ? 'Không phát âm được — kiểm tra mạng, âm lượng và giọng đọc của máy'
+            : 'Giọng đọc của máy không hoạt động — thử chọn "Qua mạng" ở Cài đặt');
         }
       };
       utter.onstart = ()=>{ started = true; };
@@ -9981,9 +9978,26 @@ function speakWord(text, _retry){
       setTimeout(()=>{ if(!started && _ttsUtter===utter) fail('no-start'); }, 2000);
     };
     if(busy) setTimeout(doSpeak, 80); else doSpeak();
-  }catch(e){
-    if(src==='auto') speakViaAudio(w);
-  }
+  }catch(e){ /* một số trình duyệt/thiết bị chặn TTS — bỏ qua */ }
+}
+
+// Tự động: ƯU TIÊN phát qua mạng; không có mạng / mọi nguồn đều không đọc được
+// thì mới dùng giọng của máy. Nếu vừa thất bại hết nguồn mạng thì 1 phút sau đó
+// đi thẳng giọng máy (đỡ chờ lại từng nguồn lúc mạng đang kém).
+let _ttsOnlineDownUntil = 0;
+function speakWord(text){
+  const w = ttsClean(text);
+  if(!w) return;
+  const src = ttsSource();
+  if(src==='online'){ speakViaAudio(w); return; }
+  if(src==='device'){ speakViaDevice(w, 'device'); return; }
+  if(navigator.onLine===false || Date.now() < _ttsOnlineDownUntil){ speakViaDevice(w, 'auto'); return; }
+  speakViaAudio(w, { silent:true }).then((ok)=>{
+    if(ok===false){
+      _ttsOnlineDownUntil = Date.now() + 60000;
+      speakViaDevice(w, 'auto');
+    }
+  });
 }
 
 // Tự động tra phiên âm IPA cho 1 từ tiếng Anh. Có 2 nguồn, ưu tiên nguồn 1:
