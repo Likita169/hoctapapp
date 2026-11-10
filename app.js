@@ -8724,6 +8724,7 @@ function normalizeVocab(){
     if(w.ipa===undefined) w.ipa = '';
     if(w.pos===undefined) w.pos = '';
     if(w.example===undefined) w.example = '';
+    if(w.meaningEn===undefined) w.meaningEn = '';
     if(w.topicId===undefined) w.topicId = null;
     if(w.familyId===undefined) w.familyId = null;
     if(!Array.isArray(w.collocations)) w.collocations = [];
@@ -9041,6 +9042,7 @@ let deleteVocabId = null;
 let vocabReviewQueue = [];
 let vocabReviewIdx = 0;
 let vocabFlipped = false;
+let vocabEnShownIdx = -1;       // vị trí thẻ (trong hàng đợi) đã bấm "Hiện nghĩa tiếng Anh" — chỉ ở chế độ lật thẻ
 let vocabSessionXpEarned = 0;
 let vocabSessionCompletionHandled = false;
 let vocabTopicFilter = null;       // lọc danh sách theo chủ đề ở Trang chủ Từ vựng (null = Tất cả)
@@ -9099,7 +9101,7 @@ window.addEventListener('pagehide', persistVocabAddDraft);
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='hidden') persistVocabAddDraft(); });
 function syncVocabAddDraft(){
   if(!vocabAddDraft) return;
-  const ids = { word:'vocabWordInput', pos:'vocabPosInput', ipa:'vocabIpaInput', meaning:'vocabMeaningInput', example:'vocabExampleInput' };
+  const ids = { word:'vocabWordInput', pos:'vocabPosInput', ipa:'vocabIpaInput', meaning:'vocabMeaningInput', meaningEn:'vocabMeaningEnInput', example:'vocabExampleInput' };
   for(const k in ids){
     const el = document.getElementById(ids[k]);
     if(el) vocabAddDraft[k] = el.value;
@@ -10335,6 +10337,7 @@ const QUICK_IMPORT_MAX = 20;
 function parseQuickEntries(text){
   const lines = String(text||'').split(/\r?\n/);
   const exRe = /^\s*(?:ex|eg|e\.g\.|example|ví dụ|vd)\s*[:：]\s*(.*)$/i;
+  const enRe = /^\s*(?:nghĩa\s*(?:tiếng\s*)?(?:anh|ta)|english(?:\s*meaning)?|definition|def|en)\s*[:：]\s*(.*)$/i;
   const headRe = /^\s*([^:：\/\[(]+?)\s*(\/[^\/]+\/|\[[^\]]+\])?\s*(?:\(([^)]*)\))?\s*[:：]\s*(.+?)\s*$/;
   const entries = [];
   let cur = null;
@@ -10342,15 +10345,17 @@ function parseQuickEntries(text){
     if(!raw.trim()) return;
     const ex = raw.match(exRe);
     if(ex){ if(cur) cur.example = (cur.example ? cur.example+' ' : '') + ex[1].trim(); return; }
+    const en = raw.match(enRe);
+    if(en){ if(cur) cur.meaningEn = (cur.meaningEn ? cur.meaningEn+' ' : '') + en[1].trim(); return; }
     const h = raw.match(headRe);
     if(h && (h[2] || h[3] || h[1].trim().split(/\s+/).length <= 4)){
-      cur = { word:h[1].trim(), ipa:(h[2]||'').trim(), pos:(h[3]||'').trim(), meaning:h[4].trim(), example:'', line:i };
+      cur = { word:h[1].trim(), ipa:(h[2]||'').trim(), pos:(h[3]||'').trim(), meaning:h[4].trim(), meaningEn:'', example:'', line:i };
       entries.push(cur);
-    } else if(cur && !cur.example){
+    } else if(cur && !cur.example && !cur.meaningEn){
       cur.meaning += ' ' + raw.trim(); // dòng nghĩa bị xuống dòng
     }
   });
-  return entries.filter(e=>e.word && e.meaning && (e.ipa || e.pos || e.example));
+  return entries.filter(e=>e.word && e.meaning && (e.ipa || e.pos || e.example || e.meaningEn));
 }
 
 async function lookupBulkEntry(entry){
@@ -10410,7 +10415,7 @@ function renderVocabBulk(){
 
   const hint = document.createElement('div');
   hint.style.cssText = 'font-size:12px; color:var(--ink-faint); margin:-6px 0 10px;';
-  hint.textContent = 'Nhập nhanh: "từ /phiên âm/ (loại từ): nghĩa" rồi dòng "Ex: ví dụ" — tách sẵn, không cần tra. Kiểu 1 từ/dòng thì gõ "từ - nghĩa" hoặc để app tự dịch.';
+  hint.textContent = 'Nhập nhanh: "từ /phiên âm/ (loại từ): nghĩa", tuỳ chọn dòng "Nghĩa tiếng Anh: ...", rồi dòng "Ex: ví dụ" — tách sẵn, không cần tra. Kiểu 1 từ/dòng thì gõ "từ - nghĩa" hoặc để app tự dịch.';
   main.appendChild(hint);
 
   // chủ đề chung cho cả lượt
@@ -10453,7 +10458,7 @@ function renderVocabBulk(){
         const key = e.word.toLowerCase();
         const dup = existing.has(key) || seen.has(key);
         seen.add(key);
-        return { id: uid(), word:e.word, pos:e.pos, ipa:e.ipa, meaning:e.meaning, example:e.example, composed:false, dup, selected:!dup };
+        return { id: uid(), word:e.word, pos:e.pos, ipa:e.ipa, meaning:e.meaning, meaningEn:e.meaningEn||'', example:e.example, composed:false, dup, selected:!dup };
       });
       vocabBulkQuick = true;
       // Còn dư (dán hơn 20 từ) → giữ lại phần chưa xử lý trong ô nhập cho lượt sau.
@@ -10554,6 +10559,10 @@ function renderVocabBulk(){
       meaningIn.type = 'text'; meaningIn.placeholder = 'nghĩa (bắt buộc)'; meaningIn.value = r.meaning; meaningIn.style.cssText = inputStyle;
       meaningIn.oninput = ()=>{ r.meaning = meaningIn.value; };
       card.appendChild(meaningIn);
+      const enIn = document.createElement('input');
+      enIn.type = 'text'; enIn.placeholder = 'nghĩa tiếng Anh (tuỳ chọn)'; enIn.value = r.meaningEn || ''; enIn.style.cssText = inputStyle;
+      enIn.oninput = ()=>{ r.meaningEn = enIn.value; };
+      card.appendChild(enIn);
       const exIn = document.createElement('input');
       exIn.type = 'text'; exIn.placeholder = 'ví dụ (tuỳ chọn)'; exIn.value = r.example || ''; exIn.style.cssText = inputStyle;
       exIn.oninput = ()=>{ r.example = exIn.value; };
@@ -10568,7 +10577,7 @@ function renderVocabBulk(){
       if(missing.length){ toast('Còn ' + missing.length + ' từ chưa có nghĩa — hãy điền hoặc bỏ chọn'); return; }
       const now = Date.now();
       picked.forEach(r=>{
-        DATA.vocab.push({id:uid(), word:r.word.trim(), meaning:r.meaning.trim(), ipa:r.ipa.trim(), pos:r.pos.trim(), example:(r.example||'').trim(), topicId:vocabBulkTopic || null, familyId:null, collocations:[], ease:2.5, interval:0, reps:0, due:now});
+        DATA.vocab.push({id:uid(), word:r.word.trim(), meaning:r.meaning.trim(), ipa:r.ipa.trim(), pos:r.pos.trim(), example:(r.example||'').trim(), meaningEn:(r.meaningEn||'').trim(), topicId:vocabBulkTopic || null, familyId:null, collocations:[], ease:2.5, interval:0, reps:0, due:now});
       });
       toast('Đã thêm ' + picked.length + ' từ vựng ✓');
       const wasQuick = vocabBulkQuick;
@@ -10619,6 +10628,7 @@ function renderVocabAdd(){
       key: vocabAddKey,
       word: editing ? editing.word : '', pos: editing ? editing.pos : '',
       ipa: editing ? editing.ipa : '', meaning: editing ? editing.meaning : '',
+      meaningEn: editing ? (editing.meaningEn||'') : '',
       example: editing ? editing.example : ''
     };
   }
@@ -11006,6 +11016,8 @@ function renderVocabAdd(){
   main.appendChild(posInfoRow);
   main.appendChild(posInfoPanel);
 
+  field('Nghĩa tiếng Anh (tuỳ chọn)', 'vocabMeaningEnInput', 'Ví dụ: Suitable or good enough to live in.', draft.meaningEn, true);
+
   field('Câu ví dụ (tuỳ chọn)', 'vocabExampleInput', 'Ví dụ: Smartphones have become ubiquitous.', draft.example, true);
 
   // -- Cụm từ hay đi kèm (collocation) — vd: make a decision, heavy rain...
@@ -11114,6 +11126,7 @@ function renderVocabAdd(){
     const ipa = document.getElementById('vocabIpaInput').value.trim();
     const pos = document.getElementById('vocabPosInput').value.trim();
     const example = document.getElementById('vocabExampleInput').value.trim();
+    const meaningEn = (document.getElementById('vocabMeaningEnInput') || {value:''}).value.trim();
     const topicId = addVocabTopicChoice || null;
     const familyId = addVocabFamilyChoice || null;
     // Bỏ qua các dòng cụm từ bỏ trống (người dùng bấm + Thêm rồi lại xoá
@@ -11123,10 +11136,10 @@ function renderVocabAdd(){
       .map(c=>({id:c.id, phrase:c.phrase.trim(), meaning:(c.meaning||'').trim()}));
     if(!word || !meaning){ toast('Hãy điền ít nhất Từ và Nghĩa'); return; }
     if(editing){
-      Object.assign(editing, {word, meaning, ipa, pos, example, topicId, familyId, collocations});
+      Object.assign(editing, {word, meaning, meaningEn, ipa, pos, example, topicId, familyId, collocations});
       toast('Đã lưu thay đổi ✓');
     } else {
-      DATA.vocab.push({id:uid(), word, meaning, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
+      DATA.vocab.push({id:uid(), word, meaning, meaningEn, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
       toast('Đã thêm từ vựng ✓');
     }
     const wasEditing = !!editing;
@@ -11398,6 +11411,7 @@ function startVocabReview(){
   vocabReviewQueue = pickVocabBatch();
   vocabReviewIdx = 0;
   vocabFlipped = false;
+  vocabEnShownIdx = -1;
   vocabSessionXpEarned = 0;
   vocabSessionCompletionHandled = false;
   lastSpokenVocabIdx = -1;
@@ -11525,6 +11539,7 @@ function renderVocabReview(){
         <span>${escapeHtml(w.word)}</span>
         <button class="vocab-speak-btn" aria-label="Phát âm" style="font-size:0.55em; line-height:1; border:none; background:var(--bg-elev); color:inherit; width:1.7em; height:1.7em; border-radius:50%; cursor:pointer; flex-shrink:0;">🔊</button>
       </div>
+      ${(w.meaningEn && (vocabFlipped || (vocabReviewInputMode==='flip' && vocabEnShownIdx===vocabReviewIdx))) ? `<hr class="answer-divider"><div class="answer" style="font-size:0.85em;"><span style="font-size:0.75em; opacity:0.7; display:block; margin-bottom:4px;">🇬🇧 Nghĩa tiếng Anh</span>${escapeHtml(w.meaningEn)}</div>` : ''}
       ${vocabFlipped ? `<hr class="answer-divider"><div class="answer">${escapeHtml(w.meaning)}${w.example ? `<br><br><span style="font-style:italic; font-size:0.9em; opacity:0.85;">${escapeHtml(w.example)}</span>` : ''}</div>` : ''}
     `;
     fc.querySelector('.vocab-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(w.word); };
@@ -11617,6 +11632,28 @@ function renderVocabReview(){
       box.querySelector('#vocabDictationInput').onkeydown = (e)=>{ if(e.key==='Enter') checkVocabDictation(); };
       wrap.appendChild(box);
       requestAnimationFrame(()=>{ const el = document.getElementById('vocabDictationInput'); if(el) el.focus(); });
+    } else if(w.meaningEn){
+      // Từ có nghĩa tiếng Anh: chọn xem nghĩa tiếng Việt luôn, hoặc xem nghĩa
+      // tiếng Anh trước (rồi mới bấm tiếp để hiện tiếng Việt + ví dụ + chấm điểm).
+      const viBtn = document.createElement('button');
+      viBtn.className = 'reveal-btn';
+      viBtn.textContent = 'Hiện nghĩa tiếng Việt';
+      viBtn.onclick = ()=>{ vocabFlipped = true; render(); };
+      if(vocabEnShownIdx !== vocabReviewIdx){
+        viBtn.style.marginBottom = '10px';
+        const enBtn = document.createElement('button');
+        enBtn.className = 'reveal-btn';
+        enBtn.textContent = 'Hiện nghĩa tiếng Anh';
+        enBtn.style.background = 'var(--bg-elev)';
+        enBtn.style.color = 'var(--ink)';
+        enBtn.style.boxShadow = 'none';
+        enBtn.style.border = '1px solid var(--line)';
+        enBtn.onclick = ()=>{ vocabEnShownIdx = vocabReviewIdx; render(); };
+        wrap.appendChild(viBtn);
+        wrap.appendChild(enBtn);
+      } else {
+        wrap.appendChild(viBtn);
+      }
     } else {
       const revealBtn = document.createElement('button');
       revealBtn.className = 'reveal-btn';
