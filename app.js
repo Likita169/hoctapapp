@@ -485,6 +485,14 @@ function pruneReviewLog(){
 /* 03-thuat-toan-on-tap.js — Thuật toán ôn tập ngắt quãng (grade), tính XP/cấp độ, chuỗi ngày streak, huy hiệu, và hàm toast() hiện thông báo nhỏ ở góc màn hình
    (Phần 279-424 của app.js gốc, tách ra để dễ tìm & dễ sửa.) */
 
+// TỪ CỨNG ĐẦU: từ bị bấm "Quên" ở LEECH_THRESHOLD phiên khác nhau (mỗi phiên tính
+// tối đa 1 lần) sẽ được gắn dấu 🩹, đưa vào bộ học riêng, ôn dày hơn (khoảng cách
+// tối đa LEECH_MAX_INTERVAL ngày) và có chỗ ghi mẹo nhớ riêng. Nhớ liên tiếp
+// LEECH_RECOVER_STREAK lần (Nhớ/Dễ) thì tự ra khỏi bộ.
+const LEECH_THRESHOLD = 4;
+const LEECH_MAX_INTERVAL = 3;
+const LEECH_RECOVER_STREAK = 5;
+
 function grade(card, quality){
   // quality: 0 again, 1 hard, 2 good, 3 easy
   let {ease, interval, reps} = card;
@@ -511,7 +519,8 @@ function grade(card, quality){
   card.ease = ease;
   card.interval = interval;
   card.reps = reps;
-  card.due = Date.now() + dayMs(interval);
+  if(card.leech && quality>0 && card.interval > LEECH_MAX_INTERVAL) card.interval = LEECH_MAX_INTERVAL;
+  card.due = Date.now() + dayMs(card.interval);
   card.lastReview = Date.now();
 }
 
@@ -8725,6 +8734,7 @@ function normalizeVocab(){
     if(w.pos===undefined) w.pos = '';
     if(w.example===undefined) w.example = '';
     if(w.meaningEn===undefined) w.meaningEn = '';
+    if(w.mnemonic===undefined) w.mnemonic = '';
     if(w.topicId===undefined) w.topicId = null;
     if(w.familyId===undefined) w.familyId = null;
     if(!Array.isArray(w.collocations)) w.collocations = [];
@@ -9042,6 +9052,8 @@ let deleteVocabId = null;
 let vocabReviewQueue = [];
 let vocabReviewIdx = 0;
 let vocabFlipped = false;
+let vocabLapseSession = new Set(); // các từ đã bị tính 1 lần "Quên" trong phiên này
+let vocabLeechSession = false;     // phiên hiện tại là bộ Từ cứng đầu
 let vocabEnShownIdx = -1;       // vị trí thẻ (trong hàng đợi) đã bấm "Hiện nghĩa tiếng Anh" — chỉ ở chế độ lật thẻ
 let vocabSessionXpEarned = 0;
 let vocabSessionCompletionHandled = false;
@@ -9101,7 +9113,7 @@ window.addEventListener('pagehide', persistVocabAddDraft);
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='hidden') persistVocabAddDraft(); });
 function syncVocabAddDraft(){
   if(!vocabAddDraft) return;
-  const ids = { word:'vocabWordInput', pos:'vocabPosInput', ipa:'vocabIpaInput', meaning:'vocabMeaningInput', meaningEn:'vocabMeaningEnInput', example:'vocabExampleInput' };
+  const ids = { word:'vocabWordInput', pos:'vocabPosInput', ipa:'vocabIpaInput', meaning:'vocabMeaningInput', meaningEn:'vocabMeaningEnInput', mnemonic:'vocabMnemonicInput', example:'vocabExampleInput' };
   for(const k in ids){
     const el = document.getElementById(ids[k]);
     if(el) vocabAddDraft[k] = el.value;
@@ -9494,6 +9506,19 @@ function renderVocabHome(){
   hero.appendChild(modeRow);
   main.appendChild(hero);
 
+  const leechWords = DATA.vocab.filter(x=>x.leech);
+  if(leechWords.length>0){
+    const lc = document.createElement('div');
+    lc.style.cssText = 'margin:0 16px 14px; padding:14px 16px; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px;';
+    lc.innerHTML = `
+      <div style="font-weight:600;">🩹 Từ cứng đầu: ${leechWords.length} từ</div>
+      <div style="font-size:12.5px; color:var(--ink-faint); margin:4px 0 10px;">Những từ bạn hay quên: học riêng, ghi mẹo nhớ, ôn dày hơn (tối đa ${LEECH_MAX_INTERVAL} ngày/lần) cho tới khi nhớ liên tiếp ${LEECH_RECOVER_STREAK} lần.</div>
+      <button class="chip" type="button">Học bộ Từ cứng đầu →</button>
+    `;
+    lc.querySelector('button').onclick = ()=> startVocabReview({ leechOnly:true });
+    main.appendChild(lc);
+  }
+
   // Trò "Tìm từ trọng âm khác" không phụ thuộc từ nào đến hạn ôn (dùng cả
   // kho từ vựng, không riêng từ due) nên đặt thành 1 lối vào riêng, luôn
   // bấm được kể cả khi hero phía trên đang khoá do due===0.
@@ -9749,7 +9774,7 @@ function renderVocabList(list){
         <div>
           ${subInfo ? `<span style="font-size:11px;color:var(--ink-faint)">${escapeHtml(subInfo)}</span>` : ''}
           <div class="mi-front" style="display:flex; align-items:center; gap:6px;">
-            <span>${escapeHtml(w.word)}</span>
+            <span>${escapeHtml(w.word)}</span>${w.leech ? '<span title="Từ cứng đầu" style="font-size:0.8em;">🩹</span>' : ''}
             <button class="vocab-speak-btn" aria-label="Phát âm" style="font-size:0.7em; line-height:1; border:none; background:transparent; color:var(--ink-faint); cursor:pointer; flex-shrink:0;">🔊</button>
           </div>
           <div class="mi-back">${escapeHtml(w.meaning)}</div>
@@ -10643,6 +10668,7 @@ function renderVocabAdd(){
       word: editing ? editing.word : '', pos: editing ? editing.pos : '',
       ipa: editing ? editing.ipa : '', meaning: editing ? editing.meaning : '',
       meaningEn: editing ? (editing.meaningEn||'') : '',
+      mnemonic: editing ? (editing.mnemonic||'') : '',
       example: editing ? editing.example : ''
     };
   }
@@ -11032,6 +11058,8 @@ function renderVocabAdd(){
 
   field('Nghĩa tiếng Anh (tuỳ chọn)', 'vocabMeaningEnInput', 'Ví dụ: Suitable or good enough to live in.', draft.meaningEn, true);
 
+  field('Mẹo nhớ (tuỳ chọn)', 'vocabMnemonicInput', 'Hình ảnh, từ gần âm tiếng Việt, câu chuyện riêng…', draft.mnemonic, true);
+
   field('Câu ví dụ (tuỳ chọn)', 'vocabExampleInput', 'Ví dụ: Smartphones have become ubiquitous.', draft.example, true);
 
   // -- Cụm từ hay đi kèm (collocation) — vd: make a decision, heavy rain...
@@ -11141,6 +11169,7 @@ function renderVocabAdd(){
     const pos = document.getElementById('vocabPosInput').value.trim();
     const example = document.getElementById('vocabExampleInput').value.trim();
     const meaningEn = (document.getElementById('vocabMeaningEnInput') || {value:''}).value.trim();
+    const mnemonic = (document.getElementById('vocabMnemonicInput') || {value:''}).value.trim();
     const topicId = addVocabTopicChoice || null;
     const familyId = addVocabFamilyChoice || null;
     // Bỏ qua các dòng cụm từ bỏ trống (người dùng bấm + Thêm rồi lại xoá
@@ -11150,10 +11179,10 @@ function renderVocabAdd(){
       .map(c=>({id:c.id, phrase:c.phrase.trim(), meaning:(c.meaning||'').trim()}));
     if(!word || !meaning){ toast('Hãy điền ít nhất Từ và Nghĩa'); return; }
     if(editing){
-      Object.assign(editing, {word, meaning, meaningEn, ipa, pos, example, topicId, familyId, collocations});
+      Object.assign(editing, {word, meaning, meaningEn, mnemonic, ipa, pos, example, topicId, familyId, collocations});
       toast('Đã lưu thay đổi ✓');
     } else {
-      DATA.vocab.push({id:uid(), word, meaning, meaningEn, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
+      DATA.vocab.push({id:uid(), word, meaning, meaningEn, mnemonic, ipa, pos, example, topicId, familyId, collocations, ease:2.5, interval:0, reps:0, due:Date.now()});
       toast('Đã thêm từ vựng ✓');
     }
     const wasEditing = !!editing;
@@ -11421,8 +11450,24 @@ function pickVocabBatch(){
   return all.slice(0, n);
 }
 
-function startVocabReview(){
-  vocabReviewQueue = pickVocabBatch();
+function pickLeechBatch(){
+  const all = DATA.vocab.filter(x=>x.leech);
+  const n = vocabBatchSize();
+  if(all.length <= n){
+    for(let i=all.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [all[i],all[j]]=[all[j],all[i]]; }
+    return all;
+  }
+  for(let i=0; i<n; i++){
+    const j = i + Math.floor(Math.random()*(all.length - i));
+    const t = all[i]; all[i] = all[j]; all[j] = t;
+  }
+  return all.slice(0, n);
+}
+
+function startVocabReview(opts){
+  vocabLeechSession = !!(opts && opts.leechOnly === true);
+  vocabLapseSession = new Set();
+  vocabReviewQueue = vocabLeechSession ? pickLeechBatch() : pickVocabBatch();
   vocabReviewIdx = 0;
   vocabFlipped = false;
   vocabEnShownIdx = -1;
@@ -11445,11 +11490,11 @@ function renderVocabReview(){
     }
     const p = DATA.progress;
     const lvl = computeLevel(p.xp);
-    const moreLeft = vocabReviewQueue.length>0 ? dueVocab().length : 0;
+    const moreLeft = (vocabReviewQueue.length>0 && !vocabLeechSession) ? dueVocab().length : 0;
     wrap.innerHTML = `<div class="review-done">
-      <div class="glyph">${moreLeft>0 ? '🎯' : '🎉'}</div>
-      <h2 class="display">${moreLeft>0 ? 'Xong lượt này rồi!' : 'Xong hết rồi!'}</h2>
-      <p>${moreLeft>0 ? `Hôm nay còn ${moreLeft} từ cần học. Nghỉ một chút rồi học tiếp lượt mới nhé.` : 'Bạn đã ôn hết từ vựng đến hạn. Quay lại vào ngày mai nhé.'}</p>
+      <div class="glyph">${vocabLeechSession ? '🩹' : (moreLeft>0 ? '🎯' : '🎉')}</div>
+      <h2 class="display">${vocabLeechSession ? 'Xong lượt Từ cứng đầu!' : (moreLeft>0 ? 'Xong lượt này rồi!' : 'Xong hết rồi!')}</h2>
+      <p>${vocabLeechSession ? 'Từ nào nhớ liên tiếp ' + LEECH_RECOVER_STREAK + ' lần sẽ tự ra khỏi bộ này. Cố lên!' : moreLeft>0 ? `Hôm nay còn ${moreLeft} từ cần học. Nghỉ một chút rồi học tiếp lượt mới nhé.` : 'Bạn đã ôn hết từ vựng đến hạn. Quay lại vào ngày mai nhé.'}</p>
       ${vocabReviewQueue.length>0 ? `
       <div class="session-recap">
         <div class="session-recap-item"><span class="srv">+${vocabSessionXpEarned}</span><span class="srl">XP</span></div>
@@ -11724,6 +11769,23 @@ function renderVocabReview(){
       btn.onclick = async ()=>{
         const quality = qualities[i];
         if(!w.firstSeen) w.firstSeen = Date.now();
+        if(quality===0){
+          if(!vocabLapseSession.has(w.id)){
+            vocabLapseSession.add(w.id);
+            w.lapses = (w.lapses||0) + 1;
+            if(!w.leech && w.lapses >= LEECH_THRESHOLD){
+              w.leech = true;
+              toast('🩹 "' + w.word + '" là từ cứng đầu — đã đưa vào bộ Từ cứng đầu');
+            }
+          }
+          w.okStreak = 0;
+        } else if(quality>=2){
+          w.okStreak = (w.okStreak||0) + 1;
+          if(w.leech && w.okStreak >= LEECH_RECOVER_STREAK){
+            w.leech = false; w.lapses = 0; w.okStreak = 0;
+            toast('🎉 "' + w.word + '" đã ra khỏi bộ Từ cứng đầu');
+          }
+        }
         grade(w, quality);
         // "Quên" → xếp lại cuối phiên để gặp lại ngay trong buổi học này.
         if(quality===0 && vocabReviewQueue[vocabReviewIdx]===w) vocabReviewQueue.push(w);
@@ -11736,6 +11798,30 @@ function renderVocabReview(){
         render();
       };
     });
+    if(w.leech || w.mnemonic){
+      const box = document.createElement('div');
+      box.style.cssText = 'margin:0 16px 14px; padding:12px 14px; background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; font-size:13.5px;';
+      const lab = document.createElement('div');
+      lab.style.cssText = 'font-weight:600; margin-bottom:6px;';
+      lab.textContent = w.leech ? '🩹 Từ cứng đầu — ghi mẹo nhớ của riêng bạn' : '💡 Mẹo nhớ';
+      box.appendChild(lab);
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = w.mnemonic || '';
+      inp.placeholder = 'Hình ảnh, từ gần âm tiếng Việt, câu chuyện riêng…';
+      inp.style.cssText = 'width:100%; box-sizing:border-box; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:inherit;';
+      inp.onchange = ()=>{ w.mnemonic = inp.value.trim(); saveDataSoon(); toast('Đã lưu mẹo nhớ'); };
+      box.appendChild(inp);
+      if(w.leech){
+        const done = document.createElement('button');
+        done.type = 'button';
+        done.textContent = '✔ Đã thuộc rồi — bỏ khỏi bộ Từ cứng đầu';
+        done.style.cssText = 'margin-top:8px; background:none; border:none; color:var(--teal); font:inherit; font-size:12.5px; cursor:pointer; padding:4px 0;';
+        done.onclick = ()=>{ w.leech = false; w.lapses = 0; w.okStreak = 0; saveDataSoon(); toast('Đã bỏ khỏi bộ Từ cứng đầu'); render(); };
+        box.appendChild(done);
+      }
+      wrap.appendChild(box);
+    }
     wrap.appendChild(row);
   }
 
