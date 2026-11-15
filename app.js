@@ -46,7 +46,7 @@ const PUSH_SERVER_URL = 'https://on-tap-push.nguyenngochuy8816.workers.dev';
 // (xem mục "Tài khoản & đồng bộ" trong HUONG-DAN.md) — thay bằng URL thật
 // sau khi deploy worker trong thư mục sync-server/
 const SYNC_SERVER_URL = 'https://on-tap-sync.nguyenngochuy8816.workers.dev/';
-const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true, vocabNewPerDay: 20, vocabBatchSize: 20 };
+const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true, vocabNewPerDay: 20, vocabBatchSize: 20, vocabReverseMode: 'sometimes' };
 // Streak + XP + huy hiệu — tiến trình học tập lâu dài, tách riêng khỏi từng
 // thẻ để không ảnh hưởng thuật toán ôn tập ngắt quãng ở trên.
 const DEFAULT_PROGRESS = {
@@ -3189,6 +3189,26 @@ function renderSettings(){
   };
   main.appendChild(batchRow);
 
+  const revRow = document.createElement('div');
+  revRow.className = 'toggle-row';
+  const curRev = (DATA.settings && DATA.settings.vocabReverseMode) || 'sometimes';
+  revRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">🔁 Ôn chiều ngược (nghĩa → từ)</div>
+      <div class="tr-sub">Với từ đã ôn thuộc, thỉnh thoảng hiện nghĩa tiếng Việt để bạn gõ lại từ tiếng Anh. Muốn ôn toàn bộ theo kiểu này thì chọn "Nghĩa → Từ" ở menu ⋮ khi ôn.</div>
+    </div>
+    <select class="vocab-reverse-select">
+      <option value="off" ${curRev==='off'?'selected':''}>Tắt</option>
+      <option value="sometimes" ${curRev==='sometimes'?'selected':''}>Thỉnh thoảng</option>
+      <option value="often" ${curRev==='often'?'selected':''}>Thường xuyên</option>
+    </select>
+  `;
+  revRow.querySelector('select').onchange = async (e)=>{
+    DATA.settings.vocabReverseMode = e.target.value;
+    await saveData();
+  };
+  main.appendChild(revRow);
+
   const ttsRow = document.createElement('div');
   ttsRow.className = 'toggle-row';
   const curSrc = ttsSource();
@@ -3215,6 +3235,28 @@ function renderSettings(){
     else setTimeout(()=>toast(n===0 ? 'Máy chưa có giọng tiếng Anh nào' : n + ' giọng tiếng Anh · đang thử: ' + (_ttsLastVoice||'mặc định')), 300);
   };
   main.appendChild(ttsRow);
+
+  const backupRow = document.createElement('div');
+  backupRow.className = 'toggle-row';
+  backupRow.style.flexWrap = 'wrap';
+  backupRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">💾 Sao lưu từ vựng</div>
+      <div class="tr-sub">Xuất toàn bộ ${DATA.vocab.length} từ ra file để cất giữ, hoặc nhập lại từ file. Nhập chỉ THÊM từ chưa có, không ghi đè từ đang có. JSON giữ cả tiến độ ôn; CSV mở được bằng Excel.</div>
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+      <button class="chip" type="button" data-act="json">Xuất JSON</button>
+      <button class="chip" type="button" data-act="csv">Xuất CSV</button>
+      <button class="chip" type="button" data-act="import">Nhập từ file…</button>
+    </div>
+    <input type="file" accept=".json,.csv,.tsv,.txt,application/json,text/csv" style="display:none;">
+  `;
+  const backupFile = backupRow.querySelector('input[type=file]');
+  backupRow.querySelector('[data-act=json]').onclick = ()=> exportVocabJson();
+  backupRow.querySelector('[data-act=csv]').onclick = ()=> exportVocabCsv();
+  backupRow.querySelector('[data-act=import]').onclick = ()=>{ backupFile.value = ''; backupFile.click(); };
+  backupFile.onchange = ()=>{ if(backupFile.files && backupFile.files[0]) importVocabFromFile(backupFile.files[0]); };
+  main.appendChild(backupRow);
 
   const versionTag = document.createElement('div');
   versionTag.className='mono';
@@ -9121,7 +9163,47 @@ function syncVocabAddDraft(){
 }
 let vocabAddLoadedFor = undefined; // id của từ mà addVocabCollocations đã nạp cho (undefined = chưa nạp lần nào, null = đang thêm từ mới)
 
-// -- Chế độ ôn tập từ vựng: 'flip' (lật thẻ) | 'quiz' (trắc nghiệm 4 đáp án)
+// ÔN CHIỀU NGƯỢC (nghĩa → từ tiếng Anh): thẻ hiện nghĩa tiếng Việt, bạn gõ lại
+// từ tiếng Anh. Chỉ áp dụng cho từ ĐÃ ôn thuộc (đã nhớ liên tiếp REVERSE_MIN_REPS
+// lần) và không phải từ cứng đầu. Chấm điểm dùng chung lịch ôn của từ — quên ở
+// chiều ngược thì từ quay lại học chiều thuận như bình thường.
+const REVERSE_MIN_REPS = 3;
+let vocabRevByIdx = {};   // vị trí thẻ trong hàng đợi → true nếu thẻ đó ôn chiều ngược
+let vocabRevState = { idx:-1, typed:'', result:null, hint:false };
+function getRevState(){
+  if(vocabRevState.idx !== vocabReviewIdx) vocabRevState = { idx:vocabReviewIdx, typed:'', result:null, hint:false };
+  return vocabRevState;
+}
+function isReverseCard(w){
+  const seen = w.lastReview !== undefined || (w.reps||0) > 0;
+  if(!seen || w.leech) return false;
+  if(vocabReviewInputMode === 'reverse') return true;
+  if(vocabReviewInputMode !== 'flip') return false;
+  const cached = vocabRevByIdx[vocabReviewIdx];
+  if(cached !== undefined) return cached;
+  const mode = (DATA.settings && DATA.settings.vocabReverseMode) || 'sometimes';
+  const p = mode === 'off' ? 0 : (mode === 'often' ? 0.7 : 0.35);
+  const r = (w.reps||0) >= REVERSE_MIN_REPS && Math.random() < p;
+  vocabRevByIdx[vocabReviewIdx] = r;
+  return r;
+}
+function normalizeRevAnswer(t){
+  return String(t||'').toLowerCase().replace(/[’‘]/g, "'").replace(/[^\p{L}\p{N}'\- ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+function revHintPattern(word){
+  return String(word).split('').map((ch,i)=> /[\p{L}\p{N}]/u.test(ch) ? (i===0 ? ch : '_') : (ch===' ' ? ' ' : ch)).join(' ');
+}
+function maskWordInText(text, word){
+  if(!text) return '';
+  const base = String(word).trim();
+  if(!base) return text;
+  const stem = base.length > 5 ? base.slice(0, -2) : base;
+  const esc = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  try{ return text.replace(new RegExp('\\b' + esc + '[\\p{L}]*', 'giu'), '_____'); }
+  catch(e){ return text; }
+}
+
+// -- Chế độ ôn tập từ vựng: 'flip' (lật thẻ) | 'quiz' (trắc nghiệm) | 'dictation' | 'reverse' (nghĩa → từ)
 // -- giống hệt kiểu chọn chế độ ở màn ôn thẻ thường, nhưng tách state riêng
 // vì đây là 2 hàng đợi ôn tập độc lập nhau.
 let vocabReviewInputMode = 'flip';
@@ -9724,6 +9806,210 @@ function attachVocabTopicLongPress(chip, topic){
 // gây lag khi kho có nhiều từ. Các tra cứu (đường dẫn chủ đề, họ từ) được
 // tính sẵn 1 lần cho cả lượt vẽ, và dùng 1 trình xử lý bấm chung cho cả danh
 // sách thay vì gắn riêng cho từng từ.
+/* ---------------- Sao lưu / nhập kho từ vựng ---------------- */
+// Xuất toàn bộ từ vựng ra file để cất giữ (JSON: đủ cả tiến độ ôn; CSV: bảng
+// để mở bằng Excel/Google Sheets) và nhập lại từ file. Khi nhập luôn là GỘP:
+// từ nào đã có (trùng chữ) thì bỏ qua, không bao giờ ghi đè hay xoá từ đang có.
+function downloadTextFile(filename, text, mime){
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ a.remove(); URL.revokeObjectURL(url); }, 1500);
+}
+
+function vocabTopicNamePath(id){ return vocabTopicPath(id).map(t=>t.name); }
+
+function exportVocabJson(){
+  const payload = {
+    app: 'on-tap', kind: 'vocab-backup', version: 1,
+    exportedAt: new Date().toISOString(),
+    vocab: DATA.vocab, vocabTopics: DATA.vocabTopics, wordFamilies: DATA.wordFamilies
+  };
+  downloadTextFile('on-tap-tu-vung-' + todayKey() + '.json', JSON.stringify(payload), 'application/json');
+  toast('Đã xuất ' + DATA.vocab.length + ' từ (bản sao lưu đầy đủ)');
+}
+
+const VOCAB_CSV_COLS = ['word','ipa','pos','meaning','meaningEn','example','mnemonic','topic','family','collocations'];
+function csvEscape(v){
+  const t = String(v == null ? '' : v);
+  return /[",;\n\r\t]/.test(t) ? '"' + t.replace(/"/g,'""') + '"' : t;
+}
+function exportVocabCsv(){
+  const famName = new Map(DATA.wordFamilies.map(f=>[f.id, f.name]));
+  const rows = [VOCAB_CSV_COLS.join(',')];
+  DATA.vocab.forEach(w=>{
+    const topic = w.topicId ? vocabTopicNamePath(w.topicId).join(' > ') : '';
+    const colo = (w.collocations||[]).map(c=> c.phrase + (c.meaning ? '=' + c.meaning : '')).join(' ; ');
+    rows.push([w.word, w.ipa, w.pos, w.meaning, w.meaningEn, w.example, w.mnemonic, topic, w.familyId ? (famName.get(w.familyId)||'') : '', colo].map(csvEscape).join(','));
+  });
+  // BOM để Excel đọc đúng tiếng Việt có dấu.
+  downloadTextFile('on-tap-tu-vung-' + todayKey() + '.csv', '\ufeff' + rows.join('\r\n'), 'text/csv;charset=utf-8');
+  toast('Đã xuất ' + DATA.vocab.length + ' từ ra bảng CSV');
+}
+
+function parseCsv(text){
+  text = String(text||'').replace(/^\ufeff/, '');
+  const firstLine = text.split(/\r?\n/, 1)[0] || '';
+  // Excel tiếng Việt hay lưu bằng dấu ; hoặc Tab thay vì dấu phẩy → tự đoán theo dòng đầu.
+  const delim = [',', ';', '\t'].map(d=>[d, firstLine.split(d).length-1]).sort((a,b)=>b[1]-a[1])[0][0];
+  const rows = [];
+  let row = [], cell = '', inQ = false;
+  const endRow = ()=>{ row.push(cell); cell = ''; if(row.some(c=>c.trim()!=='')) rows.push(row); row = []; };
+  for(let i=0; i<text.length; i++){
+    const ch = text[i];
+    if(inQ){
+      if(ch === '"'){ if(text[i+1] === '"'){ cell += '"'; i++; } else inQ = false; }
+      else cell += ch;
+    } else if(ch === '"') inQ = true;
+    else if(ch === delim){ row.push(cell); cell = ''; }
+    else if(ch === '\n' || ch === '\r'){ if(ch === '\r' && text[i+1] === '\n') i++; endRow(); }
+    else cell += ch;
+  }
+  if(cell !== '' || row.length) endRow();
+  return rows;
+}
+
+const CSV_HEADER_ALIASES = {
+  word:['word','tu','tuvung','tutienganh'],
+  ipa:['ipa','phienam'],
+  pos:['pos','loaitu'],
+  meaning:['meaning','nghia','nghiatiengviet'],
+  meaningEn:['meaningen','nghiatienganh','english','definition'],
+  example:['example','vidu','ex'],
+  mnemonic:['mnemonic','meonho'],
+  topic:['topic','chude'],
+  family:['family','hotu'],
+  collocations:['collocations','cumtu']
+};
+function normHeader(h){
+  return String(h||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/[^a-z0-9]/g,'');
+}
+
+// Cả JSON lẫn CSV đều được quy về cùng 1 dạng "bản ghi nhập" (chủ đề/họ từ đi
+// theo TÊN, không theo id) để gộp vào kho hiện có mà không bị trùng id.
+function incomingFromJson(text){
+  const data = JSON.parse(text);
+  if(!data || !Array.isArray(data.vocab)) throw new Error('không phải file sao lưu từ vựng');
+  const topics = new Map((data.vocabTopics||[]).map(t=>[t.id, t]));
+  const fams = new Map((data.wordFamilies||[]).map(f=>[f.id, f.name]));
+  const pathOf = (id)=>{ const p = []; let cur = topics.get(id), guard = 0; while(cur && guard++ < 20){ p.unshift(cur.name); cur = cur.parentId ? topics.get(cur.parentId) : null; } return p; };
+  const num = (v)=> (typeof v === 'number' && isFinite(v)) ? v : undefined;
+  return data.vocab.filter(w=>w && w.word).map(w=>({
+    word:String(w.word), ipa:w.ipa||'', pos:w.pos||'', meaning:w.meaning||'', meaningEn:w.meaningEn||'',
+    example:w.example||'', mnemonic:w.mnemonic||'',
+    topicPath: w.topicId ? pathOf(w.topicId) : [],
+    familyName: w.familyId ? (fams.get(w.familyId)||'') : '',
+    collocations: Array.isArray(w.collocations) ? w.collocations.filter(c=>c && c.phrase).map(c=>({phrase:String(c.phrase), meaning:c.meaning||''})) : [],
+    srs: { ease:num(w.ease), interval:num(w.interval), reps:num(w.reps), due:num(w.due), lastReview:num(w.lastReview),
+           firstSeen:num(w.firstSeen), lapses:num(w.lapses), okStreak:num(w.okStreak), leech: w.leech === true ? true : undefined }
+  }));
+}
+function incomingFromCsv(text){
+  const rows = parseCsv(text);
+  if(rows.length < 2) throw new Error('file trống');
+  const idx = {};
+  rows[0].forEach((h, i)=>{
+    const n = normHeader(h);
+    for(const key in CSV_HEADER_ALIASES){ if(idx[key] === undefined && CSV_HEADER_ALIASES[key].indexOf(n) >= 0) idx[key] = i; }
+  });
+  if(idx.word === undefined || idx.meaning === undefined) throw new Error('cần có cột "word" và "meaning" (hoặc "từ" và "nghĩa") ở dòng đầu');
+  const get = (r, key)=> idx[key] === undefined ? '' : String(r[idx[key]] == null ? '' : r[idx[key]]).trim();
+  return rows.slice(1).map(r=>({
+    word:get(r,'word'), ipa:get(r,'ipa'), pos:get(r,'pos'), meaning:get(r,'meaning'), meaningEn:get(r,'meaningEn'),
+    example:get(r,'example'), mnemonic:get(r,'mnemonic'),
+    topicPath: get(r,'topic') ? get(r,'topic').split(/\s*[>›]\s*/).filter(Boolean) : [],
+    familyName: get(r,'family'),
+    collocations: get(r,'collocations') ? get(r,'collocations').split(/\s*;\s*/).filter(Boolean).map(p=>{ const k = p.indexOf('='); return k>0 ? {phrase:p.slice(0,k).trim(), meaning:p.slice(k+1).trim()} : {phrase:p, meaning:''}; }) : [],
+    srs: {}
+  })).filter(r=>r.word);
+}
+
+async function applyVocabImport(incoming){
+  const have = new Set(DATA.vocab.map(w=>w.word.trim().toLowerCase()));
+  const seen = new Set();
+  const fresh = [];
+  let dup = 0;
+  incoming.forEach(r=>{
+    const key = r.word.trim().toLowerCase();
+    if(!key) return;
+    if(have.has(key) || seen.has(key)){ dup++; return; }
+    seen.add(key); fresh.push(r);
+  });
+  if(fresh.length === 0){
+    toast(dup ? 'Cả ' + dup + ' từ trong file đều đã có sẵn — không có gì để thêm' : 'File không có từ hợp lệ nào');
+    return;
+  }
+  const msg = 'File có ' + incoming.length + ' từ.\n\nSẽ THÊM ' + fresh.length + ' từ mới' + (dup ? ', bỏ qua ' + dup + ' từ đã có sẵn' : '') + '.\nTừ đang có trong app không bị thay đổi.\n\nTiếp tục?';
+  if(!confirm(msg)) return;
+
+  const topicCache = new Map(), famCache = new Map();
+  const topicIdFor = (path)=>{
+    if(!path.length) return null;
+    let parentId = null;
+    for(const name of path){
+      const ck = (parentId||'') + '|' + name.toLowerCase();
+      let id = topicCache.get(ck);
+      if(!id){
+        const found = DATA.vocabTopics.find(t=>(t.parentId||null) === parentId && t.name.trim().toLowerCase() === name.trim().toLowerCase());
+        if(found) id = found.id;
+        else { id = uid(); DATA.vocabTopics.push({ id, name, parentId }); }
+        topicCache.set(ck, id);
+      }
+      parentId = id;
+    }
+    return parentId;
+  };
+  const familyIdFor = (name)=>{
+    if(!name) return null;
+    const k = name.toLowerCase();
+    let id = famCache.get(k);
+    if(!id){
+      const found = DATA.wordFamilies.find(f=>f.name.trim().toLowerCase() === k);
+      if(found) id = found.id;
+      else { id = uid(); DATA.wordFamilies.push({ id, name }); }
+      famCache.set(k, id);
+    }
+    return id;
+  };
+
+  const now = Date.now();
+  fresh.forEach(r=>{
+    const w = {
+      id: uid(), word: r.word.trim(), meaning: r.meaning, meaningEn: r.meaningEn, ipa: r.ipa, pos: r.pos,
+      example: r.example, mnemonic: r.mnemonic,
+      topicId: topicIdFor(r.topicPath), familyId: familyIdFor(r.familyName),
+      collocations: r.collocations.map(c=>({ id: uid(), phrase: c.phrase, meaning: c.meaning })),
+      ease: 2.5, interval: 0, reps: 0, due: now
+    };
+    const sr = r.srs || {};
+    ['ease','interval','reps','due','lastReview','firstSeen','lapses','okStreak'].forEach(k=>{ if(sr[k] !== undefined) w[k] = sr[k]; });
+    if(sr.leech) w.leech = true;
+    DATA.vocab.push(w);
+  });
+  await saveData();
+  render();
+  toast('Đã nhập ' + fresh.length + ' từ mới' + (dup ? ' (bỏ qua ' + dup + ' từ trùng)' : '') + ' ✓');
+}
+
+function importVocabFromFile(file){
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    try{
+      const text = String(reader.result || '');
+      const isJson = /\.json$/i.test(file.name) || text.trim().charAt(0) === '{';
+      applyVocabImport(isJson ? incomingFromJson(text) : incomingFromCsv(text));
+    }catch(e){
+      console.error(e);
+      toast('Không đọc được file: ' + (e && e.message ? e.message : 'định dạng lạ'));
+    }
+  };
+  reader.onerror = ()=> toast('Không mở được file');
+  reader.readAsText(file, 'utf-8');
+}
+
 const VOCAB_PAGE = 40;
 let vocabListLimit = VOCAB_PAGE;
 let _vocabListSig = null;
@@ -11467,6 +11753,8 @@ function pickLeechBatch(){
 function startVocabReview(opts){
   vocabLeechSession = !!(opts && opts.leechOnly === true);
   vocabLapseSession = new Set();
+  vocabRevByIdx = {};
+  vocabRevState = { idx:-1, typed:'', result:null, hint:false };
   vocabReviewQueue = vocabLeechSession ? pickLeechBatch() : pickVocabBatch();
   vocabReviewIdx = 0;
   vocabFlipped = false;
@@ -11524,12 +11812,13 @@ function renderVocabReview(){
 
   // Sang từ mới (không phải render lại do lật thẻ/chấm điểm) → tự đọc từ
   // đó lên nếu Cài đặt đang bật tự động phát âm.
+  const revCard = isReverseCard(w);
   if(lastSpokenVocabIdx !== vocabReviewIdx){
     lastSpokenVocabIdx = vocabReviewIdx;
     // Chế độ "Nghe – gõ chính tả" thì LUÔN đọc từ khi sang từ mới, bất kể
     // Cài đặt tự động phát âm đang bật/tắt — vì nghe là bắt buộc để làm
     // được bài, không phải tính năng hỗ trợ thêm như các chế độ khác.
-    if(DATA.settings.autoSpeakVocab || vocabReviewInputMode==='dictation') speakWord(w.word);
+    if(!revCard && (DATA.settings.autoSpeakVocab || vocabReviewInputMode==='dictation')) speakWord(w.word);
   }
 
   const topbar = document.createElement('div');
@@ -11552,6 +11841,7 @@ function renderVocabReview(){
       {id:'flip', icon:'🔄', label:'Lật thẻ'},
       {id:'quiz', icon:'🧠', label:'Trắc nghiệm nhanh'},
       {id:'dictation', icon:'🎧', label:'Nghe – gõ chính tả'},
+      {id:'reverse', icon:'🔁', label:'Nghĩa → Từ (gõ lại)'},
     ];
     menu.innerHTML = modes.map(m=>
       `<button class="review-menu-item" data-mode="${m.id}">${m.icon} ${m.label} ${vocabReviewInputMode===m.id?'✓':''}</button>`
@@ -11583,7 +11873,19 @@ function renderVocabReview(){
   // loại (đều là gợi ý chính tả), chỉ để nút loa to để nghe (lại) — đúng
   // bản chất bài tập là nghe rồi tự gõ, không được nhìn thấy chữ trước.
   const isDictationBlind = vocabReviewInputMode==='dictation' && !vocabFlipped;
-  if(isDictationBlind){
+  if(revCard && !vocabFlipped){
+    const rs = getRevState();
+    const masked = maskWordInText(w.example, w.word);
+    fc.innerHTML = `
+      <div class="side-label">🔁 Nhớ lại từ tiếng Anh${w.pos ? '  ·  ' + escapeHtml(w.pos) : ''}</div>
+      <div class="content" style="display:flex; align-items:center; justify-content:center; text-align:center;">
+        <span>${escapeHtml(w.meaning)}</span>
+      </div>
+      ${rs.hint && w.meaningEn ? `<hr class="answer-divider"><div class="answer" style="font-size:0.85em;"><span style="font-size:0.75em; opacity:0.7; display:block; margin-bottom:4px;">🇬🇧 Gợi ý nghĩa tiếng Anh</span>${escapeHtml(w.meaningEn)}</div>` : ''}
+      ${rs.hint ? `<div style="text-align:center; font-size:1.1em; letter-spacing:0.12em; margin-top:10px;">${escapeHtml(revHintPattern(w.word))}</div>` : ''}
+      ${masked ? `<div style="font-style:italic; font-size:0.85em; opacity:0.85; margin-top:10px; text-align:center;">${escapeHtml(masked)}</div>` : ''}
+    `;
+  } else if(isDictationBlind){
     fc.innerHTML = `
       <div class="side-label">🎧 Nghe và gõ lại từ</div>
       <div class="content" style="display:flex; align-items:center; justify-content:center;">
@@ -11598,7 +11900,7 @@ function renderVocabReview(){
         <span>${escapeHtml(w.word)}</span>
         <button class="vocab-speak-btn" aria-label="Phát âm" style="font-size:0.55em; line-height:1; border:none; background:var(--bg-elev); color:inherit; width:1.7em; height:1.7em; border-radius:50%; cursor:pointer; flex-shrink:0;">🔊</button>
       </div>
-      ${(w.meaningEn && (vocabFlipped || (vocabReviewInputMode==='flip' && vocabEnShownIdx===vocabReviewIdx))) ? `<hr class="answer-divider"><div class="answer" style="font-size:0.85em;"><span style="font-size:0.75em; opacity:0.7; display:block; margin-bottom:4px;">🇬🇧 Nghĩa tiếng Anh</span>${escapeHtml(w.meaningEn)}</div>` : ''}
+      ${(w.meaningEn && (vocabFlipped || ((vocabReviewInputMode==='flip' || vocabReviewInputMode==='reverse') && vocabEnShownIdx===vocabReviewIdx))) ? `<hr class="answer-divider"><div class="answer" style="font-size:0.85em;"><span style="font-size:0.75em; opacity:0.7; display:block; margin-bottom:4px;">🇬🇧 Nghĩa tiếng Anh</span>${escapeHtml(w.meaningEn)}</div>` : ''}
       ${vocabFlipped ? `<hr class="answer-divider"><div class="answer">${escapeHtml(w.meaning)}${w.example ? `<br><br><span style="font-style:italic; font-size:0.9em; opacity:0.85;">${escapeHtml(w.example)}</span>` : ''}</div>` : ''}
     `;
     fc.querySelector('.vocab-speak-btn').onclick = (e)=>{ e.stopPropagation(); speakWord(w.word); };
@@ -11651,7 +11953,50 @@ function renderVocabReview(){
   }
 
   if(!vocabFlipped){
-    if(vocabReviewInputMode==='quiz'){
+    if(revCard){
+      const rs = getRevState();
+      const reveal = (result)=>{
+        const inp = document.getElementById('vocabRevInput');
+        if(inp) rs.typed = inp.value;
+        rs.result = result;
+        vocabFlipped = true;
+        if(DATA.settings.autoSpeakVocab) speakWord(w.word);
+        render();
+      };
+      const check = ()=>{
+        const inp = document.getElementById('vocabRevInput');
+        const val = inp ? inp.value : '';
+        if(!val.trim()){ toast('Hãy gõ từ tiếng Anh, hoặc bấm "Hiện từ"'); return; }
+        rs.typed = val;
+        const ok = normalizeRevAnswer(val) === normalizeRevAnswer(w.word);
+        reveal(ok ? (rs.hint ? 'ok-hint' : 'ok') : 'wrong');
+      };
+      const box = document.createElement('div');
+      box.className = 'type-answer-box';
+      box.innerHTML = `
+        <input type="text" id="vocabRevInput" class="type-answer-input" placeholder="Gõ từ tiếng Anh..." autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button class="reveal-btn vocab-rev-check">Kiểm tra</button>
+      `;
+      const revInput = box.querySelector('#vocabRevInput');
+      revInput.value = rs.typed || '';
+      revInput.onkeydown = (e)=>{ if(e.key==='Enter') check(); };
+      box.querySelector('.vocab-rev-check').onclick = check;
+      wrap.appendChild(box);
+      const sub = document.createElement('div');
+      sub.style.cssText = 'display:flex; gap:10px; justify-content:center; margin:0 16px 16px;';
+      if(!rs.hint){
+        const hintBtn = document.createElement('button');
+        hintBtn.type = 'button'; hintBtn.className = 'chip'; hintBtn.textContent = '💡 Gợi ý';
+        hintBtn.onclick = ()=>{ const inp = document.getElementById('vocabRevInput'); if(inp) rs.typed = inp.value; rs.hint = true; render(); };
+        sub.appendChild(hintBtn);
+      }
+      const giveUp = document.createElement('button');
+      giveUp.type = 'button'; giveUp.className = 'chip'; giveUp.textContent = 'Hiện từ';
+      giveUp.onclick = ()=> reveal('gaveup');
+      sub.appendChild(giveUp);
+      wrap.appendChild(sub);
+      requestAnimationFrame(()=>{ const el = document.getElementById('vocabRevInput'); if(el) el.focus(); });
+    } else if(vocabReviewInputMode==='quiz'){
       if(quizVocabCurrentWordId !== w.id){
         quizVocabCurrentChoices = buildVocabQuizChoices(w);
         quizVocabCurrentWordId = w.id;
@@ -11721,7 +12066,16 @@ function renderVocabReview(){
       wrap.appendChild(revealBtn);
     }
   } else {
-    if(vocabReviewInputMode==='dictation' && dictationVocabChecked){
+    if(revCard && getRevState().result){
+      const rs = getRevState();
+      const feedback = document.createElement('div');
+      feedback.className = 'type-feedback ' + ((rs.result==='ok' || rs.result==='ok-hint') ? 'correct' : 'wrong');
+      feedback.textContent = rs.result==='ok' ? '✓ Chính xác!'
+        : rs.result==='ok-hint' ? '✓ Đúng (có dùng gợi ý)'
+        : rs.result==='gaveup' ? 'Đáp án: "' + w.word + '"'
+        : (rs.typed.trim() ? '✗ Chưa đúng — bạn đã gõ: "' + rs.typed.trim() + '" (đúng: "' + w.word + '")' : '✗ Chưa đúng (đúng: "' + w.word + '")');
+      wrap.insertBefore(feedback, wrap.querySelector('.card-stage').nextSibling);
+    } else if(vocabReviewInputMode==='dictation' && dictationVocabChecked){
       const feedback = document.createElement('div');
       feedback.className = 'type-feedback ' + (dictationVocabCorrect ? 'correct' : 'wrong');
       feedback.textContent = dictationVocabCorrect
