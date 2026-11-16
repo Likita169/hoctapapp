@@ -471,6 +471,21 @@ function normalizeProgress(){
   DATA.progress = Object.assign({}, DEFAULT_PROGRESS, DATA.progress || {});
   if(!Array.isArray(DATA.progress.badges)) DATA.progress.badges = [];
   if(!DATA.progress.reviewLog || typeof DATA.progress.reviewLog !== 'object') DATA.progress.reviewLog = {};
+  if(!DATA.progress.vocabLog || typeof DATA.progress.vocabLog !== 'object') DATA.progress.vocabLog = {};
+}
+
+// Nhật ký ôn TỪ VỰNG theo ngày cho màn Thống kê từ vựng: n = số lượt chấm,
+// ok = số lượt nhớ (Nhớ/Dễ), fresh = số từ lần đầu được học. Giữ 120 ngày gần nhất.
+function recordVocabLog(quality, isFirst){
+  normalizeProgress();
+  const log = DATA.progress.vocabLog;
+  const k = todayKey();
+  const e = log[k] || (log[k] = { n:0, ok:0, fresh:0 });
+  e.n += 1;
+  if(quality >= 2) e.ok += 1;
+  if(isFirst) e.fresh += 1;
+  const keys = Object.keys(log);
+  if(keys.length > 120) keys.sort().slice(0, keys.length-120).forEach(d=>delete log[d]);
 }
 
 // Xoá bớt các ngày quá cũ trong reviewLog (chỉ ô "Đã học hôm nay" cần dữ
@@ -784,6 +799,7 @@ function render(){
     else if(VIEW==='vocab-add') main.appendChild(renderVocabAdd());
     else if(VIEW==='vocab-bulk') main.appendChild(renderVocabBulk());
     else if(VIEW==='vocab-review') main.appendChild(renderVocabReview());
+    else if(VIEW==='vocab-stats') main.appendChild(renderVocabStats());
     else if(VIEW==='vocab-stress') main.appendChild(renderVocabStressGame());
   }catch(e){
     // Never let a rendering bug in one tab take the whole app (and the
@@ -899,7 +915,7 @@ function renderTabbar(){
   ];
   tabs.forEach(t=>{
     const b = document.createElement('button');
-    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-bulk'||VIEW==='vocab-review'||VIEW==='vocab-stress') : VIEW===t.id;
+    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-bulk'||VIEW==='vocab-review'||VIEW==='vocab-stats'||VIEW==='vocab-stress') : VIEW===t.id;
     b.className = isActive ? 'active' : '';
     b.innerHTML = `<span class="icon">${t.icon}</span><span>${t.label}</span>`;
     b.onclick = ()=>{ if(t.id==='manage') manageFilterSubjectId = null; setView(t.id); };
@@ -9601,6 +9617,14 @@ function renderVocabHome(){
     main.appendChild(lc);
   }
 
+  const statsEntry = document.createElement('button');
+  statsEntry.type = 'button';
+  statsEntry.className = 'chip';
+  statsEntry.style.cssText = 'margin:0 16px 14px;';
+  statsEntry.textContent = '📊 Thống kê mức độ thuộc →';
+  statsEntry.onclick = ()=> setView('vocab-stats');
+  main.appendChild(statsEntry);
+
   // Trò "Tìm từ trọng âm khác" không phụ thuộc từ nào đến hạn ôn (dùng cả
   // kho từ vựng, không riêng từ due) nên đặt thành 1 lối vào riêng, luôn
   // bấm được kể cả khi hero phía trên đang khoá do due===0.
@@ -10704,6 +10728,170 @@ async function lookupBulkEntry(entry){
   }
   if(!row.meaning){ try{ row.meaning = (await fetchMeaningFor(w)) || ''; }catch(e){ /* bỏ qua */ } }
   return row;
+}
+
+/* ---------------- THỐNG KÊ TỪ VỰNG ---------------- */
+// Mức độ thuộc của từng từ: mới (chưa học) / đang học / thuộc chắc (khoảng cách
+// ôn lại từ VOCAB_MATURE_DAYS ngày trở lên — nghĩa là đã nhớ lâu dài).
+const VOCAB_MATURE_DAYS = 21;
+function vocabLevelOf(w){
+  if(w.lastReview === undefined && !((w.reps||0) > 0)) return 'new';
+  return (w.interval||0) >= VOCAB_MATURE_DAYS ? 'mature' : 'learning';
+}
+function levelBarHtml(c, height){
+  const t = c.total || 1;
+  const seg = (n, color)=> n>0 ? `<div style="width:${(n/t*100).toFixed(2)}%; background:${color};"></div>` : '';
+  return `<div style="display:flex; height:${height||10}px; border-radius:6px; overflow:hidden; background:var(--line);">${seg(c.mature,'var(--teal)')}${seg(c.learning,'#e0b050')}${seg(c.new,'var(--line)')}</div>`;
+}
+// Gom số liệu theo từng chủ đề (tính cả chủ đề con), 1 lượt duy nhất.
+function vocabTopicLevelTotals(){
+  const blank = ()=>({ total:0, new:0, learning:0, mature:0, leech:0 });
+  const direct = new Map();
+  const none = blank();
+  DATA.vocab.forEach(w=>{
+    const c = w.topicId ? (direct.get(w.topicId) || (direct.set(w.topicId, blank()), direct.get(w.topicId))) : none;
+    c.total++; c[vocabLevelOf(w)]++; if(w.leech) c.leech++;
+  });
+  const memo = new Map();
+  const sum = (id)=>{
+    if(memo.has(id)) return memo.get(id);
+    const acc = Object.assign(blank(), direct.get(id) || {});
+    memo.set(id, acc); // chặn vòng lặp nếu dữ liệu chủ đề lỗi
+    childVocabTopics(id).forEach(ch=>{ const r = sum(ch.id); acc.total+=r.total; acc.new+=r.new; acc.learning+=r.learning; acc.mature+=r.mature; acc.leech+=r.leech; });
+    return acc;
+  };
+  DATA.vocabTopics.forEach(t=>sum(t.id));
+  return { byTopic: memo, none };
+}
+
+function renderVocabStats(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `<h1 class="display">Thống kê từ vựng</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+  const back = document.createElement('button');
+  back.className = 'back-link'; back.textContent = '← Quay lại';
+  back.onclick = ()=> setView('vocab');
+  main.appendChild(back);
+
+  const total = DATA.vocab.length;
+  if(total === 0){
+    main.appendChild(emptyState('📊', 'Chưa có từ vựng nào để thống kê.'));
+    wrap.appendChild(main);
+    return wrap;
+  }
+
+  const card = (html)=>{
+    const d = document.createElement('div');
+    d.style.cssText = 'margin:0 16px 14px; padding:14px 16px; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px;';
+    d.innerHTML = html;
+    main.appendChild(d);
+    return d;
+  };
+  const dot = (color)=> `<span style="display:inline-block; width:10px; height:10px; border-radius:3px; background:${color}; margin-right:8px;"></span>`;
+  const pct = (n, t)=> t ? Math.round(n/t*100) : 0;
+
+  // ---- 1. Mức độ thuộc ----
+  const cnt = { total, new:0, learning:0, mature:0, leech:0 };
+  DATA.vocab.forEach(w=>{ cnt[vocabLevelOf(w)]++; if(w.leech) cnt.leech++; });
+  const learned = cnt.learning + cnt.mature;
+  card(`
+    <div style="font-weight:600; margin-bottom:2px;">Mức độ thuộc</div>
+    <div style="font-size:12.5px; color:var(--ink-faint); margin-bottom:10px;">Đã học <b>${learned}</b>/${total} từ (${pct(learned,total)}%) · thuộc chắc <b>${cnt.mature}</b> từ (${pct(cnt.mature,total)}%)</div>
+    ${levelBarHtml(cnt, 14)}
+    <div style="margin-top:12px; font-size:13.5px; line-height:1.9;">
+      <div>${dot('var(--teal)')}<b>Thuộc chắc</b>: ${cnt.mature} từ <span style="color:var(--ink-faint);">· ôn lại cách từ ${VOCAB_MATURE_DAYS} ngày trở lên</span></div>
+      <div>${dot('#e0b050')}<b>Đang học</b>: ${cnt.learning} từ <span style="color:var(--ink-faint);">· đã học, còn cần ôn dày</span></div>
+      <div>${dot('var(--line)')}<b>Chưa học</b>: ${cnt.new} từ</div>
+      ${cnt.leech>0 ? `<div>🩹 <b>Từ cứng đầu</b>: ${cnt.leech} từ <span style="color:var(--ink-faint);">· nằm trong các nhóm trên</span></div>` : ''}
+    </div>
+  `);
+
+  // ---- 2. Hoạt động 14 ngày ----
+  const log = (DATA.progress && DATA.progress.vocabLog) || {};
+  const days = [];
+  for(let i=13; i>=0; i--){ const d = new Date(); d.setDate(d.getDate()-i); days.push({ date:d, key:dateKey(d) }); }
+  days.forEach(x=>{ x.e = log[x.key] || { n:0, ok:0, fresh:0 }; });
+  const last7 = days.slice(7);
+  const n7 = last7.reduce((a,x)=>a+x.e.n, 0);
+  const ok7 = last7.reduce((a,x)=>a+x.e.ok, 0);
+  const sevenAgo = new Date(); sevenAgo.setDate(sevenAgo.getDate()-6); sevenAgo.setHours(0,0,0,0);
+  const newWeek = DATA.vocab.filter(w=>w.firstSeen && w.firstSeen >= sevenAgo.getTime()).length;
+  const actCard = card(`
+    <div style="font-weight:600; margin-bottom:2px;">Hoạt động 14 ngày qua</div>
+    <div style="font-size:12.5px; color:var(--ink-faint); margin-bottom:6px;">${n7>0 ? `7 ngày qua: <b>${n7}</b> lượt ôn · nhớ đúng <b>${pct(ok7,n7)}%</b> · <b>${newWeek}</b> từ mới` : 'Chưa có dữ liệu — từ lần ôn tới, app sẽ ghi lại số lượt ôn mỗi ngày ở đây.'}</div>
+  `);
+  const maxN = Math.max(1, ...days.map(x=>x.e.n));
+  const chart = document.createElement('div');
+  chart.className = 'forecast-chart';
+  const bars = document.createElement('div');
+  bars.className = 'forecast-bars';
+  days.forEach(x=>{
+    const col = document.createElement('div');
+    col.className = 'forecast-col' + (x.key===todayKey() ? ' today' : '');
+    col.title = `${weekdayLabelVi(x.date)} ${x.date.getDate()}/${x.date.getMonth()+1}: ${x.e.n} lượt ôn` + (x.e.n ? `, nhớ ${pct(x.e.ok,x.e.n)}%` : '');
+    col.innerHTML = `
+      <div class="forecast-count">${x.e.n>0 ? x.e.n : ''}</div>
+      <div class="forecast-track"><div class="forecast-bar" style="height:${x.e.n>0 ? Math.max(4, Math.round(x.e.n/maxN*100)) : 0}%"></div></div>
+      <div class="forecast-daylabel">${weekdayLabelVi(x.date)}<br>${x.date.getDate()}</div>
+    `;
+    bars.appendChild(col);
+  });
+  chart.appendChild(bars);
+  actCard.appendChild(chart);
+
+  // ---- 3. Chủ đề cần ôn thêm ----
+  const tl = vocabTopicLevelTotals();
+  const topicRows = DATA.vocabTopics
+    .map(t=>({ t, c: tl.byTopic.get(t.id) }))
+    .filter(r=>r.c && r.c.total >= 3)
+    .sort((a,b)=> (pct(a.c.mature,a.c.total) - pct(b.c.mature,b.c.total)) || (b.c.total - a.c.total))
+    .slice(0, 8);
+  if(topicRows.length > 0){
+    const tc = card(`<div style="font-weight:600; margin-bottom:2px;">Chủ đề cần ôn thêm</div>
+      <div style="font-size:12.5px; color:var(--ink-faint); margin-bottom:8px;">Xếp theo tỉ lệ thuộc chắc thấp nhất (chủ đề từ 3 từ trở lên). Bấm để xem danh sách từ của chủ đề.</div>`);
+    topicRows.forEach(({t, c})=>{
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:10px 0; border-top:1px solid var(--line); cursor:pointer;';
+      row.innerHTML = `
+        <div style="display:flex; justify-content:space-between; gap:8px; margin-bottom:6px; font-size:13.5px;">
+          <span style="font-weight:600;">${escapeHtml(vocabTopicNamePath(t.id).join(' › '))}</span>
+          <span style="color:var(--ink-faint); white-space:nowrap;">${c.mature}/${c.total} chắc${c.leech>0 ? ' · 🩹' + c.leech : ''}</span>
+        </div>
+        ${levelBarHtml(c, 8)}
+      `;
+      row.onclick = ()=>{ vocabTopicFilter = t.id; vocabSearch = ''; setView('vocab'); };
+      tc.appendChild(row);
+    });
+  }
+  if(tl.none.total > 0 && DATA.vocabTopics.length > 0){
+    card(`<div style="font-size:13px; color:var(--ink-faint);">${tl.none.total} từ chưa gán chủ đề nên không có trong bảng trên.</div>`);
+  }
+
+  // ---- 4. Từ hay quên nhất ----
+  const hard = DATA.vocab.filter(w=>(w.lapses||0) > 0).sort((a,b)=>(b.lapses||0)-(a.lapses||0)).slice(0, 8);
+  if(hard.length > 0){
+    const hc = card(`<div style="font-weight:600; margin-bottom:6px;">Từ hay quên nhất</div>`);
+    hard.forEach(w=>{
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:baseline; gap:8px; padding:7px 0; border-top:1px solid var(--line); cursor:pointer;';
+      row.innerHTML = `
+        <span style="font-weight:600;">${escapeHtml(w.word)}${w.leech ? ' 🩹' : ''}</span>
+        <span style="font-size:13px; color:var(--ink-faint); margin-left:auto; text-align:right;">${escapeHtml(w.meaning)}</span>
+        <span style="font-size:12px; color:var(--coral); white-space:nowrap;">quên ${w.lapses} lần</span>
+      `;
+      row.onclick = ()=> speakWord(w.word);
+      hc.appendChild(row);
+    });
+  }
+
+  wrap.appendChild(main);
+  return wrap;
 }
 
 function renderVocabBulk(){
@@ -12122,6 +12310,7 @@ function renderVocabReview(){
     row.querySelectorAll('.grade-btn').forEach((btn,i)=>{
       btn.onclick = async ()=>{
         const quality = qualities[i];
+        const wasFirstTime = !w.firstSeen;
         if(!w.firstSeen) w.firstSeen = Date.now();
         if(quality===0){
           if(!vocabLapseSession.has(w.id)){
@@ -12144,6 +12333,7 @@ function renderVocabReview(){
         // "Quên" → xếp lại cuối phiên để gặp lại ngay trong buổi học này.
         if(quality===0 && vocabReviewQueue[vocabReviewIdx]===w) vocabReviewQueue.push(w);
         recordXpAndStreak(quality);
+        recordVocabLog(quality, wasFirstTime);
         vocabSessionXpEarned += (XP_PER_GRADE[quality] || 0);
         saveDataSoon();
         vocabReviewIdx += 1;
