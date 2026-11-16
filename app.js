@@ -46,7 +46,7 @@ const PUSH_SERVER_URL = 'https://on-tap-push.nguyenngochuy8816.workers.dev';
 // (xem mục "Tài khoản & đồng bộ" trong HUONG-DAN.md) — thay bằng URL thật
 // sau khi deploy worker trong thư mục sync-server/
 const SYNC_SERVER_URL = 'https://on-tap-sync.nguyenngochuy8816.workers.dev/';
-const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true, vocabNewPerDay: 20, vocabBatchSize: 20, vocabReverseMode: 'sometimes' };
+const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true, vocabNewPerDay: 20, vocabBatchSize: 20, vocabReverseMode: 'sometimes', vocabDailyGoal: 30 };
 // Streak + XP + huy hiệu — tiến trình học tập lâu dài, tách riêng khỏi từng
 // thẻ để không ảnh hưởng thuật toán ôn tập ngắt quãng ở trên.
 const DEFAULT_PROGRESS = {
@@ -472,6 +472,40 @@ function normalizeProgress(){
   if(!Array.isArray(DATA.progress.badges)) DATA.progress.badges = [];
   if(!DATA.progress.reviewLog || typeof DATA.progress.reviewLog !== 'object') DATA.progress.reviewLog = {};
   if(!DATA.progress.vocabLog || typeof DATA.progress.vocabLog !== 'object') DATA.progress.vocabLog = {};
+  if(!DATA.progress.vocabGoalHit || typeof DATA.progress.vocabGoalHit !== 'object') DATA.progress.vocabGoalHit = {};
+}
+
+// MỤC TIÊU HẰNG NGÀY (từ vựng): số TỪ khác nhau đã ôn trong ngày (một từ bấm Quên
+// rồi ôn lại vẫn chỉ tính 1). Ngày nào đạt mục tiêu thì được đánh dấu để tính
+// chuỗi ngày liên tiếp. 0 = tắt.
+function startOfTodayMs(){ const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); }
+function vocabGoal(){
+  const n = Number(DATA.settings && DATA.settings.vocabDailyGoal);
+  return Number.isFinite(n) && n >= 0 ? n : 30;
+}
+function vocabReviewedToday(){
+  const t = startOfTodayMs();
+  let n = 0;
+  for(const w of DATA.vocab){ if(w.lastReview !== undefined && w.lastReview >= t) n++; }
+  return n;
+}
+function markVocabGoalHit(){
+  normalizeProgress();
+  const hit = DATA.progress.vocabGoalHit;
+  const k = todayKey();
+  if(hit[k]) return false;
+  hit[k] = true;
+  const keys = Object.keys(hit);
+  if(keys.length > 120) keys.sort().slice(0, keys.length-120).forEach(d=>delete hit[d]);
+  return true;
+}
+function vocabGoalStreak(){
+  const hit = (DATA.progress && DATA.progress.vocabGoalHit) || {};
+  const d = new Date();
+  if(!hit[dateKey(d)]) d.setDate(d.getDate()-1); // hôm nay chưa đạt thì chuỗi vẫn giữ nếu hôm qua đạt
+  let streak = 0;
+  while(hit[dateKey(d)] && streak < 400){ streak++; d.setDate(d.getDate()-1); }
+  return streak;
 }
 
 // Nhật ký ôn TỪ VỰNG theo ngày cho màn Thống kê từ vựng: n = số lượt chấm,
@@ -3224,6 +3258,25 @@ function renderSettings(){
     await saveData();
   };
   main.appendChild(revRow);
+
+  const goalOpts = [0,10,20,30,50,100,200];
+  const curGoal = vocabGoal();
+  const goalRow = document.createElement('div');
+  goalRow.className = 'toggle-row';
+  goalRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">🎯 Mục tiêu từ vựng mỗi ngày</div>
+      <div class="tr-sub">Số từ khác nhau cần ôn mỗi ngày. Đạt mục tiêu liên tiếp nhiều ngày thì được tính chuỗi.</div>
+    </div>
+    <select class="vocab-goal-select">
+      ${goalOpts.map(n=>`<option value="${n}" ${n===curGoal?'selected':''}>${n===0 ? 'Tắt' : n + ' từ'}</option>`).join('')}
+    </select>
+  `;
+  goalRow.querySelector('select').onchange = async (e)=>{
+    DATA.settings.vocabDailyGoal = Number(e.target.value);
+    await saveData();
+  };
+  main.appendChild(goalRow);
 
   const ttsRow = document.createElement('div');
   ttsRow.className = 'toggle-row';
@@ -9111,6 +9164,7 @@ let vocabReviewQueue = [];
 let vocabReviewIdx = 0;
 let vocabFlipped = false;
 let vocabLapseSession = new Set(); // các từ đã bị tính 1 lần "Quên" trong phiên này
+let vocabQuickLimit = 0;           // >0: phiên "Ôn nhanh" chỉ gồm từng này từ
 let vocabLeechSession = false;     // phiên hiện tại là bộ Từ cứng đầu
 let vocabEnShownIdx = -1;       // vị trí thẻ (trong hàng đợi) đã bấm "Hiện nghĩa tiếng Anh" — chỉ ở chế độ lật thẻ
 let vocabSessionXpEarned = 0;
@@ -9178,6 +9232,97 @@ function syncVocabAddDraft(){
   }
 }
 let vocabAddLoadedFor = undefined; // id của từ mà addVocabCollocations đã nạp cho (undefined = chưa nạp lần nào, null = đang thêm từ mới)
+
+// LUYỆN NÓI: dùng nhận diện giọng nói của trình duyệt (SpeechRecognition) để nghe
+// bạn đọc to từ rồi so với từ cần đọc. Chạy tốt nhất trên Chrome (Android/máy
+// tính); Safari/Firefox hỗ trợ kém hoặc không có; cần mạng + cho phép micro.
+function speechRecognitionCtor(){ return window.SpeechRecognition || window.webkitSpeechRecognition || null; }
+let _speakRec = null;
+let vocabSpeakState = { idx:-1, status:'idle', heard:'', result:null, tries:0 };
+function getSpeakState(){
+  if(vocabSpeakState.idx !== vocabReviewIdx) vocabSpeakState = { idx:vocabReviewIdx, status:'idle', heard:'', result:null, tries:0 };
+  return vocabSpeakState;
+}
+function levenshtein(a, b){
+  const m = a.length, n = b.length;
+  if(!m) return n; if(!n) return m;
+  let prev = new Array(n+1), cur = new Array(n+1);
+  for(let j=0;j<=n;j++) prev[j] = j;
+  for(let i=1;i<=m;i++){
+    cur[0] = i;
+    for(let j=1;j<=n;j++){
+      cur[j] = Math.min(prev[j]+1, cur[j-1]+1, prev[j-1] + (a[i-1]===b[j-1] ? 0 : 1));
+    }
+    [prev, cur] = [cur, prev];
+  }
+  return prev[n];
+}
+// Đúng hẳn → 'ok'; từ dài (>=6 chữ) mà nghe gần giống (>=80%) → 'close'; còn lại 'wrong'.
+function judgeSpeech(alts, target){
+  const t = normalizeRevAnswer(target);
+  let best = 0, bestHeard = alts[0] || '';
+  for(const a of alts){
+    const h = normalizeRevAnswer(a);
+    if(h === t) return { level:'ok', heard:a };
+    const sim = (h && t) ? 1 - levenshtein(h, t) / Math.max(h.length, t.length) : 0;
+    if(sim > best){ best = sim; bestHeard = a; }
+  }
+  return { level: (t.length >= 6 && best >= 0.8) ? 'close' : 'wrong', heard: bestHeard };
+}
+function listenForWord(w){
+  const SR = speechRecognitionCtor();
+  if(!SR){ toast('Trình duyệt này không hỗ trợ nhận diện giọng nói — nên dùng Chrome'); return; }
+  const st = getSpeakState();
+  const idx = vocabReviewIdx;
+  try{ window.speechSynthesis && window.speechSynthesis.cancel(); }catch(e){ /* bỏ qua */ }
+  try{ if(_ttsAudio) _ttsAudio.pause(); }catch(e){ /* bỏ qua */ }
+  try{ if(_speakRec) _speakRec.abort(); }catch(e){ /* bỏ qua */ }
+  const rec = new SR();
+  _speakRec = rec;
+  rec.lang = 'en-US';
+  rec.interimResults = false;
+  rec.maxAlternatives = 5;
+  rec.continuous = false;
+  let got = false;
+  const stillHere = ()=> vocabSpeakState.idx === idx && VIEW === 'vocab-review';
+  rec.onresult = (e)=>{
+    got = true;
+    const alts = [];
+    for(let i=0; i<e.results.length; i++){ for(let j=0; j<e.results[i].length; j++) alts.push(e.results[i][j].transcript); }
+    if(!stillHere()) return;
+    const r = judgeSpeech(alts, w.word);
+    st.status = 'idle'; st.heard = r.heard; st.tries += 1;
+    if(r.level === 'wrong'){
+      st.result = null; st.lastWrong = true;
+    } else {
+      st.result = r.level; st.lastWrong = false;
+      vocabFlipped = true;
+    }
+    render();
+  };
+  rec.onerror = (e)=>{
+    got = true;
+    if(!stillHere()) return;
+    st.status = 'idle';
+    const msg = { 'not-allowed':'Hãy cho phép trang này dùng micro rồi thử lại', 'service-not-allowed':'Hãy cho phép trang này dùng micro rồi thử lại',
+      'no-speech':'Không nghe thấy gì — thử nói to hơn', 'audio-capture':'Không tìm thấy micro', 'network':'Cần có mạng để nhận diện giọng nói',
+      'aborted':'' }[e.error];
+    if(msg !== '') toast(msg || 'Không nhận diện được giọng nói');
+    render();
+  };
+  rec.onend = ()=>{
+    if(!got && stillHere() && st.status === 'listening'){ st.status = 'idle'; toast('Không nghe thấy gì — thử lại nhé'); render(); }
+  };
+  try{
+    st.status = 'listening'; st.lastWrong = false;
+    rec.start();
+    render();
+  }catch(e){
+    st.status = 'idle';
+    toast('Không bật được micro');
+    render();
+  }
+}
 
 // ÔN CHIỀU NGƯỢC (nghĩa → từ tiếng Anh): thẻ hiện nghĩa tiếng Việt, bạn gõ lại
 // từ tiếng Anh. Chỉ áp dụng cho từ ĐÃ ôn thuộc (đã nhớ liên tiếp REVERSE_MIN_REPS
@@ -9588,21 +9733,47 @@ function renderVocabHome(){
   // 2 lối tắt vào thẳng đúng chế độ ôn muốn dùng, khỏi phải mở màn ôn tập
   // rồi vào menu ⋮ đổi chế độ mới bắt đầu được.
   const modeRow = document.createElement('div');
-  modeRow.style.cssText = 'display:flex; gap:8px; justify-content:center; margin-top:12px;' + (due===0 ? ' opacity:0.45; pointer-events:none;' : '');
+  modeRow.style.cssText = 'display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-top:12px;' + (due===0 ? ' opacity:0.45; pointer-events:none;' : '');
   modeRow.innerHTML = `
     <button type="button" class="chip" data-mode="flip">🔄 Lật thẻ</button>
     <button type="button" class="chip" data-mode="quiz">🧠 Trắc nghiệm nhanh</button>
     <button type="button" class="chip" data-mode="dictation">🎧 Nghe – gõ chính tả</button>
+    <button type="button" class="chip" data-mode="speak">🎤 Luyện nói</button>
+    <button type="button" class="chip" data-quick="5">⚡ Ôn nhanh 5 từ</button>
   `;
   modeRow.querySelectorAll('[data-mode]').forEach(btn=>{
     btn.onclick = ()=>{
       if(due===0) return;
+      if(btn.dataset.mode==='speak' && !speechRecognitionCtor()){ toast('Trình duyệt này không hỗ trợ nhận diện giọng nói — nên dùng Chrome'); return; }
       setVocabReviewInputMode(btn.dataset.mode);
       startVocabReview();
     };
   });
+  modeRow.querySelector('[data-quick]').onclick = ()=>{ if(due===0) return; startVocabReview({ limit: 5 }); };
   hero.appendChild(modeRow);
   main.appendChild(hero);
+
+  const goalN = vocabGoal();
+  if(goalN > 0){
+    const doneN = vocabReviewedToday();
+    const reached = doneN >= goalN;
+    // Đạt mục tiêu bằng cách khác (vd hạ mục tiêu xuống) mà chưa được đánh dấu → đánh dấu để chuỗi không bị đứt.
+    if(reached && markVocabGoalHit()) saveDataSoon();
+    const streak = vocabGoalStreak();
+    const gc = document.createElement('div');
+    gc.style.cssText = 'margin:0 16px 14px; padding:14px 16px; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px;';
+    gc.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
+        <span style="font-weight:600;">🎯 Mục tiêu hôm nay</span>
+        <span style="font-size:13.5px; color:${reached ? 'var(--teal)' : 'var(--ink-faint)'};"><b>${doneN}</b>/${goalN} từ</span>
+      </div>
+      <div style="height:10px; border-radius:6px; background:var(--line); overflow:hidden;">
+        <div style="height:100%; width:${Math.min(100, Math.round(doneN/goalN*100))}%; background:var(--teal);"></div>
+      </div>
+      <div style="font-size:12.5px; color:var(--ink-faint); margin-top:8px;">${reached ? '🎉 Đã đạt mục tiêu hôm nay! Ôn thêm cũng rất tốt.' : 'Còn ' + (goalN-doneN) + ' từ nữa là đạt mục tiêu.'}${streak>0 ? ` · 🔥 Chuỗi đạt mục tiêu: <b>${streak}</b> ngày` : ''}</div>
+    `;
+    main.appendChild(gc);
+  }
 
   const leechWords = DATA.vocab.filter(x=>x.leech);
   if(leechWords.length>0){
@@ -11912,9 +12083,9 @@ function vocabBatchSize(){
   const n = Number(DATA.settings && DATA.settings.vocabBatchSize);
   return Number.isFinite(n) && n>0 ? n : 20;
 }
-function pickVocabBatch(){
+function pickVocabBatch(limit){
   const all = dueVocab();
-  const n = vocabBatchSize();
+  const n = limit > 0 ? limit : vocabBatchSize();
   if(all.length <= n) return all;
   // Fisher–Yates từng phần: chỉ xáo đúng n vị trí đầu, không xáo cả kho.
   for(let i=0; i<n; i++){
@@ -11940,10 +12111,11 @@ function pickLeechBatch(){
 
 function startVocabReview(opts){
   vocabLeechSession = !!(opts && opts.leechOnly === true);
+  vocabQuickLimit = (!vocabLeechSession && opts && opts.limit > 0) ? opts.limit : 0;
   vocabLapseSession = new Set();
   vocabRevByIdx = {};
   vocabRevState = { idx:-1, typed:'', result:null, hint:false };
-  vocabReviewQueue = vocabLeechSession ? pickLeechBatch() : pickVocabBatch();
+  vocabReviewQueue = vocabLeechSession ? pickLeechBatch() : pickVocabBatch(vocabQuickLimit);
   vocabReviewIdx = 0;
   vocabFlipped = false;
   vocabEnShownIdx = -1;
@@ -11969,7 +12141,7 @@ function renderVocabReview(){
     const moreLeft = (vocabReviewQueue.length>0 && !vocabLeechSession) ? dueVocab().length : 0;
     wrap.innerHTML = `<div class="review-done">
       <div class="glyph">${vocabLeechSession ? '🩹' : (moreLeft>0 ? '🎯' : '🎉')}</div>
-      <h2 class="display">${vocabLeechSession ? 'Xong lượt Từ cứng đầu!' : (moreLeft>0 ? 'Xong lượt này rồi!' : 'Xong hết rồi!')}</h2>
+      <h2 class="display">${vocabLeechSession ? 'Xong lượt Từ cứng đầu!' : (moreLeft>0 ? (vocabQuickLimit ? '⚡ Xong ' + vocabQuickLimit + ' từ nhanh!' : 'Xong lượt này rồi!') : 'Xong hết rồi!')}</h2>
       <p>${vocabLeechSession ? 'Từ nào nhớ liên tiếp ' + LEECH_RECOVER_STREAK + ' lần sẽ tự ra khỏi bộ này. Cố lên!' : moreLeft>0 ? `Hôm nay còn ${moreLeft} từ cần học. Nghỉ một chút rồi học tiếp lượt mới nhé.` : 'Bạn đã ôn hết từ vựng đến hạn. Quay lại vào ngày mai nhé.'}</p>
       ${vocabReviewQueue.length>0 ? `
       <div class="session-recap">
@@ -11982,11 +12154,20 @@ function renderVocabReview(){
     btn.className = 'hero-btn'; btn.style.maxWidth = '260px'; btn.textContent = 'Về Từ vựng Anh';
     btn.onclick = ()=> setView('vocab');
     const doneBox = wrap.querySelector('.review-done');
+    const goalN = vocabGoal();
+    if(goalN > 0){
+      const doneN = vocabReviewedToday();
+      const gl = document.createElement('div');
+      gl.style.cssText = 'font-size:14px; margin:10px 0 14px;';
+      gl.textContent = doneN >= goalN ? '🎯 Đã đạt mục tiêu hôm nay: ' + doneN + '/' + goalN + ' từ' : '🎯 Mục tiêu hôm nay: ' + doneN + '/' + goalN + ' từ';
+      doneBox.appendChild(gl);
+    }
     if(moreLeft>0){
       const nextBtn = document.createElement('button');
       nextBtn.className = 'hero-btn'; nextBtn.style.maxWidth = '260px';
-      nextBtn.textContent = 'Học lượt tiếp (' + Math.min(vocabBatchSize(), moreLeft) + ' từ) →';
-      nextBtn.onclick = ()=> startVocabReview();
+      nextBtn.textContent = vocabQuickLimit ? '⚡ Ôn nhanh thêm ' + Math.min(vocabQuickLimit, moreLeft) + ' từ →' : 'Học lượt tiếp (' + Math.min(vocabBatchSize(), moreLeft) + ' từ) →';
+      const quickAgain = vocabQuickLimit;
+      nextBtn.onclick = ()=> startVocabReview(quickAgain ? { limit: quickAgain } : undefined);
       doneBox.appendChild(nextBtn);
       btn.style.marginTop = '10px';
       btn.style.opacity = '0.85';
@@ -12030,12 +12211,14 @@ function renderVocabReview(){
       {id:'quiz', icon:'🧠', label:'Trắc nghiệm nhanh'},
       {id:'dictation', icon:'🎧', label:'Nghe – gõ chính tả'},
       {id:'reverse', icon:'🔁', label:'Nghĩa → Từ (gõ lại)'},
+      {id:'speak', icon:'🎤', label:'Luyện nói'},
     ];
     menu.innerHTML = modes.map(m=>
       `<button class="review-menu-item" data-mode="${m.id}">${m.icon} ${m.label} ${vocabReviewInputMode===m.id?'✓':''}</button>`
     ).join('');
     menu.querySelectorAll('[data-mode]').forEach(btn=>{
       btn.onclick = ()=>{
+        if(btn.dataset.mode==='speak' && !speechRecognitionCtor()){ toast('Trình duyệt này không hỗ trợ nhận diện giọng nói — nên dùng Chrome'); return; }
         setVocabReviewInputMode(btn.dataset.mode);
         vocabReviewMenuOpen = false;
         vocabFlipped = false;
@@ -12184,6 +12367,34 @@ function renderVocabReview(){
       sub.appendChild(giveUp);
       wrap.appendChild(sub);
       requestAnimationFrame(()=>{ const el = document.getElementById('vocabRevInput'); if(el) el.focus(); });
+    } else if(vocabReviewInputMode==='speak'){
+      const sp = getSpeakState();
+      if(!speechRecognitionCtor()){
+        const note = document.createElement('p');
+        note.style.cssText = 'text-align:center; color:var(--ink-faint); font-size:12.5px; margin:0 16px 10px;';
+        note.textContent = 'Thiết bị/trình duyệt này không hỗ trợ nhận diện giọng nói (nên dùng Chrome) — hiện nghĩa như bình thường nhé.';
+        wrap.appendChild(note);
+      } else {
+        if(sp.lastWrong){
+          const fb = document.createElement('div');
+          fb.className = 'type-feedback wrong';
+          fb.textContent = 'Mình nghe được: "' + sp.heard + '" — thử đọc lại hoặc xem nghĩa';
+          wrap.appendChild(fb);
+        }
+        const micBtn = document.createElement('button');
+        micBtn.className = 'reveal-btn';
+        micBtn.disabled = sp.status === 'listening';
+        micBtn.textContent = sp.status === 'listening' ? '🎧 Đang nghe… hãy đọc to từ này' : (sp.tries > 0 ? '🎤 Thử đọc lại' : '🎤 Bấm và đọc to từ này');
+        micBtn.onclick = ()=> listenForWord(w);
+        micBtn.style.marginBottom = '10px';
+        wrap.appendChild(micBtn);
+      }
+      const showBtn = document.createElement('button');
+      showBtn.className = 'reveal-btn';
+      showBtn.textContent = 'Hiện nghĩa';
+      showBtn.style.cssText = 'background:var(--bg-elev); color:var(--ink); box-shadow:none; border:1px solid var(--line);';
+      showBtn.onclick = ()=>{ try{ if(_speakRec) _speakRec.abort(); }catch(e){ /* bỏ qua */ } vocabFlipped = true; render(); };
+      wrap.appendChild(showBtn);
     } else if(vocabReviewInputMode==='quiz'){
       if(quizVocabCurrentWordId !== w.id){
         quizVocabCurrentChoices = buildVocabQuizChoices(w);
@@ -12263,6 +12474,11 @@ function renderVocabReview(){
         : rs.result==='gaveup' ? 'Đáp án: "' + w.word + '"'
         : (rs.typed.trim() ? '✗ Chưa đúng — bạn đã gõ: "' + rs.typed.trim() + '" (đúng: "' + w.word + '")' : '✗ Chưa đúng (đúng: "' + w.word + '")');
       wrap.insertBefore(feedback, wrap.querySelector('.card-stage').nextSibling);
+    } else if(vocabReviewInputMode==='speak' && getSpeakState().result){
+      const feedback = document.createElement('div');
+      feedback.className = 'type-feedback correct';
+      feedback.textContent = getSpeakState().result === 'ok' ? '✓ Phát âm chuẩn! Mình nghe được: "' + getSpeakState().heard + '"' : '✓ Gần đúng — mình nghe được: "' + getSpeakState().heard + '"';
+      wrap.insertBefore(feedback, wrap.querySelector('.card-stage').nextSibling);
     } else if(vocabReviewInputMode==='dictation' && dictationVocabChecked){
       const feedback = document.createElement('div');
       feedback.className = 'type-feedback ' + (dictationVocabCorrect ? 'correct' : 'wrong');
@@ -12329,11 +12545,16 @@ function renderVocabReview(){
             toast('🎉 "' + w.word + '" đã ra khỏi bộ Từ cứng đầu');
           }
         }
+        const goalNow = vocabGoal();
+        const wasCountedToday = w.lastReview !== undefined && w.lastReview >= startOfTodayMs();
         grade(w, quality);
         // "Quên" → xếp lại cuối phiên để gặp lại ngay trong buổi học này.
         if(quality===0 && vocabReviewQueue[vocabReviewIdx]===w) vocabReviewQueue.push(w);
         recordXpAndStreak(quality);
         recordVocabLog(quality, wasFirstTime);
+        if(goalNow > 0 && !wasCountedToday && vocabReviewedToday() >= goalNow && markVocabGoalHit()){
+          toast('🎯 Đạt mục tiêu hôm nay! (' + goalNow + ' từ)');
+        }
         vocabSessionXpEarned += (XP_PER_GRADE[quality] || 0);
         saveDataSoon();
         vocabReviewIdx += 1;
