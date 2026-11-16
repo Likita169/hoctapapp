@@ -892,6 +892,7 @@ function render(){
     else if(VIEW==='vocab-bulk') main.appendChild(renderVocabBulk());
     else if(VIEW==='vocab-review') main.appendChild(renderVocabReview());
     else if(VIEW==='vocab-stats') main.appendChild(renderVocabStats());
+    else if(VIEW==='vocab-text') main.appendChild(renderVocabText());
     else if(VIEW==='vocab-stress') main.appendChild(renderVocabStressGame());
   }catch(e){
     // Never let a rendering bug in one tab take the whole app (and the
@@ -1007,7 +1008,7 @@ function renderTabbar(){
   ];
   tabs.forEach(t=>{
     const b = document.createElement('button');
-    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-bulk'||VIEW==='vocab-review'||VIEW==='vocab-stats'||VIEW==='vocab-stress') : VIEW===t.id;
+    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-bulk'||VIEW==='vocab-review'||VIEW==='vocab-stats'||VIEW==='vocab-text'||VIEW==='vocab-stress') : VIEW===t.id;
     b.className = isActive ? 'active' : '';
     b.innerHTML = `<span class="icon">${t.icon}</span><span>${t.label}</span>`;
     b.onclick = ()=>{ if(t.id==='manage') manageFilterSubjectId = null; setView(t.id); };
@@ -9855,6 +9856,14 @@ function renderVocabHome(){
   statsEntry.onclick = ()=> setView('vocab-stats');
   main.appendChild(statsEntry);
 
+  const textEntry = document.createElement('button');
+  textEntry.type = 'button';
+  textEntry.className = 'chip';
+  textEntry.style.cssText = 'margin:0 16px 14px;';
+  textEntry.textContent = '📄 Quét từ trong đoạn văn →';
+  textEntry.onclick = ()=> setView('vocab-text');
+  main.appendChild(textEntry);
+
   // Trò "Tìm từ trọng âm khác" không phụ thuộc từ nào đến hạn ôn (dùng cả
   // kho từ vựng, không riêng từ due) nên đặt thành 1 lối vào riêng, luôn
   // bấm được kể cả khi hero phía trên đang khoá do due===0.
@@ -11118,6 +11127,287 @@ function renderVocabStats(){
       row.onclick = ()=> speakWord(w.word);
       hc.appendChild(row);
     });
+  }
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
+/* ---------------- QUÉT TỪ TRONG ĐOẠN VĂN ---------------- */
+// Dán 1 đoạn tiếng Anh → tách ra từng từ và CỤM TỪ / CỤM ĐỘNG TỪ (keen on, take in…),
+// chia 2 bên: đã có / chưa có trong kho; tải danh sách từ chưa có ra file .docx.
+const IRREGULAR_VERB_LINES = `be was were been am is are|have had has|do did done does|go went gone goes|get got gotten|make made|take took taken|come came|see saw seen|give gave given|know knew known|think thought|say said|tell told|find found|leave left|feel felt|keep kept|put|let|begin began begun|show showed shown|hear heard|run ran|bring brought|hold held|write wrote written|stand stood|sit sat|speak spoke spoken|lose lost|pay paid|meet met|set|lead led|read|grow grew grown|fall fell fallen|draw drew drawn|break broke broken|choose chose chosen|drive drove driven|eat ate eaten|fly flew flown|forget forgot forgotten|wear wore worn|win won|buy bought|catch caught|teach taught|sell sold|send sent|spend spent|build built|cut|hit|hurt|shut|throw threw thrown|ride rode ridden|rise rose risen|sing sang sung|swim swam swum|steal stole stolen|wake woke woken|sleep slept|sweep swept|lend lent|lay laid|hang hung|deal dealt|dig dug|feed fed|fight fought|forgive forgave forgiven|freeze froze frozen|hide hid hidden|shake shook shaken|shoot shot|slide slid|spin spun|split|spread|swing swung|tear tore torn|understand understood|withdraw withdrew withdrawn|bite bit bitten|blow blew blown|burn burnt|become became|mean meant|light lit|quit|bet|bend bent|bleed bled|breed bred|cast|cost|creep crept|kneel knelt|lean leant|leap leapt|seek sought|shine shone|sink sank sunk|smell smelt|spill spilt|swear swore sworn|wind wound`;
+const IRREGULAR_VERB_MAP = (()=>{
+  const m = {};
+  IRREGULAR_VERB_LINES.split('|').forEach(line=>{ const p = line.trim().split(/\s+/); m[p[0]] = p.slice(1); });
+  return m;
+})();
+// Các dạng của 1 từ (động từ): gốc, -s, -ed, -ing, bất quy tắc. Dùng để nhận ra "took in" = "take in".
+function verbForms(w){
+  const out = new Set([w]);
+  (IRREGULAR_VERB_MAP[w] || []).forEach(f=>out.add(f));
+  if(/(s|x|z|ch|sh)$/.test(w)) out.add(w + 'es');
+  else if(/[^aeiou]y$/.test(w)) out.add(w.slice(0,-1) + 'ies');
+  else out.add(w + 's');
+  if(/e$/.test(w)) out.add(w + 'd');
+  else if(/[^aeiou]y$/.test(w)) out.add(w.slice(0,-1) + 'ied');
+  else out.add(w + 'ed');
+  if(/ie$/.test(w)) out.add(w.slice(0,-2) + 'ying');
+  else if(/[^e]e$/.test(w)) out.add(w.slice(0,-1) + 'ing');
+  else out.add(w + 'ing');
+  if(/^[^aeiou]*[aeiou][^aeiouwxy]$/.test(w) && w.length <= 5){ out.add(w + w.slice(-1) + 'ed'); out.add(w + w.slice(-1) + 'ing'); }
+  return out;
+}
+
+const BUILTIN_PHRASES = (`account for|add up|ask out|back up|blow up|break down|break in|break out|break up|bring about|bring back|bring down|bring forward|bring out|bring up|build up|burn down|call back|call for|call off|call on|call out|calm down|carry on|carry out|catch up|catch up with|catch on|check in|check out|cheer up|clean up|clear up|close down|come across|come along|come back|come down|come from|come in|come off|come on|come out|come over|come up|come up with|count on|cut back|cut down|cut off|cut out|cut up|deal with|dress up|drop by|drop in|drop off|drop out|eat out|end up|fall apart|fall behind|fall down|fall for|fall out|figure out|fill in|fill out|fill up|find out|get along|get along with|get around|get away|get back|get by|get down|get in|get into|get off|get on|get out|get over|get through|get together|get up|give away|give back|give in|give out|give up|go after|go ahead|go away|go back|go by|go down|go for|go in|go off|go on|go out|go over|go through|go up|go with|grow up|hand in|hand out|hang on|hang out|hang up|hold back|hold on|hold up|hurry up|join in|keep away|keep on|keep out|keep up|keep up with|knock down|knock out|lay off|leave out|let down|let in|let out|light up|line up|live on|live up to|log in|log out|look after|look around|look at|look back|look down on|look for|look forward to|look into|look out|look over|look up|look up to|make out|make up|mix up|move in|move on|move out|narrow down|opt for|pass away|pass on|pass out|pay back|pay off|pick out|pick up|point out|put away|put back|put down|put forward|put off|put on|put out|put together|put up|put up with|run away|run into|run out|run out of|run over|set aside|set off|set out|set up|settle down|show off|show up|shut down|shut up|sign in|sign up|sit down|slow down|speak up|stand by|stand for|stand out|stand up|stand up for|start over|step down|stick to|switch off|switch on|take after|take apart|take away|take back|take down|take in|take off|take on|take out|take over|take part in|take up|talk over|tear down|tell off|think over|think up|throw away|throw out|throw up|tidy up|try on|try out|turn around|turn away|turn back|turn down|turn into|turn off|turn on|turn out|turn over|turn up|use up|wake up|warm up|wash up|watch out|wear out|work out|write down|write off|write up|depend on|rely on|insist on|agree with|apologize for|believe in|belong to|consist of|differ from|focus on|hope for|laugh at|listen to|object to|participate in|protect from|result in|search for|succeed in|suffer from|talk about|think about|wait for|worry about|benefit from|contribute to|concentrate on|cope with|refer to|reply to|respond to|specialize in|subscribe to|keen on|fond of|interested in|good at|bad at|afraid of|proud of|jealous of|tired of|fed up with|capable of|aware of|famous for|responsible for|known for|similar to|different from|married to|angry with|annoyed at|worried about|excited about|crazy about|serious about|sorry for|thankful for|ashamed of|short of|full of|free from|used to|accustomed to|addicted to|committed to|dedicated to|devoted to|in charge of|in favour of|in favor of|in terms of|in spite of|in addition to|in order to|on behalf of|on account of|on purpose|by accident|by mistake|as well as|as long as|as soon as|as far as|so as to|according to|because of|due to|thanks to|instead of|apart from|regardless of|owing to|in fact|in case|at least|at last|at once|at first|at all|at the moment|by far|for example|for instance|in general|in particular|in the end|in the long run|in the meantime|on the other hand|on the whole|once in a while|all of a sudden|as a result|as a matter of fact|to a large extent|a lot of|a number of|a great deal of|plenty of|lots of|kind of|sort of|take care of|take place|take advantage of|take account of|pay attention to|make sense|make sure|make use of|make a decision|make progress|keep in mind|keep track of|get rid of|get used to|have a look|have fun|catch sight of|lose touch with|come to an end|take it easy`).split('|');
+
+const PASSAGE_STOPWORDS = new Set(('a an the and or but nor so if then than that this these those it its he him his she her hers they them their theirs we us our ours you your yours i me my mine is am are was were be been being has have had having do does did not no yes to of in on at by for with from as into onto who whom whose which what when where why how will would shall should can could may might must there here just very too also some any each every much many more most other such own same only both all').split(' '));
+const PASSAGE_PRONOUN_GAP = new Set(['it','them','him','her','me','us','you','this','that','one','someone','something','somebody']);
+
+// Làm sạch cụm từ trong kho (bỏ sb/sth, ngoặc…) để so với cụm trong đoạn văn.
+function cleanKhoPhrase(w){
+  return String(w||'').toLowerCase().replace(/\(.*?\)/g,' ').replace(/\b(sb|sth|someone|something|somebody|one's|oneself)\b/g,' ')
+    .replace(/[^a-z'\- ]/g,' ').replace(/\s+/g,' ').trim();
+}
+
+function tokenizePassage(text){
+  const toks = [];
+  const re = /[A-Za-z]+(?:['’\-][A-Za-z]+)*/g;
+  let m;
+  while((m = re.exec(text))){
+    const raw = m[0], start = m.index;
+    const prefix = text.slice(Math.max(0, start-60), start);
+    const sentStart = start === 0 || /(^|[.!?:;]|\n)\s*["“'‘(\[]*$/.test(prefix);
+    let w = raw.toLowerCase().replace(/’/g, "'");
+    if(/n't$/.test(w)) w = w === "can't" ? 'can' : (w === "won't" ? 'will' : (w === "shan't" ? 'shall' : w.slice(0,-3)));
+    else w = w.replace(/'(s|ll|re|ve|d|m)$/, '');
+    if(w.length < 2) continue;
+    toks.push({ w, raw, start, end: start + raw.length, sentStart, cap: /^[A-Z]/.test(raw) });
+  }
+  return toks;
+}
+
+function matchPhraseRest(toks, i, rest, text){
+  const broken = (a, b)=> /[.,;:!?()\n]/.test(text.slice(toks[a].end, toks[b].start));
+  let j = i + 1;
+  const idx = [i];
+  // Cụm tách được: "took it in" — cho phép chen 1 đại từ (it/them/him…) sau động từ.
+  if(j < toks.length && toks[j].w !== rest[0] && PASSAGE_PRONOUN_GAP.has(toks[j].w) && !broken(i, j)){ idx.push(j); j++; }
+  for(const r of rest){
+    if(j >= toks.length || toks[j].w !== r || broken(idx[idx.length-1], j)) return null;
+    idx.push(j); j++;
+  }
+  return { idx, len: idx.length };
+}
+
+// Phân tích đoạn văn. khoWords: mảng chữ của các từ đã có trong kho.
+function analyzePassage(text, opts, khoWords){
+  opts = opts || {};
+  const toks = tokenizePassage(text);
+  const khoSingles = new Set(), khoPhrases = new Set(), khoForms = new Set();
+  (khoWords || []).forEach(raw=>{
+    const c = cleanKhoPhrase(raw);
+    if(!c) return;
+    if(c.indexOf(' ') >= 0) khoPhrases.add(c);
+    else { khoSingles.add(c); if(opts.merge) verbForms(c).forEach(f=>khoForms.add(f)); }
+  });
+
+  // 1. Cụm từ: danh sách có sẵn + các cụm nhiều từ trong kho của bạn.
+  const phraseSet = new Set(BUILTIN_PHRASES);
+  khoPhrases.forEach(p=>phraseSet.add(p));
+  const index = new Map();
+  phraseSet.forEach(p=>{
+    const parts = p.split(' ');
+    if(parts.length < 2) return;
+    verbForms(parts[0]).forEach(f=>{
+      let arr = index.get(f); if(!arr){ arr = []; index.set(f, arr); }
+      arr.push({ p, rest: parts.slice(1) });
+    });
+  });
+  const used = new Array(toks.length).fill(false);
+  const items = new Map();
+  const add = (key, text, isPhrase, inKho, pos)=>{
+    const it = items.get(key);
+    if(it) it.count++;
+    else items.set(key, { key, text, count:1, isPhrase, inKho, pos });
+  };
+  for(let i=0; i<toks.length; i++){
+    if(used[i]) continue;
+    const cands = index.get(toks[i].w);
+    if(!cands) continue;
+    let best = null;
+    for(const c of cands){
+      const m = matchPhraseRest(toks, i, c.rest, text);
+      if(m && (!best || m.len > best.len)) best = { idx:m.idx, len:m.len, p:c.p };
+    }
+    if(best){
+      best.idx.forEach(k=>{ used[k] = true; });
+      add('p:' + best.p, best.p, true, khoPhrases.has(best.p), i);
+    }
+  }
+
+  // 2. Từ đơn còn lại (không nằm trong cụm đã nhận ra).
+  const occ = new Map();
+  toks.forEach((t, i)=>{ if(!used[i]){ let o = occ.get(t.w); if(!o){ o = []; occ.set(t.w, o); } o.push(t); } });
+  toks.forEach((t, i)=>{
+    if(used[i]) return;
+    if(opts.hideBasic && PASSAGE_STOPWORDS.has(t.w)) return;
+    if(opts.skipNames){
+      const o = occ.get(t.w);
+      if(o.every(x=>x.cap) && o.some(x=>!x.sentStart)) return; // luôn viết hoa & có lúc giữa câu → tên riêng
+    }
+    const inKho = khoSingles.has(t.w) || (opts.merge && khoForms.has(t.w));
+    add('w:' + t.w, t.w, false, inKho, i);
+  });
+  return Array.from(items.values()).sort((a,b)=>a.pos - b.pos);
+}
+
+// Tạo file .docx tối giản (mỗi dòng 1 đoạn) bằng JSZip đã có sẵn trong app.
+async function downloadDocxLines(filename, lines){
+  if(typeof JSZip === 'undefined'){
+    downloadTextFile(filename.replace(/\.docx$/i, '.txt'), lines.join('\r\n'), 'text/plain;charset=utf-8');
+    toast('Không tải được công cụ tạo .docx — đã tải file .txt thay thế');
+    return;
+  }
+  const esc = (t)=> String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  const paras = lines.map(l=>'<w:p><w:r><w:t xml:space="preserve">' + esc(l) + '</w:t></w:r></w:p>').join('');
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', head + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');
+  zip.file('_rels/.rels', head + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+  zip.file('word/document.xml', head + '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' + paras + '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>');
+  const blob = await zip.generateAsync({ type:'blob', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ a.remove(); URL.revokeObjectURL(url); }, 1500);
+}
+
+let vocabTextInput = '';
+let vocabTextOpts = { hideBasic:true, skipNames:true, merge:false };
+let vocabTextItems = null;
+
+function renderVocabText(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = `<h1 class="display">Quét từ trong đoạn văn</h1>`;
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+  const back = document.createElement('button');
+  back.className = 'back-link'; back.textContent = '← Quay lại';
+  back.onclick = ()=> setView('vocab');
+  main.appendChild(back);
+
+  const intro = document.createElement('p');
+  intro.style.cssText = 'margin:0 16px 10px; font-size:13px; color:var(--ink-faint);';
+  intro.textContent = 'Dán một đoạn tiếng Anh (bài đọc, đề thi, bài báo). App tách ra từng từ và cụm từ / cụm động từ (keen on, take in…), chia thành "chưa có" và "đã có" trong kho.';
+  main.appendChild(intro);
+
+  const ta = document.createElement('textarea');
+  ta.rows = 8;
+  ta.placeholder = 'Dán đoạn văn tiếng Anh vào đây…';
+  ta.value = vocabTextInput;
+  ta.style.cssText = 'display:block; width:calc(100% - 32px); margin:0 16px 10px; box-sizing:border-box; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--bg-elev); color:var(--ink); font:inherit; resize:vertical;';
+  ta.oninput = ()=>{ vocabTextInput = ta.value; };
+  main.appendChild(ta);
+
+  const optBox = document.createElement('div');
+  optBox.style.cssText = 'margin:0 16px 12px; display:flex; flex-direction:column; gap:6px; font-size:13.5px;';
+  const mkOpt = (key, label)=>{
+    const l = document.createElement('label');
+    l.style.cssText = 'display:flex; gap:8px; align-items:center; cursor:pointer;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = !!vocabTextOpts[key];
+    cb.onchange = ()=>{ vocabTextOpts[key] = cb.checked; };
+    l.appendChild(cb);
+    l.appendChild(document.createTextNode(label));
+    optBox.appendChild(l);
+  };
+  mkOpt('hideBasic', 'Ẩn từ cơ bản (a, the, is, I, and, to…)');
+  mkOpt('skipNames', 'Bỏ qua tên riêng (từ viết hoa giữa câu)');
+  mkOpt('merge', 'Coi dạng biến đổi là đã có nếu kho có từ gốc (went, goes, going ← go)');
+  main.appendChild(optBox);
+
+  const runBtn = document.createElement('button');
+  runBtn.className = 'reveal-btn';
+  runBtn.textContent = '🔍 Phân tích đoạn văn';
+  runBtn.onclick = ()=>{
+    if(!vocabTextInput.trim()){ toast('Hãy dán đoạn văn vào trước'); return; }
+    vocabTextItems = analyzePassage(vocabTextInput, vocabTextOpts, DATA.vocab.map(w=>w.word));
+    render();
+  };
+  main.appendChild(runBtn);
+
+  if(vocabTextItems){
+    const missing = vocabTextItems.filter(x=>!x.inKho);
+    const have = vocabTextItems.filter(x=>x.inKho);
+    const sum = document.createElement('div');
+    sum.style.cssText = 'margin:0 16px 10px; font-size:13.5px;';
+    sum.innerHTML = `Tìm thấy <b>${vocabTextItems.length}</b> từ/cụm: <b style="color:var(--coral);">${missing.length}</b> chưa có · <b style="color:var(--teal);">${have.length}</b> đã có trong kho`;
+    main.appendChild(sum);
+
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:0 16px 14px;';
+    const col = (title, color, list, removable)=>{
+      const box = document.createElement('div');
+      box.style.cssText = 'background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:10px 12px; min-width:0;';
+      box.innerHTML = `<div style="font-weight:600; color:${color}; margin-bottom:6px; font-size:13.5px;">${title} (${list.length})</div>`;
+      const scroll = document.createElement('div');
+      scroll.style.cssText = 'max-height:380px; overflow-y:auto;';
+      if(list.length === 0){
+        const e = document.createElement('div');
+        e.style.cssText = 'font-size:12.5px; color:var(--ink-faint);'; e.textContent = '— không có —';
+        scroll.appendChild(e);
+      }
+      list.forEach(it=>{
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; align-items:baseline; gap:6px; padding:4px 0; border-top:1px solid var(--line); font-size:13.5px;';
+        row.innerHTML = `<span style="flex:1; min-width:0; word-break:break-word;">${escapeHtml(it.text)}${it.isPhrase ? ' <span style="font-size:10.5px; color:var(--ink-faint); border:1px solid var(--line); border-radius:6px; padding:0 4px;">cụm</span>' : ''}</span>${it.count>1 ? `<span style="font-size:11.5px; color:var(--ink-faint);">×${it.count}</span>` : ''}`;
+        if(removable){
+          const x = document.createElement('button');
+          x.type = 'button'; x.textContent = '✕'; x.title = 'Bỏ khỏi danh sách';
+          x.style.cssText = 'background:none; border:none; color:var(--ink-faint); cursor:pointer; padding:0 2px; font-size:12px;';
+          x.onclick = ()=>{ vocabTextItems = vocabTextItems.filter(y=>y.key !== it.key); render(); };
+          row.appendChild(x);
+        }
+        scroll.appendChild(row);
+      });
+      box.appendChild(scroll);
+      return box;
+    };
+    grid.appendChild(col('Chưa có', 'var(--coral)', missing, true));
+    grid.appendChild(col('Đã có', 'var(--teal)', have, false));
+    main.appendChild(grid);
+
+    const dl = document.createElement('button');
+    dl.className = 'reveal-btn';
+    dl.disabled = missing.length === 0;
+    dl.textContent = '⬇️ Tải danh sách từ chưa có (.docx)';
+    dl.onclick = ()=>{
+      downloadDocxLines('tu-chua-co-' + todayKey() + '.docx', missing.map(x=>x.text));
+      toast('Đã tạo file ' + missing.length + ' từ/cụm');
+    };
+    main.appendChild(dl);
+
+    if(missing.length > 0){
+      const send = document.createElement('button');
+      send.className = 'reveal-btn';
+      send.style.cssText = 'background:var(--bg-elev); color:var(--ink); box-shadow:none; border:1px solid var(--line);';
+      send.textContent = '➡️ Chuyển sang Thêm nhiều từ (tra nghĩa tự động)';
+      send.onclick = ()=>{
+        const list = missing.map(x=>x.text);
+        vocabBulkText = list.slice(0, 60).join('\n');
+        vocabBulkRows = []; vocabBulkBusy = false; vocabBulkQuick = false; vocabBulkRemaining = '';
+        if(list.length > 60) toast('Chỉ chuyển 60 từ đầu — thêm tiếp lượt sau');
+        setView('vocab-bulk');
+      };
+      main.appendChild(send);
+    }
   }
 
   wrap.appendChild(main);
