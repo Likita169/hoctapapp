@@ -290,7 +290,7 @@ document.addEventListener('contextmenu', (e)=>{
 function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
 function dayMs(n){ return n * 86400000; }
 function fmtInterval(days){
-  if(days < 1) return Math.round(days*1440)+'p';
+  if(days < 1){ const m = Math.round(days*1440); return m < 60 ? m+'p' : Math.round(m/60)+'g'; }
   if(days < 30) return Math.round(days)+'n';
   if(days < 365) return Math.round(days/30)+'th';
   return (days/365).toFixed(1)+'nă';
@@ -571,6 +571,64 @@ function grade(card, quality){
   if(card.leech && quality>0 && card.interval > LEECH_MAX_INTERVAL) card.interval = LEECH_MAX_INTERVAL;
   card.due = Date.now() + dayMs(card.interval);
   card.lastReview = Date.now();
+}
+
+// LỊCH ÔN TỪ VỰNG kiểu "bậc thang phút": từ mới / từ vừa quên đi qua các bậc
+// ngắn trong ngày rồi mới "tốt nghiệp" sang lịch theo ngày, thay vì nhảy thẳng
+// lên 1 ngày. Mỗi lần bấm: Quên → về bậc đầu (1 phút, hiện nhãn "<10p");
+// Khó = lên 1 bậc, Nhớ = lên 2 bậc, Dễ = lên 3 bậc. Từ mới: Khó 5p · Nhớ 10p · Dễ 20p.
+// Qua hết bậc cuối thì sang lịch ngày (1 → 3/6/8 → nhân dần theo ease như cũ).
+// (Bộ thẻ các môn khác vẫn dùng grade() cũ.)
+const VOCAB_LEARN_STEPS_MIN = [1, 5, 10, 20, 60, 180, 480];
+function gradeVocab(card, quality){
+  // quality: 0 quên, 1 khó, 2 nhớ, 3 dễ
+  const now = Date.now();
+  let ease = card.ease || 2.5;
+  const inLearning = (typeof card.learnStep === 'number' && card.learnStep >= 0) || !((card.reps||0) > 0);
+  if(inLearning){
+    const r = (typeof card.learnStep === 'number' && card.learnStep >= 0) ? card.learnStep : 0;
+    const next = quality === 0 ? 0 : r + quality;
+    if(next >= VOCAB_LEARN_STEPS_MIN.length){
+      // Tốt nghiệp: từ vừa quên lúc đang ở lịch dài thì quay lại ~30% khoảng cũ, không về 1 ngày.
+      const wasRelearn = card.relearnInterval > 0;
+      card.interval = wasRelearn ? card.relearnInterval : (quality === 3 ? 2 : 1);
+      card.reps = wasRelearn ? 2 : 1; // từ cũ quên rồi học lại: lần sau nhân tiếp từ khoảng đã giữ, không tụt về 3/6 ngày
+      delete card.learnStep;
+      delete card.relearnInterval;
+      card.due = now + dayMs(card.interval);
+    } else {
+      card.learnStep = next;
+      card.reps = 0;
+      card.interval = VOCAB_LEARN_STEPS_MIN[next] / 1440;
+      card.due = now + VOCAB_LEARN_STEPS_MIN[next] * 60000;
+    }
+  } else {
+    let { interval, reps } = card;
+    if(quality === 0){
+      card.relearnInterval = Math.max(1, Math.round(interval * 0.3));
+      card.learnStep = 0;
+      card.reps = 0;
+      card.interval = VOCAB_LEARN_STEPS_MIN[0] / 1440;
+      ease = Math.max(1.3, ease - 0.2);
+      card.due = now + VOCAB_LEARN_STEPS_MIN[0] * 60000;
+    } else {
+      if(reps === 1){
+        interval = quality === 1 ? 3 : quality === 2 ? 6 : 8;
+      } else {
+        const factor = quality === 1 ? 1.2 : quality === 2 ? ease : ease * 1.3;
+        interval = Math.round(interval * factor * 10) / 10;
+      }
+      reps += 1;
+      if(quality === 1) ease = Math.max(1.3, ease - 0.15);
+      if(quality === 3) ease = ease + 0.15;
+      if(card.leech && interval > LEECH_MAX_INTERVAL) interval = LEECH_MAX_INTERVAL;
+      card.interval = interval;
+      card.reps = reps;
+      card.due = now + dayMs(interval);
+    }
+  }
+  card.ease = ease;
+  card.lastReview = now;
 }
 
 /* ---------------- STREAK + XP + HUY HIỆU ---------------- */
@@ -9163,6 +9221,7 @@ let deleteVocabId = null;
 let vocabReviewQueue = [];
 let vocabReviewIdx = 0;
 let vocabFlipped = false;
+let vocabSessionGraded = new Map(); // từ đã chấm trong phiên này (id → từ), để xếp lại các từ sắp đến hạn học lại
 let vocabLapseSession = new Set(); // các từ đã bị tính 1 lần "Quên" trong phiên này
 let vocabQuickLimit = 0;           // >0: phiên "Ôn nhanh" chỉ gồm từng này từ
 let vocabLeechSession = false;     // phiên hiện tại là bộ Từ cứng đầu
@@ -10098,7 +10157,7 @@ function incomingFromJson(text){
     familyName: w.familyId ? (fams.get(w.familyId)||'') : '',
     collocations: Array.isArray(w.collocations) ? w.collocations.filter(c=>c && c.phrase).map(c=>({phrase:String(c.phrase), meaning:c.meaning||''})) : [],
     srs: { ease:num(w.ease), interval:num(w.interval), reps:num(w.reps), due:num(w.due), lastReview:num(w.lastReview),
-           firstSeen:num(w.firstSeen), lapses:num(w.lapses), okStreak:num(w.okStreak), leech: w.leech === true ? true : undefined }
+           firstSeen:num(w.firstSeen), lapses:num(w.lapses), okStreak:num(w.okStreak), learnStep:num(w.learnStep), relearnInterval:num(w.relearnInterval), leech: w.leech === true ? true : undefined }
   }));
 }
 function incomingFromCsv(text){
@@ -10179,7 +10238,7 @@ async function applyVocabImport(incoming){
       ease: 2.5, interval: 0, reps: 0, due: now
     };
     const sr = r.srs || {};
-    ['ease','interval','reps','due','lastReview','firstSeen','lapses','okStreak'].forEach(k=>{ if(sr[k] !== undefined) w[k] = sr[k]; });
+    ['ease','interval','reps','due','lastReview','firstSeen','lapses','okStreak','learnStep','relearnInterval'].forEach(k=>{ if(sr[k] !== undefined) w[k] = sr[k]; });
     if(sr.leech) w.leech = true;
     DATA.vocab.push(w);
   });
@@ -12113,6 +12172,7 @@ function startVocabReview(opts){
   vocabLeechSession = !!(opts && opts.leechOnly === true);
   vocabQuickLimit = (!vocabLeechSession && opts && opts.limit > 0) ? opts.limit : 0;
   vocabLapseSession = new Set();
+  vocabSessionGraded = new Map();
   vocabRevByIdx = {};
   vocabRevState = { idx:-1, typed:'', result:null, hint:false };
   vocabReviewQueue = vocabLeechSession ? pickLeechBatch() : pickVocabBatch(vocabQuickLimit);
@@ -12130,6 +12190,17 @@ function startVocabReview(opts){
 function renderVocabReview(){
   const wrap = document.createElement('div');
   wrap.className = 'review-wrap';
+
+  // Hết hàng đợi: những từ vừa chấm trong phiên này mà đã/sắp đến hạn học lại
+  // (bậc thang phút: Quên 1p, Khó 5p…) → quay lại ngay (đến hạn trong ≤2 phút).
+  // Từ còn xa hạn thì để lần sau (vẫn tính vào số từ đến hạn khi tới giờ).
+  if(vocabReviewQueue.length>0 && vocabReviewIdx >= vocabReviewQueue.length){
+    const soon = Date.now() + 120000;
+    const again = Array.from(vocabSessionGraded.values())
+      .filter(x=>typeof x.learnStep === 'number' && x.due <= soon)
+      .sort((x,y)=>x.due-y.due);
+    if(again.length) vocabReviewQueue.push(...again);
+  }
 
   if(vocabReviewQueue.length===0 || vocabReviewIdx >= vocabReviewQueue.length){
     if(vocabReviewQueue.length>0 && !vocabSessionCompletionHandled){
@@ -12509,10 +12580,10 @@ function renderVocabReview(){
     }
 
     const preview = {
-      again: (()=>{ const c={...w}; grade(c,0); return c.interval; })(),
-      hard: (()=>{ const c={...w}; grade(c,1); return c.interval; })(),
-      good: (()=>{ const c={...w}; grade(c,2); return c.interval; })(),
-      easy: (()=>{ const c={...w}; grade(c,3); return c.interval; })(),
+      again: (()=>{ const c={...w}; gradeVocab(c,0); return c.interval; })(),
+      hard: (()=>{ const c={...w}; gradeVocab(c,1); return c.interval; })(),
+      good: (()=>{ const c={...w}; gradeVocab(c,2); return c.interval; })(),
+      easy: (()=>{ const c={...w}; gradeVocab(c,3); return c.interval; })(),
     };
     const row = document.createElement('div');
     row.className = 'grade-row';
@@ -12547,9 +12618,8 @@ function renderVocabReview(){
         }
         const goalNow = vocabGoal();
         const wasCountedToday = w.lastReview !== undefined && w.lastReview >= startOfTodayMs();
-        grade(w, quality);
-        // "Quên" → xếp lại cuối phiên để gặp lại ngay trong buổi học này.
-        if(quality===0 && vocabReviewQueue[vocabReviewIdx]===w) vocabReviewQueue.push(w);
+        gradeVocab(w, quality);
+        vocabSessionGraded.set(w.id, w);
         recordXpAndStreak(quality);
         recordVocabLog(quality, wasFirstTime);
         if(goalNow > 0 && !wasCountedToday && vocabReviewedToday() >= goalNow && markVocabGoalHit()){
