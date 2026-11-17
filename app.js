@@ -473,6 +473,8 @@ function normalizeProgress(){
   if(!DATA.progress.reviewLog || typeof DATA.progress.reviewLog !== 'object') DATA.progress.reviewLog = {};
   if(!DATA.progress.vocabLog || typeof DATA.progress.vocabLog !== 'object') DATA.progress.vocabLog = {};
   if(!DATA.progress.vocabGoalHit || typeof DATA.progress.vocabGoalHit !== 'object') DATA.progress.vocabGoalHit = {};
+  if(typeof DATA.progress.bossWins !== 'number') DATA.progress.bossWins = 0;
+  if(typeof DATA.progress.monstersSlain !== 'number') DATA.progress.monstersSlain = 0;
 }
 
 // MỤC TIÊU HẰNG NGÀY (từ vựng): số TỪ khác nhau đã ôn trong ngày (một từ bấm Quên
@@ -9799,6 +9801,7 @@ function renderVocabHome(){
     <button type="button" class="chip" data-mode="quiz">🧠 Trắc nghiệm nhanh</button>
     <button type="button" class="chip" data-mode="dictation">🎧 Nghe – gõ chính tả</button>
     <button type="button" class="chip" data-mode="speak">🎤 Luyện nói</button>
+    <button type="button" class="chip" data-battle="boss">⚔️ Đấu trùm</button>
     <button type="button" class="chip" data-quick="5">⚡ Ôn nhanh 5 từ</button>
   `;
   modeRow.querySelectorAll('[data-mode]').forEach(btn=>{
@@ -9810,7 +9813,17 @@ function renderVocabHome(){
     };
   });
   modeRow.querySelector('[data-quick]').onclick = ()=>{ if(due===0) return; startVocabReview({ limit: 5 }); };
+  modeRow.querySelector('[data-battle]').onclick = ()=>{ if(due===0) return; startVocabReview({ battle:'boss' }); };
   hero.appendChild(modeRow);
+  {
+    const pr = DATA.progress || {};
+    if((pr.bossWins||0) > 0 || (pr.monstersSlain||0) > 0){
+      const tl = document.createElement('div');
+      tl.style.cssText = 'margin-top:10px; font-size:12.5px; color:var(--ink-faint); text-align:center;';
+      tl.textContent = '🏆 Trùm đã hạ: ' + (pr.bossWins||0) + '  ·  ☠️ Quái vật cứng đầu đã diệt: ' + (pr.monstersSlain||0);
+      hero.appendChild(tl);
+    }
+  }
   main.appendChild(hero);
 
   const goalN = vocabGoal();
@@ -9840,9 +9853,9 @@ function renderVocabHome(){
     const lc = document.createElement('div');
     lc.style.cssText = 'margin:0 16px 14px; padding:14px 16px; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px;';
     lc.innerHTML = `
-      <div style="font-weight:600;">🩹 Từ cứng đầu: ${leechWords.length} từ</div>
+      <div style="font-weight:600;">🩹 Quái vật cứng đầu: ${leechWords.length} từ</div>
       <div style="font-size:12.5px; color:var(--ink-faint); margin:4px 0 10px;">Những từ bạn hay quên: học riêng, ghi mẹo nhớ, ôn dày hơn (tối đa ${LEECH_MAX_INTERVAL} ngày/lần) cho tới khi nhớ liên tiếp ${LEECH_RECOVER_STREAK} lần.</div>
-      <button class="chip" type="button">Học bộ Từ cứng đầu →</button>
+      <button class="chip" type="button">⚔️ Săn quái vật cứng đầu →</button>
     `;
     lc.querySelector('button').onclick = ()=> startVocabReview({ leechOnly:true });
     main.appendChild(lc);
@@ -12444,6 +12457,131 @@ function pickVocabBatch(limit){
   return all.slice(0, n);
 }
 
+/* ---------------- ĐẤU TRÙM + SĂN QUÁI VẬT CỨNG ĐẦU ---------------- */
+// Lớp trò chơi phủ lên phiên ôn tập từ vựng. Chấm điểm vẫn như cũ (Quên/Khó/Nhớ/Dễ,
+// lịch ôn không đổi); mỗi lần chấm là 1 đòn đánh:
+//  • ĐẤU TRÙM: trùm có thanh máu ≈ 2,2 × số từ trong lượt. Quên = mất 1 ❤️ (5 ❤️), trùm
+//    không bị thương; Khó = -1 máu trùm; Nhớ = -2; Dễ = -3; nhớ liên tiếp (Nhớ/Dễ) tạo
+//    combo, cứ 3 đòn combo thì +1 sát thương. Hạ trùm = thắng; hết ❤️ = thua.
+//  • SĂN QUÁI VẬT: các từ cứng đầu 🩹 là quái vật; mỗi lần nhớ đúng đánh trúng 1 đòn,
+//    đủ LEECH_RECOVER_STREAK đòn liên tiếp thì từ bị tiêu diệt (ra khỏi bộ cứng đầu).
+const BATTLE_BOSSES = [
+  { emoji:'🟢', name:'Slime Ngữ Pháp' }, { emoji:'👺', name:'Goblin Chính Tả' },
+  { emoji:'🐉', name:'Rồng Từ Vựng' }, { emoji:'👻', name:'Bóng Ma Quên Lãng' },
+  { emoji:'🗿', name:'Golem Phát Âm' }, { emoji:'🧙', name:'Phù Thủy Ngoại Ngữ' },
+  { emoji:'🦑', name:'Kraken Từ Điển' }, { emoji:'🧛', name:'Ma Cà Rồng Quên Bài' }
+];
+const BATTLE_HEARTS = 5;
+const BATTLE_WIN_BONUS_XP = 20;
+const BATTLE_SLAY_BONUS_XP = 15;
+let vocabBattle = null;
+
+function newBattle(kind, queueLen){
+  if(kind === 'leech') return { kind, hits:0, healed:0, slain:[], lastMsg:'', over:null, settled:false, dmg:0, bonus:0 };
+  const boss = BATTLE_BOSSES[Math.floor(Math.random()*BATTLE_BOSSES.length)];
+  const max = Math.max(6, Math.ceil(queueLen * 2.2));
+  return { kind, emoji:boss.emoji, name:boss.name, bossMax:max, bossHp:max, hearts:BATTLE_HEARTS, heartsMax:BATTLE_HEARTS,
+           combo:0, maxCombo:0, dmg:0, lastMsg:'', over:null, settled:false, bonus:0 };
+}
+
+// Gọi SAU khi từ đã được chấm (w.okStreak / w.leech đã cập nhật).
+function battleOnGrade(w, quality){
+  const b = vocabBattle;
+  if(!b || b.over) return;
+  if(b.kind === 'boss'){
+    if(quality === 0){
+      b.hearts = Math.max(0, b.hearts - 1);
+      b.combo = 0;
+      b.lastMsg = '💔 Quên! Trùm phản đòn (-1 ❤️)';
+      if(b.hearts <= 0) b.over = 'lose';
+    } else {
+      b.combo = quality >= 2 ? b.combo + 1 : 0;
+      b.maxCombo = Math.max(b.maxCombo, b.combo);
+      const bonus = b.combo >= 3 ? Math.floor(b.combo / 3) : 0;
+      const dmg = quality + bonus; // Khó 1, Nhớ 2, Dễ 3 (+ combo)
+      b.bossHp = Math.max(0, b.bossHp - dmg);
+      b.dmg += dmg;
+      b.lastMsg = '💥 -' + dmg + (bonus > 0 ? ' (combo x' + b.combo + ')' : '');
+      if(b.bossHp <= 0) b.over = 'win';
+    }
+  } else {
+    if(quality >= 2){
+      b.hits += 1;
+      if(!w.leech){ b.slain.push(w.word); b.lastMsg = '☠️ Tiêu diệt "' + w.word + '"!'; }
+      else b.lastMsg = '💥 Trúng đòn! (' + (w.okStreak||0) + '/' + LEECH_RECOVER_STREAK + ')';
+    } else if(quality === 0){
+      b.healed += 1;
+      b.lastMsg = '👹 Quái vật hồi máu!';
+    } else {
+      b.lastMsg = 'Khó… quái vật vẫn đứng vững';
+    }
+  }
+}
+
+// Thưởng + ghi thành tích 1 lần khi trận kết thúc.
+function settleBattle(){
+  const b = vocabBattle;
+  if(!b || b.settled) return;
+  b.settled = true;
+  normalizeProgress();
+  const p = DATA.progress;
+  if(b.kind === 'boss' && b.over === 'win'){
+    b.bonus = BATTLE_WIN_BONUS_XP;
+    p.bossWins = (p.bossWins||0) + 1;
+  } else if(b.kind === 'leech' && b.slain.length > 0){
+    b.bonus = BATTLE_SLAY_BONUS_XP * b.slain.length;
+    p.monstersSlain = (p.monstersSlain||0) + b.slain.length;
+  }
+  if(b.bonus > 0){ p.xp += b.bonus; vocabSessionXpEarned += b.bonus; }
+}
+
+function battleResultText(){
+  const b = vocabBattle;
+  if(b.kind === 'leech'){
+    return {
+      glyph: b.slain.length ? '☠️' : '⚔️',
+      title: b.slain.length ? 'Đã tiêu diệt ' + b.slain.length + ' quái vật!' : 'Xong lượt săn quái vật!',
+      text: (b.slain.length ? 'Hạ được: ' + b.slain.join(', ') + '. ' : '') + 'Trúng đòn ' + b.hits + ' lần, ' + b.healed + ' lần quái vật hồi máu.' + (b.bonus ? ' +' + b.bonus + ' XP thưởng.' : '')
+    };
+  }
+  if(b.over === 'win') return { glyph:'🏆', title:'Chiến thắng! Đã hạ ' + b.name,
+    text:'Sát thương ' + b.dmg + ' · combo cao nhất ' + b.maxCombo + ' · còn ' + b.hearts + '/' + b.heartsMax + ' ❤️ · +' + b.bonus + ' XP thưởng.' };
+  if(b.over === 'lose') return { glyph:'💀', title:'Thất bại…',
+    text: b.name + ' còn ' + b.bossHp + '/' + b.bossMax + ' máu. Những từ vừa quên sẽ quay lại sớm — thử lại nhé!' };
+  return { glyph:'🏃', title:'Hết lượt — trùm còn ' + b.bossHp + ' máu',
+    text: b.name + ' chạy thoát! Bạn gây ' + b.dmg + ' sát thương, combo cao nhất ' + b.maxCombo + '. Đấu trận mới để hạ nó nhé.' };
+}
+
+function renderBattleHud(w, revCard){
+  const b = vocabBattle;
+  if(!b) return null;
+  const d = document.createElement('div');
+  d.style.cssText = 'margin:0 16px 10px; padding:10px 14px; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px; font-size:13px;';
+  const msg = b.lastMsg ? '<div style="margin-top:4px; font-weight:600;">' + escapeHtml(b.lastMsg) + '</div>' : '';
+  if(b.kind === 'boss'){
+    const pct = Math.max(0, Math.round(b.bossHp / b.bossMax * 100));
+    d.innerHTML =
+      '<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">' +
+        '<span style="font-weight:600;">' + b.emoji + ' ' + escapeHtml(b.name) + '</span>' +
+        '<span title="Máu của bạn">' + '❤️'.repeat(b.hearts) + '🖤'.repeat(b.heartsMax - b.hearts) + '</span>' +
+      '</div>' +
+      '<div style="height:10px; border-radius:6px; background:var(--line); overflow:hidden;"><div style="height:100%; width:' + pct + '%; background:var(--coral); transition:width .3s;"></div></div>' +
+      '<div style="display:flex; justify-content:space-between; margin-top:6px; color:var(--ink-faint); font-size:12px;">' +
+        '<span>' + b.bossHp + '/' + b.bossMax + ' máu</span><span>' + (b.combo >= 2 ? '🔥 Combo x' + b.combo : '') + '</span>' +
+      '</div>' + msg;
+  } else {
+    const streak = Math.min(w.okStreak || 0, LEECH_RECOVER_STREAK);
+    const showName = vocabFlipped || !revCard;
+    const pips = Array.from({ length: LEECH_RECOVER_STREAK }, (_, i)=> i < streak ? '💥' : '⬜').join(' ');
+    d.innerHTML =
+      '<div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">' +
+        '<span style="font-weight:600;">🩹 Quái vật: ' + (showName ? escapeHtml(w.word) : '???') + '</span><span>' + pips + '</span>' +
+      '</div>' +
+      '<div style="margin-top:4px; color:var(--ink-faint); font-size:12px;">Nhớ đúng ' + LEECH_RECOVER_STREAK + ' lần liên tiếp để tiêu diệt (hiện ' + streak + '/' + LEECH_RECOVER_STREAK + ').</div>' + msg;
+  }
+  return d;
+}
+
 function pickLeechBatch(){
   const all = DATA.vocab.filter(x=>x.leech);
   const n = vocabBatchSize();
@@ -12466,6 +12604,11 @@ function startVocabReview(opts){
   vocabRevByIdx = {};
   vocabRevState = { idx:-1, typed:'', result:null, hint:false };
   vocabReviewQueue = vocabLeechSession ? pickLeechBatch() : pickVocabBatch(vocabQuickLimit);
+  vocabBattle = null;
+  if(vocabReviewQueue.length > 0){
+    if(vocabLeechSession) vocabBattle = newBattle('leech', vocabReviewQueue.length);
+    else if(opts && opts.battle === 'boss') vocabBattle = newBattle('boss', vocabReviewQueue.length);
+  }
   vocabReviewIdx = 0;
   vocabFlipped = false;
   vocabEnShownIdx = -1;
@@ -12484,7 +12627,7 @@ function renderVocabReview(){
   // Hết hàng đợi: những từ vừa chấm trong phiên này mà đã/sắp đến hạn học lại
   // (bậc thang phút: Quên 1p, Khó 5p…) → quay lại ngay (đến hạn trong ≤2 phút).
   // Từ còn xa hạn thì để lần sau (vẫn tính vào số từ đến hạn khi tới giờ).
-  if(vocabReviewQueue.length>0 && vocabReviewIdx >= vocabReviewQueue.length){
+  if(vocabReviewQueue.length>0 && vocabReviewIdx >= vocabReviewQueue.length && !(vocabBattle && vocabBattle.over)){
     const soon = Date.now() + 120000;
     const again = Array.from(vocabSessionGraded.values())
       .filter(x=>typeof x.learnStep === 'number' && x.due <= soon)
@@ -12493,6 +12636,7 @@ function renderVocabReview(){
   }
 
   if(vocabReviewQueue.length===0 || vocabReviewIdx >= vocabReviewQueue.length){
+    if(vocabBattle) settleBattle();
     if(vocabReviewQueue.length>0 && !vocabSessionCompletionHandled){
       vocabSessionCompletionHandled = true;
       saveData();
@@ -12500,10 +12644,11 @@ function renderVocabReview(){
     const p = DATA.progress;
     const lvl = computeLevel(p.xp);
     const moreLeft = (vocabReviewQueue.length>0 && !vocabLeechSession) ? dueVocab().length : 0;
+    const bt = vocabBattle ? battleResultText() : null;
     wrap.innerHTML = `<div class="review-done">
-      <div class="glyph">${vocabLeechSession ? '🩹' : (moreLeft>0 ? '🎯' : '🎉')}</div>
-      <h2 class="display">${vocabLeechSession ? 'Xong lượt Từ cứng đầu!' : (moreLeft>0 ? (vocabQuickLimit ? '⚡ Xong ' + vocabQuickLimit + ' từ nhanh!' : 'Xong lượt này rồi!') : 'Xong hết rồi!')}</h2>
-      <p>${vocabLeechSession ? 'Từ nào nhớ liên tiếp ' + LEECH_RECOVER_STREAK + ' lần sẽ tự ra khỏi bộ này. Cố lên!' : moreLeft>0 ? `Hôm nay còn ${moreLeft} từ cần học. Nghỉ một chút rồi học tiếp lượt mới nhé.` : 'Bạn đã ôn hết từ vựng đến hạn. Quay lại vào ngày mai nhé.'}</p>
+      <div class="glyph">${bt ? bt.glyph : (vocabLeechSession ? '🩹' : (moreLeft>0 ? '🎯' : '🎉'))}</div>
+      <h2 class="display">${bt ? bt.title : vocabLeechSession ? 'Xong lượt Từ cứng đầu!' : (moreLeft>0 ? (vocabQuickLimit ? '⚡ Xong ' + vocabQuickLimit + ' từ nhanh!' : 'Xong lượt này rồi!') : 'Xong hết rồi!')}</h2>
+      <p>${bt ? bt.text : vocabLeechSession ? 'Từ nào nhớ liên tiếp ' + LEECH_RECOVER_STREAK + ' lần sẽ tự ra khỏi bộ này. Cố lên!' : moreLeft>0 ? `Hôm nay còn ${moreLeft} từ cần học. Nghỉ một chút rồi học tiếp lượt mới nhé.` : 'Bạn đã ôn hết từ vựng đến hạn. Quay lại vào ngày mai nhé.'}</p>
       ${vocabReviewQueue.length>0 ? `
       <div class="session-recap">
         <div class="session-recap-item"><span class="srv">+${vocabSessionXpEarned}</span><span class="srl">XP</span></div>
@@ -12522,6 +12667,13 @@ function renderVocabReview(){
       gl.style.cssText = 'font-size:14px; margin:10px 0 14px;';
       gl.textContent = doneN >= goalN ? '🎯 Đã đạt mục tiêu hôm nay: ' + doneN + '/' + goalN + ' từ' : '🎯 Mục tiêu hôm nay: ' + doneN + '/' + goalN + ' từ';
       doneBox.appendChild(gl);
+    }
+    if(vocabBattle && vocabBattle.kind === 'boss' && dueVocab().length > 0){
+      const bossBtn = document.createElement('button');
+      bossBtn.className = 'hero-btn'; bossBtn.style.maxWidth = '260px'; bossBtn.style.marginBottom = '10px';
+      bossBtn.textContent = '⚔️ Đấu trùm mới';
+      bossBtn.onclick = ()=> startVocabReview({ battle:'boss' });
+      doneBox.appendChild(bossBtn);
     }
     if(moreLeft>0){
       const nextBtn = document.createElement('button');
@@ -12595,6 +12747,9 @@ function renderVocabReview(){
       }, {once:true});
     }, 0);
   }
+
+  const hud = renderBattleHud(w, revCard);
+  if(hud) wrap.appendChild(hud);
 
   const stage = document.createElement('div');
   stage.className = 'card-stage';
@@ -12916,8 +13071,10 @@ function renderVocabReview(){
           toast('🎯 Đạt mục tiêu hôm nay! (' + goalNow + ' từ)');
         }
         vocabSessionXpEarned += (XP_PER_GRADE[quality] || 0);
+        battleOnGrade(w, quality);
         saveDataSoon();
-        vocabReviewIdx += 1;
+        if(vocabBattle && vocabBattle.over) vocabReviewIdx = vocabReviewQueue.length; // trận kết thúc sớm (thắng/thua)
+        else vocabReviewIdx += 1;
         vocabFlipped = false;
         resetVocabAnswerInputState();
         render();
