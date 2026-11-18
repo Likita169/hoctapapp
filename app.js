@@ -46,7 +46,7 @@ const PUSH_SERVER_URL = 'https://on-tap-push.nguyenngochuy8816.workers.dev';
 // (xem mục "Tài khoản & đồng bộ" trong HUONG-DAN.md) — thay bằng URL thật
 // sau khi deploy worker trong thư mục sync-server/
 const SYNC_SERVER_URL = 'https://on-tap-sync.nguyenngochuy8816.workers.dev/';
-const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true, vocabNewPerDay: 20, vocabBatchSize: 20, vocabReverseMode: 'sometimes', vocabDailyGoal: 30 };
+const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true, vocabNewPerDay: 20, vocabBatchSize: 20, vocabReverseMode: 'sometimes', vocabDailyGoal: 30, vocabReviewCap: 150 };
 // Streak + XP + huy hiệu — tiến trình học tập lâu dài, tách riêng khỏi từng
 // thẻ để không ảnh hưởng thuật toán ôn tập ngắt quãng ở trên.
 const DEFAULT_PROGRESS = {
@@ -896,6 +896,7 @@ function render(){
     else if(VIEW==='vocab-stats') main.appendChild(renderVocabStats());
     else if(VIEW==='vocab-text') main.appendChild(renderVocabText());
     else if(VIEW==='vocab-path') main.appendChild(renderVocabPath());
+    else if(VIEW==='vocab-backlog') main.appendChild(renderVocabBacklog());
     else if(VIEW==='vocab-lesson') main.appendChild(renderVocabLesson());
     else if(VIEW==='vocab-stress') main.appendChild(renderVocabStressGame());
   }catch(e){
@@ -1012,7 +1013,7 @@ function renderTabbar(){
   ];
   tabs.forEach(t=>{
     const b = document.createElement('button');
-    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-bulk'||VIEW==='vocab-review'||VIEW==='vocab-stats'||VIEW==='vocab-text'||VIEW==='vocab-path'||VIEW==='vocab-lesson'||VIEW==='vocab-stress') : VIEW===t.id;
+    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-bulk'||VIEW==='vocab-review'||VIEW==='vocab-stats'||VIEW==='vocab-text'||VIEW==='vocab-path'||VIEW==='vocab-lesson'||VIEW==='vocab-backlog'||VIEW==='vocab-stress') : VIEW===t.id;
     b.className = isActive ? 'active' : '';
     b.innerHTML = `<span class="icon">${t.icon}</span><span>${t.label}</span>`;
     b.onclick = ()=>{ if(t.id==='manage') manageFilterSubjectId = null; setView(t.id); };
@@ -3340,6 +3341,25 @@ function renderSettings(){
     await saveData();
   };
   main.appendChild(goalRow);
+
+  const capOpts = [0, 50, 100, 150, 200, 300];
+  const curCap = vocabReviewCap();
+  const capRow = document.createElement('div');
+  capRow.className = 'toggle-row';
+  capRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">📅 Số từ ôn tối đa mỗi ngày</div>
+      <div class="tr-sub">Từ quá hạn vượt mức này được giữ cho các ngày sau (ưu tiên từ dễ quên nhất), để một ngày không bị dồn hàng nghìn từ.</div>
+    </div>
+    <select class="vocab-cap-select">
+      ${capOpts.map(n=>`<option value="${n}" ${n===curCap?'selected':''}>${n===0 ? 'Không giới hạn' : n + ' từ'}</option>`).join('')}
+    </select>
+  `;
+  capRow.querySelector('select').onchange = async (e)=>{
+    DATA.settings.vocabReviewCap = Number(e.target.value);
+    await saveData();
+  };
+  main.appendChild(capRow);
 
   const ttsRow = document.createElement('div');
   ttsRow.className = 'toggle-row';
@@ -8924,18 +8944,40 @@ function vocabNewLimit(){
   const n = Number(DATA.settings && DATA.settings.vocabNewPerDay);
   return Number.isFinite(n) && n>=0 ? n : 20;
 }
+// Mức ôn tối đa mỗi ngày (0 = không giới hạn). Từ đã ôn hôm nay mà đến hạn lại (bậc phút)
+// không bị tính vào hạn mức; phần quá hạn vượt mức được giữ lại cho các ngày sau.
+function vocabReviewCap(){
+  const n = Number(DATA.settings && DATA.settings.vocabReviewCap);
+  return Number.isFinite(n) && n >= 0 ? n : 150;
+}
+// Độ ưu tiên ôn (số nhỏ = ôn trước): từ đang học ngắn hạn trước, rồi từ quá hạn nhiều
+// nhất SO VỚI khoảng ôn của nó (từ khoảng ngắn mà trễ thì dễ quên hơn từ khoảng dài).
+function reviewPriority(w, now){
+  if(typeof w.learnStep === 'number') return -1e12 + w.due;
+  const intervalDays = Math.max(0.5, w.interval || 1);
+  return -((now - w.due) / 86400000) / intervalDays;
+}
 function vocabStats(){
-  const now = Date.now(), today = todayKey();
-  const review = [], fresh = [];
-  let newToday = 0;
+  const now = Date.now(), today = todayKey(), t0 = startOfTodayMs();
+  const doneToday = [], others = [], fresh = [];
+  let newToday = 0, reviewedToday = 0;
   DATA.vocab.forEach(w=>{
     const seen = w.lastReview!==undefined || w.reps>0;
     if(w.firstSeen && dateKey(new Date(w.firstSeen))===today) newToday++;
-    if(w.due<=now) (seen ? review : fresh).push(w);
+    const touchedToday = w.lastReview !== undefined && w.lastReview >= t0;
+    if(touchedToday) reviewedToday++;
+    if(w.due > now) return;
+    if(!seen){ fresh.push(w); return; }
+    (touchedToday ? doneToday : others).push(w);
   });
-  review.sort((a,b)=>a.due-b.due);
+  doneToday.sort((a,b)=>a.due-b.due);
+  others.sort((a,b)=>reviewPriority(a, now) - reviewPriority(b, now));
+  const cap = vocabReviewCap();
+  const keep = cap > 0 ? Math.max(0, cap - reviewedToday) : others.length;
+  const shown = others.slice(0, keep);
   const newLeft = Math.max(0, vocabNewLimit()-newToday);
-  return { review, newWords: fresh.slice(0,newLeft), newTotal: fresh.length };
+  return { review: doneToday.concat(shown), newWords: fresh.slice(0,newLeft), newTotal: fresh.length,
+           hidden: others.length - shown.length, totalDue: doneToday.length + others.length, reviewedToday, cap };
 }
 function dueVocab(){
   const s = vocabStats();
@@ -9792,7 +9834,7 @@ function renderVocabHome(){
   hero.innerHTML = `
     <div class="hero-number">${due}</div>
     <div class="hero-label">từ đến hạn ôn hôm nay</div>
-    <div style="font-size:12.5px; color:var(--ink-faint); margin:4px 0 10px;">${vst.review.length} ôn lại · ${vst.newWords.length} từ mới${vst.newTotal>vst.newWords.length ? ` · còn ${vst.newTotal-vst.newWords.length} từ chưa học (mở dần các ngày sau)` : ''}</div>
+    <div style="font-size:12.5px; color:var(--ink-faint); margin:4px 0 10px;">${vst.review.length} ôn lại · ${vst.newWords.length} từ mới${vst.newTotal>vst.newWords.length ? ` · còn ${vst.newTotal-vst.newWords.length} từ chưa học (mở dần các ngày sau)` : ''}${vst.hidden>0 ? ' · còn ' + vst.hidden + ' từ quá hạn xếp sang ngày sau' : ''}</div>
     <button class="hero-btn" ${due===0?'disabled':''}>${due===0 ? 'Đã ôn hết — quay lại sau' : (due>vocabBatchSize() ? 'Học lượt ' + vocabBatchSize() + ' từ →' : 'Bắt đầu ôn tập →')}</button>
   `;
   hero.querySelector('button').onclick = ()=>{ if(due>0) startVocabReview(); };
@@ -9830,6 +9872,18 @@ function renderVocabHome(){
     }
   }
   main.appendChild(hero);
+
+  if(vst.hidden >= 20 || (vst.cap === 0 && vst.totalDue >= 300)){
+    const bc = document.createElement('div');
+    bc.style.cssText = 'margin:0 16px 14px; padding:14px 16px; background:var(--bg-elev); border:2px solid var(--coral); border-radius:14px;';
+    bc.innerHTML = `
+      <div style="font-weight:600;">⚠️ Nợ ôn tập lớn: ${vst.totalDue} từ đến hạn</div>
+      <div style="font-size:12.5px; color:var(--ink-faint); margin:4px 0 10px;">${vst.cap>0 ? 'Hôm nay app chỉ giao ' + vst.cap + ' từ (mức bạn đặt), ưu tiên từ dễ quên nhất.' : 'Quá nhiều để ôn trong một ngày.'} Chia nhỏ phần còn lại ra các ngày tới để biết khi nào hết nợ.</div>
+      <button class="chip" type="button">📅 Chia nhỏ nợ ôn tập →</button>
+    `;
+    bc.querySelector('button').onclick = ()=>{ backlogPerDay = vst.cap > 0 ? vst.cap : 100; setView('vocab-backlog'); };
+    main.appendChild(bc);
+  }
 
   const goalN = vocabGoal();
   if(goalN > 0){
@@ -11849,6 +11903,136 @@ function renderVocabLesson(){
 }
 let lastLessonSpoken = '';
 
+/* ---------------- GIẢM TẢI ÔN TẬP: chia nhỏ nợ ---------------- */
+// Khi có quá nhiều từ cùng đến hạn (vd 1300 từ) thì không thể ôn hết trong 1 ngày. Cách xử lý chuẩn của
+// các app ôn ngắt quãng: (1) mỗi ngày chỉ giao tối đa N từ (vocabReviewCap), ưu tiên từ dễ quên nhất;
+// (2) chia phần nợ còn lại ra các ngày tới — chỉ dời NGÀY ôn, khoảng cách/độ khó của từ giữ nguyên.
+let backlogPerDay = 100;
+
+// Từ có thể dời: đã học, quá hạn, KHÔNG đang ở bậc phút (cần ôn sớm) và chưa ôn hôm nay.
+function vocabBacklogCandidates(){
+  const now = Date.now(), t0 = startOfTodayMs();
+  const arr = [];
+  for(const w of DATA.vocab){
+    if(!vocabSeen(w) || w.due > now) continue;
+    if(typeof w.learnStep === 'number') continue;
+    if(w.lastReview !== undefined && w.lastReview >= t0) continue;
+    arr.push(w);
+  }
+  arr.sort((a,b)=>reviewPriority(a, now) - reviewPriority(b, now));
+  return arr;
+}
+function backlogPreview(perDay){
+  const arr = vocabBacklogCandidates();
+  const keep = Math.min(arr.length, Math.max(0, perDay - vocabReviewedToday()));
+  const moved = arr.length - keep;
+  return { total: arr.length, keep, moved, days: moved > 0 ? Math.ceil(moved / perDay) : 0 };
+}
+function applyBacklogSpread(perDay){
+  const arr = vocabBacklogCandidates();
+  const keep = Math.max(0, perDay - vocabReviewedToday());
+  const toMove = arr.slice(keep);
+  const t0 = startOfTodayMs();
+  const undo = {};
+  toMove.forEach((w, j)=>{
+    const k = 1 + Math.floor(j / perDay);
+    const newDue = t0 + k * 86400000 + 6 * 3600000 + (j % perDay) * 1000; // 6 giờ sáng ngày thứ k, giữ nguyên thứ tự ưu tiên
+    undo[w.id] = [w.due, newDue];
+    w.due = newDue;
+  });
+  normalizeProgress();
+  DATA.progress.lastSpread = { at: Date.now(), perDay, moved: toMove.length, undo };
+  DATA.settings.vocabReviewCap = perDay; // mức ôn mỗi ngày khớp với mức đã chia
+  saveData();
+  return toMove.length;
+}
+function undoBacklogSpread(){
+  const sp = DATA.progress && DATA.progress.lastSpread;
+  if(!sp) return 0;
+  let n = 0;
+  for(const id in sp.undo){
+    const w = vocabById(id);
+    if(w && w.due === sp.undo[id][1]){ w.due = sp.undo[id][0]; n++; } // chỉ hoàn tác từ chưa được ôn lại kể từ lúc dời
+  }
+  DATA.progress.lastSpread = null;
+  saveData();
+  return n;
+}
+
+function renderVocabBacklog(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = '<h1 class="display">Giảm tải ôn tập</h1>';
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+  const back = document.createElement('button');
+  back.className = 'back-link'; back.textContent = '← Quay lại';
+  back.onclick = ()=> setView('vocab');
+  main.appendChild(back);
+
+  normalizeProgress();
+  const sp0 = DATA.progress.lastSpread;
+  if(sp0 && Date.now() - sp0.at > 3 * 86400000) DATA.progress.lastSpread = null; // hết hạn hoàn tác
+
+  const vst = vocabStats();
+  const prev = backlogPreview(backlogPerDay);
+
+  const card = document.createElement('div');
+  card.style.cssText = 'margin:0 16px 14px; padding:14px 16px; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px;';
+  card.innerHTML =
+    '<div style="font-weight:600; margin-bottom:6px;">Hôm nay có <b>' + vst.totalDue + '</b> từ đến hạn ôn</div>' +
+    '<div style="font-size:13px; color:var(--ink-faint); line-height:1.6;">Không ai ôn nổi hàng nghìn từ trong một ngày. Chia nhỏ: mỗi ngày chỉ ôn một phần, ưu tiên những từ <b>dễ quên nhất</b> (quá hạn lâu so với khoảng ôn của chúng). Cách này chỉ dời <b>ngày ôn</b>, độ khó và khoảng cách của từ giữ nguyên.</div>';
+  main.appendChild(card);
+
+  const ctl = document.createElement('div');
+  ctl.style.cssText = 'margin:0 16px 12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;';
+  ctl.innerHTML = '<span style="font-size:14px;">Mỗi ngày ôn tối đa</span>';
+  const sel = document.createElement('select');
+  [30, 50, 100, 150, 200, 300].forEach(n=>{
+    const o = document.createElement('option');
+    o.value = String(n); o.textContent = n + ' từ'; if(n === backlogPerDay) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.onchange = ()=>{ backlogPerDay = Number(sel.value); render(); };
+  ctl.appendChild(sel);
+  main.appendChild(ctl);
+
+  const pv = document.createElement('div');
+  pv.style.cssText = 'margin:0 16px 14px; padding:12px 14px; border:1px dashed var(--line); border-radius:12px; font-size:13.5px; line-height:1.7;';
+  pv.innerHTML = prev.moved > 0
+    ? 'Hôm nay giữ <b>' + prev.keep + '</b> từ (từ dễ quên nhất). Dời <b>' + prev.moved + '</b> từ sang <b>' + prev.days + '</b> ngày tới, mỗi ngày khoảng ' + backlogPerDay + ' từ. Từ đang học ngắn hạn (bậc phút) và từ đã ôn hôm nay không bị dời.'
+    : 'Với mức ' + backlogPerDay + ' từ/ngày thì chưa có gì cần dời (có ' + prev.total + ' từ quá hạn cần ôn).';
+  main.appendChild(pv);
+
+  const go = document.createElement('button');
+  go.className = 'reveal-btn';
+  go.disabled = prev.moved === 0;
+  go.textContent = prev.moved > 0 ? '📅 Chia nhỏ: dời ' + prev.moved + ' từ sang ' + prev.days + ' ngày tới' : 'Không cần chia nhỏ';
+  go.onclick = ()=>{
+    if(!confirm('Dời ' + prev.moved + ' từ sang ' + prev.days + ' ngày tới (mỗi ngày ~' + backlogPerDay + ' từ)?\n\nBạn có thể hoàn tác trong 3 ngày nếu những từ đó chưa được ôn lại.')) return;
+    const n = applyBacklogSpread(backlogPerDay);
+    toast('Đã chia nhỏ ' + n + ' từ ✓');
+    setView('vocab');
+  };
+  main.appendChild(go);
+
+  const sp = DATA.progress.lastSpread;
+  if(sp){
+    const undo = document.createElement('button');
+    undo.className = 'reveal-btn';
+    undo.style.cssText = 'background:var(--bg-elev); color:var(--ink); box-shadow:none; border:1px solid var(--line);';
+    undo.textContent = '↩️ Hoàn tác lần chia gần nhất (' + sp.moved + ' từ)';
+    undo.onclick = ()=>{ const n = undoBacklogSpread(); toast('Đã hoàn tác ' + n + ' từ'); render(); };
+    main.appendChild(undo);
+  }
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
 function renderVocabBulk(){
   const wrap = document.createElement('div');
   wrap.style.display = 'contents';
@@ -13252,6 +13436,15 @@ function renderVocabReview(){
     btn.className = 'hero-btn'; btn.style.maxWidth = '260px'; btn.textContent = 'Về Từ vựng Anh';
     btn.onclick = ()=> setView('vocab');
     const doneBox = wrap.querySelector('.review-done');
+    {
+      const vd = vocabStats();
+      if(vd.hidden > 0 && !vocabLeechSession){
+        const cn = document.createElement('div');
+        cn.style.cssText = 'font-size:13.5px; margin:8px 0 12px; color:var(--ink-faint);';
+        cn.textContent = '📅 Hôm nay đã đủ ' + vd.cap + ' từ. Còn ' + vd.hidden + ' từ quá hạn sẽ được giao dần các ngày sau. Muốn ôn thêm thì tăng mức ở Cài đặt.';
+        doneBox.appendChild(cn);
+      }
+    }
     const goalN = vocabGoal();
     if(goalN > 0){
       const doneN = vocabReviewedToday();
