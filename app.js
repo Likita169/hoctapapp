@@ -895,6 +895,8 @@ function render(){
     else if(VIEW==='vocab-review') main.appendChild(renderVocabReview());
     else if(VIEW==='vocab-stats') main.appendChild(renderVocabStats());
     else if(VIEW==='vocab-text') main.appendChild(renderVocabText());
+    else if(VIEW==='vocab-path') main.appendChild(renderVocabPath());
+    else if(VIEW==='vocab-lesson') main.appendChild(renderVocabLesson());
     else if(VIEW==='vocab-stress') main.appendChild(renderVocabStressGame());
   }catch(e){
     // Never let a rendering bug in one tab take the whole app (and the
@@ -943,7 +945,7 @@ function render(){
     console.error('Lỗi khi vẽ 1 lớp phủ (modal):', e);
   }
 
-  if(VIEW!=='review' && VIEW!=='match' && VIEW!=='vocab-review' && VIEW!=='vocab-stress' && !takeTestOpen){
+  if(VIEW!=='review' && VIEW!=='match' && VIEW!=='vocab-review' && VIEW!=='vocab-lesson' && VIEW!=='vocab-stress' && !takeTestOpen){
     $app.appendChild(renderTabbar());
     if(VIEW==='home' || VIEW==='manage'){
       const fab = document.createElement('button');
@@ -1010,7 +1012,7 @@ function renderTabbar(){
   ];
   tabs.forEach(t=>{
     const b = document.createElement('button');
-    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-bulk'||VIEW==='vocab-review'||VIEW==='vocab-stats'||VIEW==='vocab-text'||VIEW==='vocab-stress') : VIEW===t.id;
+    const isActive = t.id==='vocab' ? (VIEW==='vocab'||VIEW==='vocab-add'||VIEW==='vocab-bulk'||VIEW==='vocab-review'||VIEW==='vocab-stats'||VIEW==='vocab-text'||VIEW==='vocab-path'||VIEW==='vocab-lesson'||VIEW==='vocab-stress') : VIEW===t.id;
     b.className = isActive ? 'active' : '';
     b.innerHTML = `<span class="icon">${t.icon}</span><span>${t.label}</span>`;
     b.onclick = ()=>{ if(t.id==='manage') manageFilterSubjectId = null; setView(t.id); };
@@ -9394,12 +9396,14 @@ const REVERSE_MIN_REPS = 3;
 let vocabRevByIdx = {};   // vị trí thẻ trong hàng đợi → true nếu thẻ đó ôn chiều ngược
 let vocabRevState = { idx:-1, typed:'', result:null, hint:false };
 function getRevState(){
-  if(vocabRevState.idx !== vocabReviewIdx) vocabRevState = { idx:vocabReviewIdx, typed:'', result:null, hint:false };
+  if(vocabRevState.idx !== vocabReviewIdx) vocabRevState = { idx:vocabReviewIdx, typed:'', result:null, hint:false, startedAt:Date.now() };
   return vocabRevState;
 }
 function isReverseCard(w){
   const seen = w.lastReview !== undefined || (w.reps||0) > 0;
-  if(!seen || w.leech) return false;
+  if(!seen) return false;
+  if(vocabReviewInputMode === 'strict') return true;   // nghiêm khắc: từ nào đã học cũng phải gõ lại
+  if(w.leech) return false;
   if(vocabReviewInputMode === 'reverse') return true;
   if(vocabReviewInputMode !== 'flip') return false;
   const cached = vocabRevByIdx[vocabReviewIdx];
@@ -9801,6 +9805,7 @@ function renderVocabHome(){
     <button type="button" class="chip" data-mode="quiz">🧠 Trắc nghiệm nhanh</button>
     <button type="button" class="chip" data-mode="dictation">🎧 Nghe – gõ chính tả</button>
     <button type="button" class="chip" data-mode="speak">🎤 Luyện nói</button>
+    <button type="button" class="chip" data-mode="strict">🔒 Nghiêm khắc</button>
     <button type="button" class="chip" data-battle="boss">⚔️ Đấu trùm</button>
     <button type="button" class="chip" data-quick="5">⚡ Ôn nhanh 5 từ</button>
   `;
@@ -9860,6 +9865,14 @@ function renderVocabHome(){
     lc.querySelector('button').onclick = ()=> startVocabReview({ leechOnly:true });
     main.appendChild(lc);
   }
+
+  const pathEntry = document.createElement('button');
+  pathEntry.type = 'button';
+  pathEntry.className = 'chip';
+  pathEntry.style.cssText = 'margin:0 16px 14px;';
+  pathEntry.textContent = '🗺️ Lộ trình học theo chủ đề →';
+  pathEntry.onclick = ()=>{ pathOpenUnit = null; setView('vocab-path'); };
+  main.appendChild(pathEntry);
 
   const statsEntry = document.createElement('button');
   statsEntry.type = 'button';
@@ -11427,6 +11440,415 @@ function renderVocabText(){
   return wrap;
 }
 
+/* ---------------- LỘ TRÌNH HỌC (kiểu Duolingo) ---------------- */
+// Mỗi chủ đề từ vựng là 1 "chặng"; từ của chủ đề được chia thành các BÀI HỌC nhỏ
+// (~LESSON_SIZE từ, theo thứ tự thêm vào). Bài sau mở khoá khi xong bài trước.
+// Huy hiệu ★ của bài lấy thẳng từ lịch ôn ngắt quãng nên tự cập nhật theo việc ôn:
+//   ★ = mọi từ trong bài đã học · ★★ = mọi từ đã sang lịch theo ngày (≥1 ngày)
+//   ★★★ = mọi từ nhớ được ≥7 ngày.
+const LESSON_SIZE = 8;
+function vocabSeen(w){ return w.lastReview !== undefined || (w.reps||0) > 0; }
+function lessonStars(words){
+  if(!words.length || !words.every(vocabSeen)) return 0;
+  if(words.every(w=>(w.interval||0) >= 7)) return 3;
+  if(words.every(w=>(w.interval||0) >= 1)) return 2;
+  return 1;
+}
+function makeLearningUnit(id, name, words){
+  const chunks = [];
+  for(let i=0; i<words.length; i+=LESSON_SIZE) chunks.push(words.slice(i, i+LESSON_SIZE));
+  // Đoạn dư quá ngắn (<4 từ) thì gộp vào bài trước cho đỡ cụt.
+  if(chunks.length > 1 && chunks[chunks.length-1].length < 4){ const last = chunks.pop(); chunks[chunks.length-1] = chunks[chunks.length-1].concat(last); }
+  const lessons = chunks.map((ws, idx)=>({ idx, words: ws, stars: lessonStars(ws) }));
+  return { id, name, words, lessons,
+    done: lessons.filter(l=>l.stars >= 1).length,
+    stars: lessons.reduce((a,l)=>a + l.stars, 0) };
+}
+function buildLearningPath(){
+  const topicIds = new Set(DATA.vocabTopics.map(t=>t.id));
+  const byTopic = new Map();
+  DATA.vocab.forEach(w=>{
+    if(!String(w.meaning||'').trim()) return; // từ chưa có nghĩa thì chưa học được
+    const k = (w.topicId && topicIds.has(w.topicId)) ? w.topicId : '';
+    let a = byTopic.get(k); if(!a){ a = []; byTopic.set(k, a); }
+    a.push(w);
+  });
+  const units = [];
+  const visited = new Set();
+  const walk = (parentId)=>{
+    childVocabTopics(parentId).forEach(t=>{
+      if(visited.has(t.id)) return;
+      visited.add(t.id);
+      const words = byTopic.get(t.id);
+      if(words && words.length) units.push(makeLearningUnit(t.id, vocabTopicNamePath(t.id).join(' › '), words));
+      walk(t.id);
+    });
+  };
+  walk(null);
+  const none = byTopic.get('');
+  if(none && none.length) units.push(makeLearningUnit('', 'Từ chưa phân chủ đề', none));
+  return units;
+}
+// Bài tiếp theo của 1 chặng = bài đầu tiên chưa có ★ (bài sau chỉ mở khi bài trước có ★).
+function nextLessonIdx(unit){
+  const i = unit.lessons.findIndex(l=>l.stars === 0);
+  return i;
+}
+function pathContinueTarget(units){
+  const last = DATA.progress && DATA.progress.pathLast;
+  const order = last !== undefined ? units.filter(u=>u.id === last).concat(units.filter(u=>u.id !== last)) : units;
+  for(const u of order){ const i = nextLessonIdx(u); if(i >= 0) return { unit:u, idx:i }; }
+  return null;
+}
+
+let pathOpenUnit = null;
+let lessonState = null;
+
+function shuffleArr(a){ const r = a.slice(); for(let i=r.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [r[i], r[j]] = [r[j], r[i]]; } return r; }
+
+function buildLessonQueue(words){
+  const q = [];
+  shuffleArr(words).forEach(w=>q.push({ type:'meaning', wid:w.id, tries:0 }));
+  shuffleArr(words).forEach(w=>q.push({ type:'word', wid:w.id, tries:0 }));
+  shuffleArr(words).slice(0, Math.min(4, words.length)).forEach(w=>q.push({ type:'type', wid:w.id, tries:0 }));
+  return q;
+}
+
+function startLesson(unitId, idx){
+  const unit = buildLearningPath().find(u=>u.id === unitId);
+  if(!unit || !unit.lessons[idx]) return;
+  const words = unit.lessons[idx].words;
+  const newOnes = words.filter(w=>!vocabSeen(w));
+  lessonState = {
+    unitId, idx, unitName: unit.name, words,
+    byId: new Map(words.map(w=>[w.id, w])),
+    newIds: new Set(newOnes.map(w=>w.id)),
+    intro: newOnes, introIdx: 0,
+    phase: newOnes.length ? 'intro' : 'ex',
+    queue: buildLessonQueue(words), qi: 0,
+    correct: 0, mistakes: 0, wordMiss: new Map(), answered: null,
+    xp: 0, acc: 100, starsNow: 0
+  };
+  setView('vocab-lesson');
+}
+
+function lessonDistractors(w, field, n){
+  const st = lessonState;
+  const seen = new Set([normalizeForCompare(w[field])]);
+  const out = [];
+  const draw = (pool, tries)=>{
+    if(!pool.length) return;
+    for(let t=0; t<tries && out.length<n; t++){
+      const x = pool[Math.floor(Math.random()*pool.length)];
+      if(!x || x.id === w.id) continue;
+      const txt = String(x[field]||'').trim();
+      if(!txt) continue;
+      const k = normalizeForCompare(txt);
+      if(seen.has(k)) continue;
+      seen.add(k); out.push(txt);
+    }
+  };
+  draw(st.words, 30);
+  if(out.length < n) draw(DATA.vocab, 150);
+  return out;
+}
+
+function lessonAnswer(ok, given){
+  const st = lessonState, ex = st.queue[st.qi];
+  st.answered = { ok, given };
+  if(ok) st.correct += 1;
+  else {
+    st.mistakes += 1;
+    st.wordMiss.set(ex.wid, (st.wordMiss.get(ex.wid)||0) + 1);
+    if(ex.tries < 2) st.queue.push({ type:ex.type, wid:ex.wid, tries:ex.tries + 1 }); // làm sai thì gặp lại cuối bài
+  }
+  const w = st.byId.get(ex.wid);
+  if(w && DATA.settings.autoSpeakVocab) speakWord(w.word);
+  render();
+}
+function lessonNext(){ lessonState.qi += 1; lessonState.answered = null; render(); }
+
+function finishLesson(){
+  const st = lessonState;
+  if(!st || st.phase === 'done') return;
+  st.phase = 'done';
+  const now = Date.now();
+  // Chỉ TỪ MỚI (chưa học lần nào) được tính vào lịch ôn: không sai → như bấm "Nhớ", có sai → "Khó".
+  st.words.forEach(w=>{
+    if(!st.newIds.has(w.id)) return;
+    const q = (st.wordMiss.get(w.id)||0) === 0 ? 2 : 1;
+    if(!w.firstSeen) w.firstSeen = now;
+    gradeVocab(w, q);
+    recordXpAndStreak(q);
+    recordVocabLog(q, true);
+  });
+  const attempts = st.correct + st.mistakes;
+  st.acc = attempts ? Math.round(st.correct / attempts * 100) : 100;
+  st.xp = 10 + st.correct;
+  normalizeProgress();
+  DATA.progress.xp += st.xp;
+  DATA.progress.pathLast = st.unitId;
+  const goal = vocabGoal();
+  if(goal > 0 && vocabReviewedToday() >= goal && markVocabGoalHit()) toast('🎯 Đạt mục tiêu hôm nay! (' + goal + ' từ)');
+  st.starsNow = lessonStars(st.words);
+  saveData();
+}
+
+function lessonExit(){
+  const st = lessonState;
+  const untouched = !st || st.phase === 'done' || (st.phase === 'intro' && st.introIdx === 0) || (st.phase === 'ex' && st.qi === 0 && !st.answered);
+  if(untouched || confirm('Thoát bài học? Tiến độ của bài này sẽ không được lưu.')){
+    lessonState = null;
+    setView('vocab-path');
+  }
+}
+
+function renderVocabPath(){
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+  const header = document.createElement('header');
+  header.className = 'topbar';
+  header.innerHTML = '<h1 class="display">Lộ trình học</h1>';
+  wrap.appendChild(header);
+
+  const main = document.createElement('main');
+  const back = document.createElement('button');
+  back.className = 'back-link'; back.textContent = '← Quay lại';
+  back.onclick = ()=> setView('vocab');
+  main.appendChild(back);
+
+  const units = buildLearningPath();
+  if(units.length === 0){
+    main.appendChild(emptyState('🗺️', 'Chưa có từ vựng (có nghĩa) để lập lộ trình. Hãy thêm từ và gán chủ đề nhé.'));
+    wrap.appendChild(main);
+    return wrap;
+  }
+
+  const totalLessons = units.reduce((a,u)=>a + u.lessons.length, 0);
+  const doneLessons = units.reduce((a,u)=>a + u.done, 0);
+  const starsTotal = units.reduce((a,u)=>a + u.stars, 0);
+  const sum = document.createElement('div');
+  sum.style.cssText = 'margin:0 16px 12px; padding:14px 16px; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px;';
+  sum.innerHTML =
+    '<div style="display:flex; justify-content:space-between; margin-bottom:8px;"><span style="font-weight:600;">Tiến độ lộ trình</span>' +
+    '<span style="font-size:13px; color:var(--ink-faint);">' + doneLessons + '/' + totalLessons + ' bài · ★ ' + starsTotal + '/' + (totalLessons*3) + '</span></div>' +
+    '<div style="height:10px; border-radius:6px; background:var(--line); overflow:hidden;"><div style="height:100%; width:' + Math.round(doneLessons/totalLessons*100) + '%; background:var(--teal);"></div></div>';
+  main.appendChild(sum);
+
+  const target = pathContinueTarget(units);
+  if(pathOpenUnit === null) pathOpenUnit = target ? target.unit.id : units[0].id;
+  if(target){
+    const cont = document.createElement('button');
+    cont.className = 'reveal-btn';
+    cont.textContent = '▶ Tiếp tục: ' + target.unit.name + ' · Bài ' + (target.idx + 1);
+    cont.onclick = ()=> startLesson(target.unit.id, target.idx);
+    main.appendChild(cont);
+  } else {
+    const all = document.createElement('div');
+    all.style.cssText = 'margin:0 16px 14px; text-align:center; font-weight:600;';
+    all.textContent = '🎉 Bạn đã hoàn thành mọi bài học! Hãy ôn đều để lên thêm ★.';
+    main.appendChild(all);
+  }
+
+  const offsets = [0, 34, 54, 34, 0, -34, -54, -34];
+  units.forEach(u=>{
+    const open = pathOpenUnit === u.id;
+    const card = document.createElement('div');
+    card.style.cssText = 'margin:0 16px 12px; padding:12px 16px; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px;';
+    const head = document.createElement('div');
+    head.style.cssText = 'cursor:pointer;';
+    head.innerHTML =
+      '<div style="display:flex; justify-content:space-between; gap:8px; align-items:baseline;">' +
+        '<span style="font-weight:600;">' + (open ? '▾ ' : '▸ ') + escapeHtml(u.name) + '</span>' +
+        '<span style="font-size:12.5px; color:var(--ink-faint); white-space:nowrap;">' + u.done + '/' + u.lessons.length + ' bài · ★ ' + u.stars + '/' + (u.lessons.length*3) + '</span>' +
+      '</div>' +
+      '<div style="height:6px; border-radius:4px; background:var(--line); overflow:hidden; margin-top:8px;"><div style="height:100%; width:' + Math.round(u.done/u.lessons.length*100) + '%; background:var(--teal);"></div></div>';
+    head.onclick = ()=>{ pathOpenUnit = open ? '__none__' : u.id; render(); };
+    card.appendChild(head);
+
+    if(open){
+      const trail = document.createElement('div');
+      trail.style.cssText = 'display:flex; flex-direction:column; align-items:center; padding:12px 0 4px; overflow:hidden;';
+      u.lessons.forEach((l, k)=>{
+        const unlocked = k === 0 || u.lessons[k-1].stars >= 1;
+        const item = document.createElement('div');
+        item.style.cssText = 'display:flex; flex-direction:column; align-items:center; margin:8px 0; transform:translateX(' + offsets[k % offsets.length] + 'px);';
+        const circle = document.createElement('button');
+        circle.type = 'button';
+        const bg = !unlocked ? 'var(--line)' : (l.stars > 0 ? 'var(--teal)' : 'var(--coral)');
+        circle.style.cssText = 'width:60px; height:60px; border-radius:50%; border:none; color:#fff; font-size:24px; cursor:pointer; background:' + bg + '; box-shadow:0 5px 0 rgba(0,0,0,.22);';
+        circle.textContent = !unlocked ? '🔒' : (l.stars > 0 ? '★' : '▶');
+        circle.onclick = ()=>{
+          if(!unlocked){ toast('Hoàn thành bài trước để mở khoá bài này'); return; }
+          startLesson(u.id, k);
+        };
+        item.appendChild(circle);
+        const lab = document.createElement('div');
+        lab.style.cssText = 'font-size:12px; margin-top:8px; color:var(--ink-faint); text-align:center;';
+        lab.innerHTML = 'Bài ' + (k+1) + ' · ' + l.words.length + ' từ' + (unlocked && l.stars > 0 ? '<br><span style="color:#e0b050; letter-spacing:2px;">' + '★'.repeat(l.stars) + '☆'.repeat(3 - l.stars) + '</span>' : '');
+        item.appendChild(lab);
+        trail.appendChild(item);
+      });
+      card.appendChild(trail);
+    }
+    main.appendChild(card);
+  });
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
+function renderVocabLesson(){
+  if(!lessonState){ VIEW = 'vocab-path'; return renderVocabPath(); }
+  const st = lessonState;
+  const wrap = document.createElement('div');
+  wrap.className = 'review-wrap';
+
+  // ---- thanh trên: thoát + tiến độ ----
+  const totalSteps = st.intro.length + st.queue.length;
+  const doneSteps = st.phase === 'intro' ? st.introIdx : (st.phase === 'ex' ? st.intro.length + st.qi : totalSteps);
+  const top = document.createElement('div');
+  top.style.cssText = 'display:flex; align-items:center; gap:12px; padding:14px 16px;';
+  top.innerHTML =
+    '<button type="button" class="review-icon-btn review-back" aria-label="Thoát">✕</button>' +
+    '<div style="flex:1; height:12px; border-radius:8px; background:var(--line); overflow:hidden;"><div style="height:100%; width:' + Math.round(doneSteps / Math.max(1, totalSteps) * 100) + '%; background:var(--teal); transition:width .3s;"></div></div>';
+  top.querySelector('button').onclick = lessonExit;
+  wrap.appendChild(top);
+
+  const body = document.createElement('div');
+  body.style.cssText = 'padding:0 16px 24px; display:flex; flex-direction:column; gap:14px;';
+  wrap.appendChild(body);
+
+  const bigCard = (inner)=>{
+    const d = document.createElement('div');
+    d.style.cssText = 'background:var(--bg-elev); border:1px solid var(--line); border-radius:16px; padding:22px 18px; text-align:center;';
+    d.innerHTML = inner;
+    body.appendChild(d);
+    return d;
+  };
+  const primary = (text, fn)=>{
+    const b = document.createElement('button');
+    b.className = 'reveal-btn'; b.textContent = text; b.onclick = fn;
+    b.style.margin = '0';
+    body.appendChild(b);
+    return b;
+  };
+
+  // ---- 1. Giới thiệu từ mới ----
+  if(st.phase === 'intro'){
+    const w = st.intro[st.introIdx];
+    const sub = [w.ipa, w.pos].filter(Boolean).join('  ·  ');
+    const c = bigCard(
+      '<div style="font-size:12.5px; color:var(--ink-faint); margin-bottom:10px;">🆕 Từ mới ' + (st.introIdx+1) + '/' + st.intro.length + '</div>' +
+      '<div style="font-size:30px; font-weight:700;">' + escapeHtml(w.word) + '</div>' +
+      (sub ? '<div style="color:var(--ink-faint); margin-top:4px;">' + escapeHtml(sub) + '</div>' : '') +
+      '<button type="button" class="chip" style="margin:12px auto 0;">🔊 Nghe</button>' +
+      '<hr class="answer-divider">' +
+      '<div style="font-size:18px;">' + escapeHtml(w.meaning) + '</div>' +
+      (w.meaningEn ? '<div style="margin-top:8px; font-size:13.5px; color:var(--ink-faint);">🇬🇧 ' + escapeHtml(w.meaningEn) + '</div>' : '') +
+      (w.example ? '<div style="margin-top:10px; font-size:13.5px; font-style:italic; color:var(--ink-faint);">' + escapeHtml(w.example) + '</div>' : '') +
+      (w.mnemonic ? '<div style="margin-top:10px; font-size:13px;">💡 ' + escapeHtml(w.mnemonic) + '</div>' : '')
+    );
+    c.querySelector('button').onclick = ()=> speakWord(w.word);
+    if(DATA.settings.autoSpeakVocab && lastLessonSpoken !== st.introIdx + ':' + w.id){ lastLessonSpoken = st.introIdx + ':' + w.id; speakWord(w.word); }
+    primary('Tiếp tục', ()=>{
+      st.introIdx += 1;
+      if(st.introIdx >= st.intro.length) st.phase = 'ex';
+      render();
+    });
+    return wrap;
+  }
+
+  // ---- 3. Hoàn thành ----
+  if(st.phase === 'ex' && st.qi >= st.queue.length){ finishLesson(); }
+  if(st.phase === 'done'){
+    const stars = '★'.repeat(st.starsNow) + '☆'.repeat(3 - st.starsNow);
+    bigCard(
+      '<div style="font-size:48px;">🎉</div>' +
+      '<h2 class="display" style="margin:8px 0;">Hoàn thành Bài ' + (st.idx+1) + '!</h2>' +
+      '<div style="color:var(--ink-faint); margin-bottom:12px;">' + escapeHtml(st.unitName) + '</div>' +
+      '<div style="display:flex; justify-content:center; gap:22px; margin:10px 0;">' +
+        '<div><div style="font-size:20px; font-weight:700;">+' + st.xp + '</div><div style="font-size:12px; color:var(--ink-faint);">XP</div></div>' +
+        '<div><div style="font-size:20px; font-weight:700;">' + st.acc + '%</div><div style="font-size:12px; color:var(--ink-faint);">chính xác</div></div>' +
+        '<div><div style="font-size:20px; font-weight:700;">' + st.newIds.size + '</div><div style="font-size:12px; color:var(--ink-faint);">từ mới</div></div>' +
+      '</div>' +
+      '<div style="font-size:22px; color:#e0b050; letter-spacing:4px; margin-top:6px;">' + stars + '</div>' +
+      '<div style="font-size:12.5px; color:var(--ink-faint); margin-top:8px;">Ôn lại các từ này đúng lịch để lên ★★ và ★★★.</div>'
+    );
+    const unitNow = buildLearningPath().find(u=>u.id === st.unitId);
+    if(unitNow && unitNow.lessons[st.idx + 1]){
+      primary('Bài tiếp theo →', ()=> startLesson(st.unitId, st.idx + 1));
+    }
+    const backBtn = primary('Về lộ trình', ()=>{ lessonState = null; setView('vocab-path'); });
+    if(unitNow && unitNow.lessons[st.idx + 1]){ backBtn.style.cssText = 'margin:0; background:var(--bg-elev); color:var(--ink); box-shadow:none; border:1px solid var(--line);'; }
+    return wrap;
+  }
+
+  // ---- 2. Bài tập ----
+  const ex = st.queue[st.qi];
+  const w = st.byId.get(ex.wid);
+  if(ex.type !== 'type' && !ex.choices){
+    const field = ex.type === 'meaning' ? 'meaning' : 'word';
+    const dis = lessonDistractors(w, field, 3);
+    if(dis.length < 1) ex.type = 'type'; // kho quá nhỏ để ra phương án nhiễu
+    else ex.choices = shuffleArr([w[field]].concat(dis));
+  }
+  const answered = st.answered;
+  const promptLabel = ex.type === 'meaning' ? 'Chọn nghĩa đúng' : (ex.type === 'word' ? 'Chọn từ tiếng Anh đúng' : 'Gõ lại từ tiếng Anh');
+  const face = ex.type === 'meaning'
+    ? '<div style="font-size:30px; font-weight:700;">' + escapeHtml(w.word) + '</div>' + (w.ipa ? '<div style="color:var(--ink-faint); margin-top:4px;">' + escapeHtml(w.ipa) + '</div>' : '') + '<button type="button" class="chip" style="margin:12px auto 0;">🔊 Nghe</button>'
+    : '<div style="font-size:21px;">' + escapeHtml(w.meaning) + '</div>' + (w.pos ? '<div style="color:var(--ink-faint); margin-top:4px;">' + escapeHtml(w.pos) + '</div>' : '') + (ex.type === 'type' ? '<div style="letter-spacing:.14em; margin-top:10px; color:var(--ink-faint);">' + escapeHtml(revHintPattern(w.word)) + '</div>' : '');
+  const fc = bigCard('<div style="font-size:12.5px; color:var(--ink-faint); margin-bottom:10px;">' + promptLabel + '</div>' + face);
+  const spk = fc.querySelector('button');
+  if(spk) spk.onclick = ()=> speakWord(w.word);
+
+  if(ex.type === 'type'){
+    const box = document.createElement('div');
+    box.style.cssText = 'display:flex; flex-direction:column; gap:10px;';
+    box.innerHTML = '<input type="text" id="lessonTypeInput" placeholder="Gõ từ tiếng Anh..." autocomplete="off" autocapitalize="off" spellcheck="false" style="width:100%; box-sizing:border-box; padding:14px; font-size:18px; border:1px solid var(--line); border-radius:12px; background:var(--bg); color:var(--ink);">';
+    const inp = box.querySelector('input');
+    if(answered){ inp.value = answered.given || ''; inp.disabled = true; }
+    body.appendChild(box);
+    if(!answered){
+      const check = ()=>{
+        const val = inp.value;
+        if(!val.trim()){ toast('Hãy gõ từ tiếng Anh'); return; }
+        lessonAnswer(normalizeRevAnswer(val) === normalizeRevAnswer(w.word), val);
+      };
+      inp.onkeydown = (e)=>{ if(e.key === 'Enter') check(); };
+      primary('Kiểm tra', check);
+      requestAnimationFrame(()=>{ const el = document.getElementById('lessonTypeInput'); if(el) el.focus(); });
+    }
+  } else {
+    const correct = ex.type === 'meaning' ? w.meaning : w.word;
+    ex.choices.forEach(ch=>{
+      const b = document.createElement('button');
+      b.type = 'button';
+      let style = 'width:100%; text-align:left; padding:14px 16px; font-size:16px; border-radius:12px; cursor:pointer; border:1px solid var(--line); background:var(--bg-elev); color:var(--ink);';
+      if(answered){
+        if(ch === correct) style += ' background:var(--teal); color:#fff; border-color:var(--teal);';
+        else if(ch === answered.given) style += ' background:var(--coral); color:#fff; border-color:var(--coral);';
+        b.disabled = true;
+      }
+      b.style.cssText = style;
+      b.textContent = ch;
+      if(!answered) b.onclick = ()=> lessonAnswer(ch === correct, ch);
+      body.appendChild(b);
+    });
+  }
+
+  if(answered){
+    const fb = document.createElement('div');
+    fb.className = 'type-feedback ' + (answered.ok ? 'correct' : 'wrong');
+    const right = ex.type === 'meaning' ? w.meaning : w.word;
+    fb.textContent = answered.ok ? '✓ Chính xác!' : '✗ Đáp án đúng: ' + right;
+    body.appendChild(fb);
+    primary('Tiếp tục', lessonNext);
+  }
+  return wrap;
+}
+let lastLessonSpoken = '';
+
 function renderVocabBulk(){
   const wrap = document.createElement('div');
   wrap.style.display = 'contents';
@@ -12601,6 +13023,9 @@ function startVocabReview(opts){
   vocabQuickLimit = (!vocabLeechSession && opts && opts.limit > 0) ? opts.limit : 0;
   vocabLapseSession = new Set();
   vocabSessionGraded = new Map();
+  strictPending = new Map();
+  strictLearn = { idx:-1, readyAt:0 };
+  strictPenalty = { idx:-1, done:0, peek:false };
   vocabRevByIdx = {};
   vocabRevState = { idx:-1, typed:'', result:null, hint:false };
   vocabReviewQueue = vocabLeechSession ? pickLeechBatch() : pickVocabBatch(vocabQuickLimit);
@@ -12620,6 +13045,168 @@ function startVocabReview(opts){
   setView('vocab-review');
 }
 
+/* ---------------- CHẾ ĐỘ NGHIÊM KHẮC ---------------- */
+// Lỗi hay gặp khi tự ôn: nhìn từ → đọc nghĩa → bấm "Nhớ" cho qua. Đó là NHẬN RA chứ không phải NHỚ LẠI.
+// Chế độ này bỏ tự chấm: phải gõ lại bằng trí nhớ, app tự chấm, và làm sai thì bị "phạt".
+//  • Từ mới: xem + đọc to, chờ vài giây rồi gõ lại; vài thẻ sau bị hỏi lại (gõ).
+//  • Từ đã học: hiện nghĩa tiếng Việt, GÕ từ tiếng Anh. Đúng nhanh = Dễ, đúng = Nhớ, dùng gợi ý/sai 1 chữ = Khó, sai = Quên.
+//  • Sai → chép phạt (gõ từ 3 lần, lần cuối không được nhìn), rồi bị hỏi lại sau 3 thẻ,
+//    và cuối buổi lại hỏi nữa: phải đúng 2 lần liên tiếp mới được qua.
+const STRICT_PENALTY_COPIES = 3;
+const STRICT_LEARN_SECONDS = 4;
+const STRICT_RETEST_GAP = 3;
+let strictPending = new Map();                      // id từ → số lần đúng còn cần để được qua
+let strictLearn = { idx:-1, readyAt:0 };
+let strictPenalty = { idx:-1, done:0, peek:false };
+
+function getStrictPenalty(){
+  if(strictPenalty.idx !== vocabReviewIdx) strictPenalty = { idx:vocabReviewIdx, done:0, peek:false };
+  return strictPenalty;
+}
+function strictQuality(rs, w){
+  if(rs.result === 'ok'){
+    const elapsed = Date.now() - (rs.startedAt || Date.now());
+    return elapsed <= 2500 + 350 * String(w.word).length ? 3 : 2; // gõ đúng thật nhanh = Dễ
+  }
+  if(rs.result === 'ok-hint' || rs.result === 'close') return 1;
+  return 0;
+}
+function strictGrade(w, rs){
+  const q = strictQuality(rs, w);
+  rs.quality = q;
+  applyVocabGrade(w, q, { noAdvance:true });
+  if(q === 0){
+    strictPending.set(w.id, 2);
+  } else if(rs.result === 'ok' && strictPending.has(w.id)){
+    const n = strictPending.get(w.id) - 1;
+    if(n <= 0) strictPending.delete(w.id); else strictPending.set(w.id, n);
+  }
+}
+function strictInsertRetest(w, gap){
+  const pos = Math.min(vocabReviewQueue.length, vocabReviewIdx + 1 + gap);
+  vocabReviewQueue.splice(pos, 0, w);
+}
+// Ô gõ + nút Kiểm tra dùng chung cho thẻ từ mới và chép phạt.
+function strictInputBox(placeholder, onCheck){
+  const box = document.createElement('div');
+  box.style.cssText = 'display:flex; flex-direction:column; gap:10px; margin-top:12px;';
+  box.innerHTML = '<input type="text" class="strict-input" placeholder="' + placeholder + '" autocomplete="off" autocapitalize="off" spellcheck="false" style="width:100%; box-sizing:border-box; padding:14px; font-size:18px; border:1px solid var(--line); border-radius:12px; background:var(--bg); color:var(--ink);">' +
+    '<button type="button" class="reveal-btn" style="margin:0;">Kiểm tra</button>';
+  const inp = box.querySelector('input');
+  const go = ()=>{ const v = inp.value; if(!v.trim()){ toast('Hãy gõ từ tiếng Anh'); return; } onCheck(v); };
+  inp.onkeydown = (e)=>{ if(e.key === 'Enter') go(); };
+  box.querySelector('button').onclick = go;
+  requestAnimationFrame(()=>{ try{ inp.focus(); }catch(e){ /* bỏ qua */ } });
+  return box;
+}
+
+function renderStrictLearn(w){
+  if(strictLearn.idx !== vocabReviewIdx) strictLearn = { idx:vocabReviewIdx, readyAt: Date.now() + STRICT_LEARN_SECONDS * 1000 };
+  const left = Math.max(0, Math.ceil((strictLearn.readyAt - Date.now()) / 1000));
+  const root = document.createElement('div');
+  root.style.cssText = 'padding:0 16px 24px;';
+  const sub = [w.ipa, w.pos].filter(Boolean).join('  ·  ');
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--bg-elev); border:1px solid var(--line); border-radius:16px; padding:22px 18px; text-align:center;';
+  card.innerHTML =
+    '<div style="font-size:12.5px; color:var(--ink-faint); margin-bottom:10px;">🔒 Từ mới — đọc to từ này 3 lần</div>' +
+    '<div style="font-size:30px; font-weight:700;">' + escapeHtml(w.word) + '</div>' +
+    (sub ? '<div style="color:var(--ink-faint); margin-top:4px;">' + escapeHtml(sub) + '</div>' : '') +
+    '<button type="button" class="chip" style="margin:12px auto 0;">🔊 Nghe</button>' +
+    '<hr class="answer-divider">' +
+    '<div style="font-size:18px;">' + escapeHtml(w.meaning) + '</div>' +
+    (w.meaningEn ? '<div style="margin-top:8px; font-size:13.5px; color:var(--ink-faint);">🇬🇧 ' + escapeHtml(w.meaningEn) + '</div>' : '') +
+    (w.example ? '<div style="margin-top:10px; font-size:13.5px; font-style:italic; color:var(--ink-faint);">' + escapeHtml(w.example) + '</div>' : '') +
+    (w.mnemonic ? '<div style="margin-top:10px; font-size:13px;">💡 ' + escapeHtml(w.mnemonic) + '</div>' : '');
+  card.querySelector('button').onclick = ()=> speakWord(w.word);
+  root.appendChild(card);
+  if(left > 0){
+    const wait = document.createElement('div');
+    wait.style.cssText = 'text-align:center; margin-top:14px; font-weight:600;';
+    wait.textContent = '⏳ Nhìn kỹ và đọc to… còn ' + left + ' giây';
+    root.appendChild(wait);
+    setTimeout(()=>{ if(VIEW === 'vocab-review' && strictLearn.idx === vocabReviewIdx) render(); }, 1000);
+  } else {
+    root.appendChild(strictInputBox('Gõ lại từ vừa đọc', (val)=>{
+      if(normalizeRevAnswer(val) !== normalizeRevAnswer(w.word)){ toast('Chưa đúng — nhìn lại rồi gõ cho chính xác'); return; }
+      strictPending.set(w.id, 1);                      // vài thẻ sau sẽ bị hỏi lại
+      applyVocabGrade(w, 1, { noAdvance:true });       // lần đầu thấy từ: tính là "Khó" (≈5 phút)
+      strictInsertRetest(w, STRICT_RETEST_GAP + 1);
+      advanceVocabCard();
+    }));
+  }
+  return root;
+}
+
+function renderStrictPenalty(w){
+  const pen = getStrictPenalty();
+  const box = document.createElement('div');
+  box.style.cssText = 'margin:0 16px 14px; padding:14px 16px; background:var(--bg-elev); border:2px solid var(--coral); border-radius:14px;';
+  if(pen.done >= STRICT_PENALTY_COPIES){
+    box.innerHTML = '<div style="font-weight:600; margin-bottom:6px;">✅ Xong chép phạt!</div><div style="font-size:13px; color:var(--ink-faint); margin-bottom:10px;">Từ này sẽ quay lại sau ' + STRICT_RETEST_GAP + ' thẻ nữa để kiểm tra lại — nhớ lần này nhé.</div>';
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'reveal-btn'; b.style.margin = '0'; b.textContent = 'Tiếp tục';
+    b.onclick = ()=>{ strictInsertRetest(w, STRICT_RETEST_GAP); advanceVocabCard(); };
+    box.appendChild(b);
+    return box;
+  }
+  const last = pen.done === STRICT_PENALTY_COPIES - 1;
+  const hidden = last && !pen.peek;
+  box.innerHTML = '<div style="font-weight:600;">✍️ Chép phạt ' + (pen.done + 1) + '/' + STRICT_PENALTY_COPIES + '</div>' +
+    '<div style="margin-top:6px;">' + (hidden
+      ? 'Lần cuối: gõ <b>KHÔNG nhìn</b> từ có nghĩa “' + escapeHtml(w.meaning) + '”'
+      : 'Gõ lại từ: <b style="font-size:20px;">' + escapeHtml(w.word) + '</b>') + '</div>';
+  box.appendChild(strictInputBox('Gõ từ tiếng Anh', (val)=>{
+    if(normalizeRevAnswer(val) === normalizeRevAnswer(w.word)){ pen.done += 1; pen.peek = false; render(); return; }
+    if(hidden){ pen.peek = true; toast('Chưa đúng — nhìn lại từ rồi gõ'); render(); }
+    else toast('Chưa đúng — gõ lại cho thật chính xác');
+  }));
+  return box;
+}
+
+// Chấm điểm + sang thẻ tiếp (tách ra khỏi nút chấm để chế độ nghiêm khắc tự gọi được).
+function applyVocabGrade(w, quality, opts){
+  const wasFirstTime = !w.firstSeen;
+  if(!w.firstSeen) w.firstSeen = Date.now();
+  if(quality===0){
+    if(!vocabLapseSession.has(w.id)){
+      vocabLapseSession.add(w.id);
+      w.lapses = (w.lapses||0) + 1;
+      if(!w.leech && w.lapses >= LEECH_THRESHOLD){
+        w.leech = true;
+        toast('🩹 "' + w.word + '" là từ cứng đầu — đã đưa vào bộ Từ cứng đầu');
+      }
+    }
+    w.okStreak = 0;
+  } else if(quality>=2){
+    w.okStreak = (w.okStreak||0) + 1;
+    if(w.leech && w.okStreak >= LEECH_RECOVER_STREAK){
+      w.leech = false; w.lapses = 0; w.okStreak = 0;
+      toast('🎉 "' + w.word + '" đã ra khỏi bộ Từ cứng đầu');
+    }
+  }
+  const goalNow = vocabGoal();
+  const wasCountedToday = w.lastReview !== undefined && w.lastReview >= startOfTodayMs();
+  gradeVocab(w, quality);
+  vocabSessionGraded.set(w.id, w);
+  recordXpAndStreak(quality);
+  recordVocabLog(quality, wasFirstTime);
+  if(goalNow > 0 && !wasCountedToday && vocabReviewedToday() >= goalNow && markVocabGoalHit()){
+    toast('🎯 Đạt mục tiêu hôm nay! (' + goalNow + ' từ)');
+  }
+  vocabSessionXpEarned += (XP_PER_GRADE[quality] || 0);
+  battleOnGrade(w, quality);
+  saveDataSoon();
+  if(!(opts && opts.noAdvance)) advanceVocabCard();
+}
+function advanceVocabCard(){
+  if(vocabBattle && vocabBattle.over) vocabReviewIdx = vocabReviewQueue.length; // trận kết thúc sớm (thắng/thua)
+  else vocabReviewIdx += 1;
+  vocabFlipped = false;
+  resetVocabAnswerInputState();
+  render();
+}
+
 function renderVocabReview(){
   const wrap = document.createElement('div');
   wrap.className = 'review-wrap';
@@ -12632,6 +13219,11 @@ function renderVocabReview(){
     const again = Array.from(vocabSessionGraded.values())
       .filter(x=>typeof x.learnStep === 'number' && x.due <= soon)
       .sort((x,y)=>x.due-y.due);
+    if(vocabReviewInputMode === 'strict' && strictPending.size > 0){
+      // Nghiêm khắc: từ nào chưa đúng đủ số lần liên tiếp thì bị hỏi lại, chưa được kết thúc buổi.
+      const have = new Set(again.map(x=>x.id));
+      strictPending.forEach((n, id)=>{ const x = vocabSessionGraded.get(id); if(x && !have.has(id)) again.push(x); });
+    }
     if(again.length) vocabReviewQueue.push(...again);
   }
 
@@ -12725,6 +13317,7 @@ function renderVocabReview(){
       {id:'dictation', icon:'🎧', label:'Nghe – gõ chính tả'},
       {id:'reverse', icon:'🔁', label:'Nghĩa → Từ (gõ lại)'},
       {id:'speak', icon:'🎤', label:'Luyện nói'},
+      {id:'strict', icon:'🔒', label:'Nghiêm khắc (gõ lại, có phạt)'},
     ];
     menu.innerHTML = modes.map(m=>
       `<button class="review-menu-item" data-mode="${m.id}">${m.icon} ${m.label} ${vocabReviewInputMode===m.id?'✓':''}</button>`
@@ -12750,6 +13343,11 @@ function renderVocabReview(){
 
   const hud = renderBattleHud(w, revCard);
   if(hud) wrap.appendChild(hud);
+
+  if(vocabReviewInputMode === 'strict' && !vocabSeen(w)){
+    wrap.appendChild(renderStrictLearn(w));
+    return wrap;
+  }
 
   const stage = document.createElement('div');
   stage.className = 'card-stage';
@@ -12846,6 +13444,7 @@ function renderVocabReview(){
         const inp = document.getElementById('vocabRevInput');
         if(inp) rs.typed = inp.value;
         rs.result = result;
+        if(vocabReviewInputMode === 'strict' && !rs.graded){ rs.graded = true; strictGrade(w, rs); } // tự chấm, không cho tự khai
         vocabFlipped = true;
         if(DATA.settings.autoSpeakVocab) speakWord(w.word);
         render();
@@ -12856,7 +13455,9 @@ function renderVocabReview(){
         if(!val.trim()){ toast('Hãy gõ từ tiếng Anh, hoặc bấm "Hiện từ"'); return; }
         rs.typed = val;
         const ok = normalizeRevAnswer(val) === normalizeRevAnswer(w.word);
-        reveal(ok ? (rs.hint ? 'ok-hint' : 'ok') : 'wrong');
+        let res = ok ? (rs.hint ? 'ok-hint' : 'ok') : 'wrong';
+        if(!ok && vocabReviewInputMode === 'strict' && String(w.word).length >= 6 && levenshtein(normalizeRevAnswer(val), normalizeRevAnswer(w.word)) <= 1) res = 'close';
+        reveal(res);
       };
       const box = document.createElement('div');
       box.className = 'type-answer-box';
@@ -12987,6 +13588,7 @@ function renderVocabReview(){
       feedback.className = 'type-feedback ' + ((rs.result==='ok' || rs.result==='ok-hint') ? 'correct' : 'wrong');
       feedback.textContent = rs.result==='ok' ? '✓ Chính xác!'
         : rs.result==='ok-hint' ? '✓ Đúng (có dùng gợi ý)'
+        : rs.result==='close' ? '≈ Gần đúng — đúng là "' + w.word + '" (bạn gõ "' + rs.typed.trim() + '")'
         : rs.result==='gaveup' ? 'Đáp án: "' + w.word + '"'
         : (rs.typed.trim() ? '✗ Chưa đúng — bạn đã gõ: "' + rs.typed.trim() + '" (đúng: "' + w.word + '")' : '✗ Chưa đúng (đúng: "' + w.word + '")');
       wrap.insertBefore(feedback, wrap.querySelector('.card-stage').nextSibling);
@@ -13040,45 +13642,7 @@ function renderVocabReview(){
     `;
     const qualities = [0,1,2,3];
     row.querySelectorAll('.grade-btn').forEach((btn,i)=>{
-      btn.onclick = async ()=>{
-        const quality = qualities[i];
-        const wasFirstTime = !w.firstSeen;
-        if(!w.firstSeen) w.firstSeen = Date.now();
-        if(quality===0){
-          if(!vocabLapseSession.has(w.id)){
-            vocabLapseSession.add(w.id);
-            w.lapses = (w.lapses||0) + 1;
-            if(!w.leech && w.lapses >= LEECH_THRESHOLD){
-              w.leech = true;
-              toast('🩹 "' + w.word + '" là từ cứng đầu — đã đưa vào bộ Từ cứng đầu');
-            }
-          }
-          w.okStreak = 0;
-        } else if(quality>=2){
-          w.okStreak = (w.okStreak||0) + 1;
-          if(w.leech && w.okStreak >= LEECH_RECOVER_STREAK){
-            w.leech = false; w.lapses = 0; w.okStreak = 0;
-            toast('🎉 "' + w.word + '" đã ra khỏi bộ Từ cứng đầu');
-          }
-        }
-        const goalNow = vocabGoal();
-        const wasCountedToday = w.lastReview !== undefined && w.lastReview >= startOfTodayMs();
-        gradeVocab(w, quality);
-        vocabSessionGraded.set(w.id, w);
-        recordXpAndStreak(quality);
-        recordVocabLog(quality, wasFirstTime);
-        if(goalNow > 0 && !wasCountedToday && vocabReviewedToday() >= goalNow && markVocabGoalHit()){
-          toast('🎯 Đạt mục tiêu hôm nay! (' + goalNow + ' từ)');
-        }
-        vocabSessionXpEarned += (XP_PER_GRADE[quality] || 0);
-        battleOnGrade(w, quality);
-        saveDataSoon();
-        if(vocabBattle && vocabBattle.over) vocabReviewIdx = vocabReviewQueue.length; // trận kết thúc sớm (thắng/thua)
-        else vocabReviewIdx += 1;
-        vocabFlipped = false;
-        resetVocabAnswerInputState();
-        render();
-      };
+      btn.onclick = ()=> applyVocabGrade(w, qualities[i]);
     });
     if(w.leech || w.mnemonic){
       const box = document.createElement('div');
@@ -13104,7 +13668,18 @@ function renderVocabReview(){
       }
       wrap.appendChild(box);
     }
-    wrap.appendChild(row);
+    if(vocabReviewInputMode === 'strict' && revCard && getRevState().result){
+      const rs = getRevState();
+      if(rs.result === 'wrong' || rs.result === 'gaveup') wrap.appendChild(renderStrictPenalty(w));
+      else {
+        const nb = document.createElement('button');
+        nb.className = 'reveal-btn'; nb.textContent = 'Tiếp tục';
+        nb.onclick = advanceVocabCard;
+        wrap.appendChild(nb);
+      }
+    } else {
+      wrap.appendChild(row);
+    }
   }
 
   return wrap;
