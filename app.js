@@ -421,6 +421,18 @@ function reviewsToday(){
 // Dự báo số thẻ đến hạn ôn mỗi ngày trong `days` ngày tới (mặc định 30).
 // Ngày đầu tiên (hôm nay) gộp cả thẻ đã quá hạn từ trước, để khớp với số ở
 // ô "Đến hạn hôm nay"; các ngày sau chỉ tính thẻ rơi đúng vào ngày đó.
+// Dự báo TỪ VỰNG: chỉ tính từ đã học (từ chưa học không có lịch ôn). Hôm nay = mọi từ đã học
+// có hạn trong hôm nay (kể cả quá hạn), đúng bằng số "đến hạn hôm nay" ở màn Từ vựng và màn Giảm tải.
+function forecastVocabByDay(days, items){
+  const words = (items || DATA.vocab).filter(vocabSeen);
+  const startMs = startOfTodayMs(), endToday = startMs + 86400000;
+  const counts = new Array(days).fill(0);
+  words.forEach(w=>{
+    const idx = w.due < endToday ? 0 : Math.floor((w.due - startMs) / 86400000);
+    if(idx >= 0 && idx < days) counts[idx]++;
+  });
+  return counts.map((count, i)=>({ date: new Date(startMs + i * 86400000), count }));
+}
 function forecastDueByDay(days, subjectId, items){
   days = days || 30;
   const cards = items || (subjectId ? subjectCards(subjectId) : DATA.cards);
@@ -481,6 +493,22 @@ function normalizeProgress(){
 // rồi ôn lại vẫn chỉ tính 1). Ngày nào đạt mục tiêu thì được đánh dấu để tính
 // chuỗi ngày liên tiếp. 0 = tắt.
 function startOfTodayMs(){ const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); }
+function startOfTomorrowMs(){ const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() + 1); return d.getTime(); }
+// Hạn ôn theo NGÀY: từ có khoảng ôn từ 1 ngày trở lên đến hạn từ 00:00 của ngày đến hạn
+// (không đợi tròn 24 giờ kể từ lúc ôn). Từ ở bậc phút (5p, 10p, 1 giờ…) vẫn đúng giờ.
+function vocabDayDue(now, intervalDays){
+  const d = new Date(now);
+  d.setHours(0,0,0,0);
+  d.setDate(d.getDate() + Math.max(1, Math.round(intervalDays)));
+  return d.getTime();
+}
+function vocabIsDue(w, now){
+  if(w.due <= now) return true;
+  if(typeof w.learnStep === 'number') return false;   // đang ở bậc phút: đúng giờ
+  if(!vocabSeen(w)) return false;
+  if((w.interval || 0) < 1) return false;             // khoảng ôn ngắn hơn 1 ngày: đúng giờ
+  return w.due < startOfTomorrowMs();                  // khoảng ôn ≥ 1 ngày: đến hạn từ 00:00 ngày đó
+}
 function vocabGoal(){
   const n = Number(DATA.settings && DATA.settings.vocabDailyGoal);
   return Number.isFinite(n) && n >= 0 ? n : 30;
@@ -597,7 +625,7 @@ function gradeVocab(card, quality){
       card.reps = wasRelearn ? 2 : 1; // từ cũ quên rồi học lại: lần sau nhân tiếp từ khoảng đã giữ, không tụt về 3/6 ngày
       delete card.learnStep;
       delete card.relearnInterval;
-      card.due = now + dayMs(card.interval);
+      card.due = vocabDayDue(now, card.interval);
     } else {
       card.learnStep = next;
       card.reps = 0;
@@ -626,7 +654,7 @@ function gradeVocab(card, quality){
       if(card.leech && interval > LEECH_MAX_INTERVAL) interval = LEECH_MAX_INTERVAL;
       card.interval = interval;
       card.reps = reps;
-      card.due = now + dayMs(interval);
+      card.due = vocabDayDue(now, interval);
     }
   }
   card.ease = ease;
@@ -2702,7 +2730,7 @@ function renderManageList(list){
 function renderForecastChart(subjectId, items, unit){
   unit = unit || 'thẻ';
   const FORECAST_DAYS = 30;
-  const buckets = forecastDueByDay(FORECAST_DAYS, subjectId, items);
+  const buckets = unit === 'từ' ? forecastVocabByDay(FORECAST_DAYS, items) : forecastDueByDay(FORECAST_DAYS, subjectId, items);
   const max = Math.max(1, ...buckets.map(b=>b.count));
   const next7 = buckets.slice(0,7).reduce((s,b)=>s+b.count,0);
   const next30 = buckets.reduce((s,b)=>s+b.count,0);
@@ -8958,15 +8986,16 @@ function reviewPriority(w, now){
   return -((now - w.due) / 86400000) / intervalDays;
 }
 function vocabStats(){
-  const now = Date.now(), today = todayKey(), t0 = startOfTodayMs();
+  const now = Date.now(), today = todayKey(), t0 = startOfTodayMs(), tomorrowMs = startOfTomorrowMs();
   const doneToday = [], others = [], fresh = [];
-  let newToday = 0, reviewedToday = 0;
+  let newToday = 0, reviewedToday = 0, todayTotal = 0;
   DATA.vocab.forEach(w=>{
     const seen = w.lastReview!==undefined || w.reps>0;
     if(w.firstSeen && dateKey(new Date(w.firstSeen))===today) newToday++;
     const touchedToday = w.lastReview !== undefined && w.lastReview >= t0;
     if(touchedToday) reviewedToday++;
-    if(w.due > now) return;
+    if(seen && w.due < tomorrowMs) todayTotal++;   // mọi từ đã học đến hạn trong cả ngày hôm nay
+    if(!vocabIsDue(w, now)) return;
     if(!seen){ fresh.push(w); return; }
     (touchedToday ? doneToday : others).push(w);
   });
@@ -8976,8 +9005,11 @@ function vocabStats(){
   const keep = cap > 0 ? Math.max(0, cap - reviewedToday) : others.length;
   const shown = others.slice(0, keep);
   const newLeft = Math.max(0, vocabNewLimit()-newToday);
-  return { review: doneToday.concat(shown), newWords: fresh.slice(0,newLeft), newTotal: fresh.length,
-           hidden: others.length - shown.length, totalDue: doneToday.length + others.length, reviewedToday, cap };
+  const review = doneToday.concat(shown);
+  const learningCount = review.filter(w=>typeof w.learnStep === 'number' || !((w.reps||0) > 0)).length;
+  return { review, newWords: fresh.slice(0,newLeft), newTotal: fresh.length,
+           hidden: others.length - shown.length, totalDue: doneToday.length + others.length,
+           todayTotal, learningCount, reviewCount: review.length - learningCount, reviewedToday, cap };
 }
 function dueVocab(){
   const s = vocabStats();
@@ -9834,7 +9866,8 @@ function renderVocabHome(){
   hero.innerHTML = `
     <div class="hero-number">${due}</div>
     <div class="hero-label">từ đến hạn ôn hôm nay</div>
-    <div style="font-size:12.5px; color:var(--ink-faint); margin:4px 0 10px;">${vst.review.length} ôn lại · ${vst.newWords.length} từ mới${vst.newTotal>vst.newWords.length ? ` · còn ${vst.newTotal-vst.newWords.length} từ chưa học (mở dần các ngày sau)` : ''}${vst.hidden>0 ? ' · còn ' + vst.hidden + ' từ quá hạn xếp sang ngày sau' : ''}</div>
+    <div style="font-size:12.5px; color:var(--ink-faint); margin:4px 0 10px;">${vst.learningCount} đang học lại (bậc phút) · ${vst.reviewCount} ôn lại · ${vst.newWords.length} từ mới${vst.newTotal>vst.newWords.length ? ` · còn ${vst.newTotal-vst.newWords.length} từ chưa học (mở dần các ngày sau)` : ''}${vst.hidden>0 ? ' · còn ' + vst.hidden + ' từ quá hạn xếp sang ngày sau' : ''}</div>
+    <div style="font-size:12px; color:var(--ink-faint); margin:-6px 0 10px;">Đến hạn cả ngày hôm nay: ${vst.todayTotal} từ · đã ôn hôm nay: ${vst.reviewedToday}${vst.cap>0 ? '/' + vst.cap : ''}</div>
     <button class="hero-btn" ${due===0?'disabled':''}>${due===0 ? 'Đã ôn hết — quay lại sau' : (due>vocabBatchSize() ? 'Học lượt ' + vocabBatchSize() + ' từ →' : 'Bắt đầu ôn tập →')}</button>
   `;
   hero.querySelector('button').onclick = ()=>{ if(due>0) startVocabReview(); };
@@ -9873,11 +9906,11 @@ function renderVocabHome(){
   }
   main.appendChild(hero);
 
-  if(vst.hidden >= 20 || (vst.cap === 0 && vst.totalDue >= 300)){
+  if(vst.hidden >= 20 || (vst.cap === 0 && vst.todayTotal >= 300)){
     const bc = document.createElement('div');
     bc.style.cssText = 'margin:0 16px 14px; padding:14px 16px; background:var(--bg-elev); border:2px solid var(--coral); border-radius:14px;';
     bc.innerHTML = `
-      <div style="font-weight:600;">⚠️ Nợ ôn tập lớn: ${vst.totalDue} từ đến hạn</div>
+      <div style="font-weight:600;">⚠️ Nợ ôn tập lớn: ${vst.todayTotal} từ đến hạn hôm nay</div>
       <div style="font-size:12.5px; color:var(--ink-faint); margin:4px 0 10px;">${vst.cap>0 ? 'Hôm nay app chỉ giao ' + vst.cap + ' từ (mức bạn đặt), ưu tiên từ dễ quên nhất.' : 'Quá nhiều để ôn trong một ngày.'} Chia nhỏ phần còn lại ra các ngày tới để biết khi nào hết nợ.</div>
       <button class="chip" type="button">📅 Chia nhỏ nợ ôn tập →</button>
     `;
@@ -11914,7 +11947,7 @@ function vocabBacklogCandidates(){
   const now = Date.now(), t0 = startOfTodayMs();
   const arr = [];
   for(const w of DATA.vocab){
-    if(!vocabSeen(w) || w.due > now) continue;
+    if(!vocabSeen(w) || !vocabIsDue(w, now)) continue;
     if(typeof w.learnStep === 'number') continue;
     if(w.lastReview !== undefined && w.lastReview >= t0) continue;
     arr.push(w);
@@ -11936,7 +11969,7 @@ function applyBacklogSpread(perDay){
   const undo = {};
   toMove.forEach((w, j)=>{
     const k = 1 + Math.floor(j / perDay);
-    const newDue = t0 + k * 86400000 + 6 * 3600000 + (j % perDay) * 1000; // 6 giờ sáng ngày thứ k, giữ nguyên thứ tự ưu tiên
+    const newDue = t0 + k * 86400000 + (j % perDay) * 1000; // 00:00 ngày thứ k, giữ nguyên thứ tự ưu tiên
     undo[w.id] = [w.due, newDue];
     w.due = newDue;
   });
@@ -11983,7 +12016,8 @@ function renderVocabBacklog(){
   const card = document.createElement('div');
   card.style.cssText = 'margin:0 16px 14px; padding:14px 16px; background:var(--bg-elev); border:1px solid var(--line); border-radius:14px;';
   card.innerHTML =
-    '<div style="font-weight:600; margin-bottom:6px;">Hôm nay có <b>' + vst.totalDue + '</b> từ đến hạn ôn</div>' +
+    '<div style="font-weight:600; margin-bottom:4px;">Hôm nay có <b>' + vst.todayTotal + '</b> từ đến hạn ôn</div>' +
+    '<div style="font-size:12.5px; color:var(--ink-faint); margin-bottom:8px;">Gồm ' + vst.learningCount + ' từ đang học lại (bậc phút) và các từ ôn lại; đã ôn hôm nay ' + vst.reviewedToday + (vst.cap > 0 ? '/' + vst.cap : '') + ' từ.</div>' +
     '<div style="font-size:13px; color:var(--ink-faint); line-height:1.6;">Không ai ôn nổi hàng nghìn từ trong một ngày. Chia nhỏ: mỗi ngày chỉ ôn một phần, ưu tiên những từ <b>dễ quên nhất</b> (quá hạn lâu so với khoảng ôn của chúng). Cách này chỉ dời <b>ngày ôn</b>, độ khó và khoảng cách của từ giữ nguyên.</div>';
   main.appendChild(card);
 
