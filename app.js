@@ -344,6 +344,7 @@ async function loadData(){
       normalizeSubjects();
       normalizeProgress();
       normalizeVocab();
+      snapshotAll();
       return;
     }
   }catch(e){ console.error('load failed', e); }
@@ -358,6 +359,7 @@ async function loadData(){
     wordFamilies: [],
     updatedAt: 0
   };
+  snapshotAll();
   await saveData();
 }
 
@@ -377,6 +379,7 @@ async function flushSaveSoon(){
   clearTimeout(_saveSoonTimer);
   if(!_saveSoonDirty) return;
   _saveSoonDirty = false;
+  trackChanges();
   try{ await idbSet(STORE_KEY, JSON.stringify(DATA)); }
   catch(e){ console.error('save failed', e); toast('Lỗi lưu dữ liệu'); }
 }
@@ -385,6 +388,7 @@ document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState=
 
 async function saveData(){
   clearTimeout(_saveSoonTimer); _saveSoonDirty = false; // lần ghi này đã bao gồm mọi thay đổi đang chờ
+  trackChanges();
   DATA.updatedAt = Date.now();
   try{ await idbSet(STORE_KEY, JSON.stringify(DATA)); }
   catch(e){ console.error('save failed', e); toast('Lỗi lưu dữ liệu'); }
@@ -2908,7 +2912,7 @@ function renderSyncChoiceModal(){
   useLocal.textContent = 'Dùng dữ liệu trên máy này';
   useLocal.onclick = async ()=>{
     pendingSyncChoice = null;
-    await pushSync(true);
+    await pushSync(true, true);
     toast('Đã đẩy dữ liệu máy này lên máy chủ ✓');
     render();
   };
@@ -3611,10 +3615,192 @@ function applyRemoteData(remote, mergeLocal){
     normalizeSubjects();
     normalizeProgress();
     normalizeVocab();
+    snapshotAll();
+    setLastRemoteAt(remote.updatedAt || 0);
     if(keptLocal) saveData(); // có tiến độ máy này mới hơn → đẩy lại lên server
     else idbSet(STORE_KEY, JSON.stringify(DATA)); // write straight to disk, skip re-triggering a push
   }catch(e){ toast('Lỗi khi đọc dữ liệu từ máy chủ'); }
 }
+
+/* ---------------- ĐỒNG BỘ AN TOÀN: gộp thay vì ghi đè ---------------- */
+// Lỗi cũ: mỗi máy đẩy nguyên bản của mình lên (bản nào "mới" hơn theo đồng hồ thì thắng) và chỉ kéo về lúc
+// mở app. Máy tính thêm từ rồi tắt; điện thoại (chưa kéo bản mới) chấm điểm xong đẩy bản cũ đè lên → mở
+// lại máy tính thì từ vừa thêm mất. Cách mới: (1) mỗi mục có dấu thời gian sửa riêng, (2) xoá được ghi
+// "bia mộ" để không bị hồi sinh, (3) TRƯỚC khi đẩy luôn kéo bản máy chủ về GỘP theo từng mục, (4) kéo
+// bản mới cả khi mở lại app/quay lại màn hình, (5) cài đặt gộp theo từng khoá.
+const SYNC_LISTS = ['vocab', 'vocabTopics', 'wordFamilies', 'cards', 'subjects'];
+const SYNC_SRS_FIELDS = ['ease','interval','reps','due','lastReview','firstSeen','learnStep','relearnInterval','lapses','okStreak','leech'];
+const SYNC_TOMBSTONE_DAYS = 180;
+let _snap = null;
+let _settingsSnap = null;
+let _lastRemoteAt = 0;
+try{ _lastRemoteAt = Number(localStorage.getItem('sync_remote_at') || 0) || 0; }catch(e){ /* bỏ qua */ }
+function setLastRemoteAt(t){ _lastRemoteAt = t || 0; try{ localStorage.setItem('sync_remote_at', String(_lastRemoteAt)); }catch(e){ /* bỏ qua */ } }
+
+function syncStamp(x){ return Math.max(x.updatedAt || 0, x.lastReview || 0, x.firstSeen || 0); }
+
+// Chụp lại trạng thái hiện tại làm mốc (sau khi nạp dữ liệu / sau khi gộp) để lần lưu sau biết mục nào đổi.
+function snapshotAll(){
+  _snap = {};
+  SYNC_LISTS.forEach(k=>{
+    const m = new Map();
+    (DATA[k] || []).forEach(x=>{ if(x && x.id) m.set(x.id, JSON.stringify(x)); });
+    _snap[k] = m;
+  });
+  _settingsSnap = {};
+  Object.keys(DATA.settings || {}).forEach(k=>{ _settingsSnap[k] = JSON.stringify(DATA.settings[k]); });
+}
+// So với mốc: mục mới/sửa → đóng dấu updatedAt; mục biến mất → ghi bia mộ; khoá cài đặt đổi → đóng dấu.
+// Gọi mỗi lần lưu, nên mọi chỗ sửa/xoá trong app đều được theo dõi mà không phải sửa từng chỗ.
+function trackChanges(){
+  if(!_snap) snapshotAll();
+  const now = Date.now();
+  if(!DATA.tombstones || typeof DATA.tombstones !== 'object') DATA.tombstones = {};
+  SYNC_LISTS.forEach(k=>{
+    if(!DATA.tombstones[k]) DATA.tombstones[k] = {};
+    const arr = DATA[k] || [], snap = _snap[k], tomb = DATA.tombstones[k];
+    const present = new Set();
+    for(const x of arr){
+      if(!x || !x.id) continue;
+      present.add(x.id);
+      const old = snap.get(x.id);
+      const js = JSON.stringify(x);
+      if(old === undefined){
+        if(!x.updatedAt) x.updatedAt = now;
+        delete tomb[x.id];
+        snap.set(x.id, JSON.stringify(x));
+      } else if(old !== js){
+        x.updatedAt = now;
+        snap.set(x.id, JSON.stringify(x));
+      }
+    }
+    snap.forEach((js, id)=>{ if(!present.has(id)){ snap.delete(id); tomb[id] = now; } });
+    const cutoff = now - SYNC_TOMBSTONE_DAYS * 86400000;
+    for(const id in tomb){ if(tomb[id] < cutoff) delete tomb[id]; }
+  });
+  if(!DATA.settingsAt || typeof DATA.settingsAt !== 'object') DATA.settingsAt = {};
+  if(!_settingsSnap) _settingsSnap = {};
+  Object.keys(DATA.settings || {}).forEach(k=>{
+    const js = JSON.stringify(DATA.settings[k]);
+    if(_settingsSnap[k] !== js){ DATA.settingsAt[k] = now; _settingsSnap[k] = js; }
+  });
+}
+
+function adoptInto(localObj, remoteObj){
+  Object.keys(localObj).forEach(k=>{ delete localObj[k]; });
+  Object.assign(localObj, remoteObj);
+  return localObj;
+}
+// Gộp 2 danh sách theo id. Mục nào có dấu thời gian mới hơn thắng; mục chỉ có ở 1 bên thì giữ; mục có bia mộ
+// mới hơn dấu thời gian của nó thì bị loại. Giữ NGUYÊN đối tượng của máy này (phiên ôn đang dùng chúng).
+// Từ/thẻ: dù nội dung bên nào thắng, tiến độ ôn của lần ôn MỚI HƠN vẫn được giữ.
+function mergeListById(localArr, remoteArr, tomb, hasSrs){
+  const remoteMap = new Map();
+  (remoteArr || []).forEach(x=>{ if(x && x.id) remoteMap.set(x.id, x); });
+  const out = new Map();
+  remoteMap.forEach((r, id)=> out.set(id, r));
+  (localArr || []).forEach(l=>{
+    if(!l || !l.id) return;
+    const r = remoteMap.get(l.id);
+    if(!r){ out.set(l.id, l); return; }
+    if(syncStamp(l) >= syncStamp(r)){
+      if(hasSrs && (r.lastReview || 0) > (l.lastReview || 0)) SYNC_SRS_FIELDS.forEach(f=>{ if(r[f] !== undefined) l[f] = r[f]; else delete l[f]; });
+      out.set(l.id, l);
+    } else {
+      const lc = Object.assign({}, l);
+      adoptInto(l, r);
+      if(hasSrs && (lc.lastReview || 0) > (r.lastReview || 0)) SYNC_SRS_FIELDS.forEach(f=>{ if(lc[f] !== undefined) l[f] = lc[f]; else delete l[f]; });
+      out.set(l.id, l);
+    }
+  });
+  const res = [];
+  out.forEach((x, id)=>{ const t = tomb[id]; if(t && t > syncStamp(x)) return; res.push(x); });
+  return res;
+}
+function mergeSettings(local, remote){
+  const out = Object.assign({}, DEFAULT_SETTINGS, remote.settings || {});
+  const la = local.settingsAt || {}, ra = remote.settingsAt || {};
+  const at = Object.assign({}, ra);
+  Object.keys(local.settings || {}).forEach(k=>{
+    const inRemote = !!remote.settings && (k in remote.settings);
+    if(!inRemote || (la[k] || 0) > (ra[k] || 0)) out[k] = local.settings[k];
+    if((la[k] || 0) > (at[k] || 0)) at[k] = la[k];
+  });
+  return { settings: out, settingsAt: at };
+}
+function mergeProgress(lp, rp){
+  lp = lp || {}; rp = rp || {};
+  const localWins = (lp.xp || 0) >= (rp.xp || 0);
+  const out = JSON.parse(JSON.stringify(localWins ? lp : rp));
+  const lo = localWins ? rp : lp;
+  ['xp','bestStreak','bossWins','monstersSlain'].forEach(k=>{ if(typeof lo[k] === 'number') out[k] = Math.max(out[k] || 0, lo[k]); });
+  ['reviewLog','vocabLog'].forEach(k=>{
+    out[k] = out[k] || {};
+    const o = lo[k] || {};
+    const n = (v)=> (v && typeof v === 'object') ? (v.n || 0) : (v || 0);
+    for(const d in o){ if(!(d in out[k]) || n(o[d]) > n(out[k][d])) out[k][d] = o[d]; }
+  });
+  out.vocabGoalHit = Object.assign({}, lo.vocabGoalHit || {}, out.vocabGoalHit || {});
+  if(Array.isArray(lo.badges)) out.badges = Array.from(new Set((out.badges || []).concat(lo.badges)));
+  return out;
+}
+function mergeSyncData(local, remote){
+  const out = remote;
+  const lt = local.tombstones || {}, rt = remote.tombstones || {};
+  const tombs = {};
+  SYNC_LISTS.forEach(k=>{
+    tombs[k] = Object.assign({}, rt[k] || {});
+    const l = lt[k] || {};
+    for(const id in l){ if(!(tombs[k][id] >= l[id])) tombs[k][id] = l[id]; }
+  });
+  SYNC_LISTS.forEach(k=>{ out[k] = mergeListById(local[k], remote[k], tombs[k], k === 'vocab' || k === 'cards'); });
+  out.tombstones = tombs;
+  const ms = mergeSettings(local, remote);
+  out.settings = ms.settings;
+  out.settingsAt = ms.settingsAt;
+  out.progress = mergeProgress(local.progress, remote.progress);
+  return out;
+}
+
+// Gộp bản trên máy chủ vào dữ liệu của máy này. Trả về true nếu kết quả có gì mà máy chủ chưa có (cần đẩy lên).
+async function mergeRemoteIntoLocal(remote){
+  const parsed = JSON.parse(remote.data);
+  SYNC_LISTS.forEach(k=>{ if(!Array.isArray(parsed[k])) parsed[k] = []; });
+  trackChanges(); // đóng dấu những thay đổi chưa kịp lưu ở máy này trước khi so
+  const merged = mergeSyncData(DATA, parsed);
+  const changed = JSON.stringify(merged) !== remote.data;
+  DATA = merged;
+  DATA.settings = Object.assign({}, DEFAULT_SETTINGS, DATA.settings || {});
+  normalizeSubjects();
+  normalizeProgress();
+  normalizeVocab();
+  snapshotAll();
+  setLastRemoteAt(remote.updatedAt || 0);
+  DATA.updatedAt = changed ? Math.max(Date.now(), (remote.updatedAt || 0) + 1) : (remote.updatedAt || DATA.updatedAt || 0);
+  try{ await idbSet(STORE_KEY, JSON.stringify(DATA)); }catch(e){ console.error('save failed', e); }
+  return changed;
+}
+
+// Kéo bản mới từ máy chủ về (nếu có) và gộp. Không chạy giữa lúc đang ôn/học bài để không làm rối phiên đang chạy.
+let _lastPullAt = 0;
+async function syncPullMerge(force){
+  if(!AUTH.token || !syncServerReady()) return;
+  if(!force && (VIEW === 'vocab-review' || VIEW === 'vocab-lesson' || VIEW === 'review')) return;
+  if(!force && Date.now() - _lastPullAt < 15000) return;
+  _lastPullAt = Date.now();
+  try{
+    const remote = await fetchSync();
+    if(remote && remote.data && remote.updatedAt > _lastRemoteAt){
+      const changed = await mergeRemoteIntoLocal(remote);
+      syncStatus = 'synced';
+      renderUnlessTyping();
+      if(changed) schedulePush();
+    }
+  }catch(e){ /* mất mạng / máy chủ lỗi — lần sau thử lại */ }
+}
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') syncPullMerge(); });
+window.addEventListener('online', ()=>{ syncPullMerge(); schedulePush(); });
+setInterval(()=>{ if(document.visibilityState === 'visible') syncPullMerge(); }, 5 * 60 * 1000);
 
 let _pushDebounce = null;
 function schedulePush(){
@@ -3623,29 +3809,32 @@ function schedulePush(){
   _pushDebounce = setTimeout(()=> pushSync(false), 1500);
 }
 
-async function pushSync(force){
+// Đẩy dữ liệu lên máy chủ — luôn KÉO bản máy chủ về GỘP trước (trừ khi overwrite=true, ví dụ người dùng
+// chủ động chọn "Dùng dữ liệu trên máy này"), để không bao giờ ghi đè thay đổi từ thiết bị khác.
+async function pushSync(force, overwrite){
   if(!AUTH.token || !syncServerReady()) return;
   syncStatus = 'syncing';
   try{
-    const res = await fetch(apiUrl('/sync'), {
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+AUTH.token},
-      body: JSON.stringify({ data: JSON.stringify(DATA), updatedAt: DATA.updatedAt || Date.now(), force: !!force })
-    });
-    if(res.status===401){ syncStatus='error'; await logout(true); return; }
-    const body = await res.json().catch(()=>({}));
-    if(body.conflict){
-      // Server has a newer copy than we started from — pull it instead of
-      // clobbering someone else's edits from another device.
-      const remote = await fetchSync();
-      applyRemoteData(remote, true);
-      syncStatus = 'synced';
-      render();
-    } else if(body.ok){
-      syncStatus = 'synced';
-    } else {
-      syncStatus = 'error';
+    trackChanges();
+    let pulledNew = false;
+    for(let attempt = 0; attempt < 3; attempt++){
+      if(!overwrite){
+        const remote = await fetchSync();
+        if(remote && remote.data && remote.updatedAt > _lastRemoteAt){ await mergeRemoteIntoLocal(remote); pulledNew = true; }
+      }
+      const res = await fetch(apiUrl('/sync'), {
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+AUTH.token},
+        body: JSON.stringify({ data: JSON.stringify(DATA), updatedAt: DATA.updatedAt || Date.now(), force: attempt > 0 || !!force })
+      });
+      if(res.status===401){ syncStatus='error'; await logout(true); return; }
+      const body = await res.json().catch(()=>({}));
+      if(body.conflict && attempt < 2) continue; // thiết bị khác vừa đẩy xen vào → kéo về gộp lại rồi đẩy lần nữa
+      if(body.ok){ syncStatus = 'synced'; setLastRemoteAt(body.updatedAt || DATA.updatedAt || 0); }
+      else syncStatus = 'error';
+      break;
     }
+    if(pulledNew) renderUnlessTyping();
   }catch(e){ syncStatus = 'error'; }
 }
 
@@ -3654,32 +3843,27 @@ async function manualSync(){
   if(!syncServerReady()){ toast('Chưa thiết lập máy chủ đồng bộ — xem HUONG-DAN.md'); return; }
   syncStatus = 'syncing'; render();
   try{
-    const remote = await fetchSync();
-    if(remote && remote.data && remote.updatedAt > (DATA.updatedAt||0)){
-      applyRemoteData(remote, true);
-      toast('Đã tải dữ liệu mới nhất ✓');
-    } else {
-      await pushSync(true);
-      toast('Đã đồng bộ ✓');
-    }
+    await pushSync(true);
+    toast(syncStatus === 'error' ? 'Đồng bộ chưa thành công — kiểm tra mạng rồi thử lại' : 'Đã đồng bộ ✓');
   }catch(e){
     toast('Lỗi đồng bộ: ' + (e.message||''));
   }
   render();
 }
 
-// Runs once on startup if already logged in — pulls silently if the server
-// has something newer, otherwise pushes whatever changed while offline.
+// Chạy 1 lần khi mở app (nếu đã đăng nhập): kéo bản mới về GỘP với dữ liệu máy này — không thay thế —
+// rồi đẩy lên phần máy này có mà máy chủ chưa có.
 async function silentInitialSync(){
   if(!AUTH.token || !syncServerReady()) return;
   try{
     const remote = await fetchSync();
-    if(remote && remote.data && remote.updatedAt > (DATA.updatedAt||0)){
-      applyRemoteData(remote, true);
+    if(remote && remote.data && remote.updatedAt > _lastRemoteAt){
+      const changed = await mergeRemoteIntoLocal(remote);
       syncStatus = 'synced';
       renderUnlessTyping();
-    } else {
-      schedulePush();
+      if(changed) schedulePush();
+    } else if((DATA.updatedAt || 0) > _lastRemoteAt){
+      schedulePush(); // có thay đổi ở máy này chưa đẩy lên
     }
   }catch(e){ /* offline or server down — just skip, next save will retry */ }
 }
