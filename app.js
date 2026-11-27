@@ -46,7 +46,7 @@ const PUSH_SERVER_URL = 'https://on-tap-push.nguyenngochuy8816.workers.dev';
 // (xem mục "Tài khoản & đồng bộ" trong HUONG-DAN.md) — thay bằng URL thật
 // sau khi deploy worker trong thư mục sync-server/
 const SYNC_SERVER_URL = 'https://on-tap-sync.nguyenngochuy8816.workers.dev/';
-const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true, vocabNewPerDay: 20, vocabBatchSize: 20, vocabReverseMode: 'sometimes', vocabDailyGoal: 30, vocabReviewCap: 150 };
+const DEFAULT_SETTINGS = { pushEnabled: false, pushHour: 20, pushMinute: 0, theme: 'system', autoSpeakVocab: true, vocabNewPerDay: 20, vocabBatchSize: 20, vocabReverseMode: 'sometimes', vocabDailyGoal: 30, vocabReviewCap: 150, vocabTimer: 15, vocabTimerEarly: false };
 // Streak + XP + huy hiệu — tiến trình học tập lâu dài, tách riêng khỏi từng
 // thẻ để không ảnh hưởng thuật toán ôn tập ngắt quãng ở trên.
 const DEFAULT_PROGRESS = {
@@ -3392,6 +3392,44 @@ function renderSettings(){
     await saveData();
   };
   main.appendChild(capRow);
+
+  const timerOpts = [0, 5, 10, 15, 20, 30];
+  const curTimer = vocabTimerSeconds();
+  const timerRow = document.createElement('div');
+  timerRow.className = 'toggle-row';
+  timerRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">⏱️ Đồng hồ đếm ngược khi ôn</div>
+      <div class="tr-sub">Chế độ Lật thẻ: mỗi thẻ có từng này giây để thử nhớ lại; hết giờ app tự hiện nghĩa và bảng Quên/Khó/Nhớ/Dễ.</div>
+    </div>
+    <select class="vocab-timer-select">
+      ${timerOpts.map(n=>`<option value="${n}" ${n===curTimer?'selected':''}>${n===0 ? 'Tắt' : n + ' giây'}</option>`).join('')}
+    </select>
+  `;
+  timerRow.querySelector('select').onchange = async (e)=>{
+    DATA.settings.vocabTimer = Number(e.target.value);
+    await saveData();
+  };
+  main.appendChild(timerRow);
+
+  const earlyRow = document.createElement('div');
+  earlyRow.className = 'toggle-row';
+  const curEarly = !!(DATA.settings && DATA.settings.vocabTimerEarly);
+  earlyRow.innerHTML = `
+    <div class="tr-text">
+      <div class="tr-title">🔒 Nút "Hiện nghĩa" trong lúc đếm</div>
+      <div class="tr-sub">Khoá = phải đợi hết giờ mới thấy nghĩa (khuyên dùng, tránh bấm lướt qua). Cho bấm sớm = vẫn bấm được trước khi hết giờ.</div>
+    </div>
+    <select class="vocab-timer-early-select">
+      <option value="0" ${!curEarly?'selected':''}>Khoá</option>
+      <option value="1" ${curEarly?'selected':''}>Cho bấm sớm</option>
+    </select>
+  `;
+  earlyRow.querySelector('select').onchange = async (e)=>{
+    DATA.settings.vocabTimerEarly = e.target.value === '1';
+    await saveData();
+  };
+  main.appendChild(earlyRow);
 
   const ttsRow = document.createElement('div');
   ttsRow.className = 'toggle-row';
@@ -13425,6 +13463,7 @@ function startVocabReview(opts){
   vocabQuickLimit = (!vocabLeechSession && opts && opts.limit > 0) ? opts.limit : 0;
   vocabLapseSession = new Set();
   vocabSessionGraded = new Map();
+  vocabCardTimer = { idx:-1, startedAt:0 };
   strictPending = new Map();
   strictLearn = { idx:-1, readyAt:0 };
   strictPenalty = { idx:-1, done:0, peek:false };
@@ -13609,6 +13648,16 @@ function advanceVocabCard(){
   render();
 }
 
+// ĐỒNG HỒ ĐẾM NGƯỢC (chế độ Lật thẻ): mỗi thẻ có N giây để THỬ NHỚ LẠI. Hết giờ app TỰ hiện nghĩa
+// + bảng Quên/Khó/Nhớ/Dễ; nút "Hiện nghĩa" bị khoá trong lúc đếm (trừ khi bật "cho bấm sớm") nên không
+// thể bấm lướt qua liên tục. 0 giây = tắt đồng hồ.
+let vocabCardTimer = { idx:-1, startedAt:0 };
+let vocabTimerHandle = null, vocabTimerTick = null;
+function vocabTimerSeconds(){
+  const n = Number(DATA.settings && DATA.settings.vocabTimer);
+  return Number.isFinite(n) && n >= 0 ? n : 15;
+}
+
 function renderVocabReview(){
   const wrap = document.createElement('div');
   wrap.className = 'review-wrap';
@@ -13758,6 +13807,44 @@ function renderVocabReview(){
   if(vocabReviewInputMode === 'strict' && !vocabSeen(w)){
     wrap.appendChild(renderStrictLearn(w));
     return wrap;
+  }
+
+  // ---- đồng hồ đếm ngược (chỉ chế độ Lật thẻ, thẻ chưa lật) ----
+  clearTimeout(vocabTimerHandle);
+  clearInterval(vocabTimerTick);
+  const timerSecs = vocabTimerSeconds();
+  // Từ mới (chưa học lần nào) không có gì để "nhớ lại" nên không đếm ngược.
+  const timerActive = timerSecs > 0 && vocabReviewInputMode === 'flip' && !revCard && !vocabFlipped && vocabSeen(w);
+  const timerLocked = timerActive && !(DATA.settings && DATA.settings.vocabTimerEarly);
+  let timerLeft = 0;
+  if(timerActive){
+    if(vocabCardTimer.idx !== vocabReviewIdx) vocabCardTimer = { idx: vocabReviewIdx, startedAt: Date.now() };
+    const totalMs = timerSecs * 1000;
+    const remainMs = totalMs - (Date.now() - vocabCardTimer.startedAt);
+    if(remainMs <= 0){
+      vocabFlipped = true; // đã hết giờ (vd quay lại app sau một lúc) → hiện luôn
+    } else {
+      timerLeft = Math.ceil(remainMs / 1000);
+      const bar = document.createElement('div');
+      bar.style.cssText = 'margin:0 16px 10px; display:flex; align-items:center; gap:10px;';
+      bar.innerHTML = '<span class="vocab-timer-label" style="font-size:13px; font-weight:600; min-width:48px;">⏱ ' + timerLeft + 's</span>' +
+        '<div style="flex:1; height:8px; border-radius:6px; background:var(--line); overflow:hidden;"><div class="vocab-timer-fill" style="height:100%; width:' + Math.max(0, Math.round(remainMs / totalMs * 100)) + '%; background:' + (timerLeft <= 5 ? 'var(--coral)' : 'var(--teal)') + ';"></div></div>';
+      wrap.appendChild(bar);
+      const fill = bar.querySelector('.vocab-timer-fill');
+      setTimeout(()=>{ if(fill){ fill.style.transition = 'width ' + remainMs + 'ms linear, background .3s'; fill.style.width = '0%'; } }, 30);
+      const idxNow = vocabReviewIdx;
+      vocabTimerHandle = setTimeout(()=>{
+        if(VIEW === 'vocab-review' && vocabReviewIdx === idxNow && !vocabFlipped){ vocabFlipped = true; render(); } // hết giờ → tự hiện nghĩa + bảng chấm
+      }, remainMs + 30);
+      vocabTimerTick = setInterval(()=>{
+        if(VIEW !== 'vocab-review'){ clearInterval(vocabTimerTick); return; }
+        const left = Math.max(0, Math.ceil((vocabCardTimer.startedAt + totalMs - Date.now()) / 1000));
+        const lab = bar.querySelector('.vocab-timer-label');
+        if(lab) lab.textContent = '⏱ ' + left + 's';
+        if(left <= 5 && fill) fill.style.background = 'var(--coral)';
+        document.querySelectorAll('[data-timer-btn]').forEach(b=>{ b.textContent = b.dataset.timerBtn + ' (' + left + 's)'; });
+      }, 250);
+    }
   }
 
   const stage = document.createElement('div');
@@ -13970,6 +14057,7 @@ function renderVocabReview(){
       viBtn.className = 'reveal-btn';
       viBtn.textContent = 'Hiện nghĩa tiếng Việt';
       viBtn.onclick = ()=>{ vocabFlipped = true; render(); };
+      if(timerLocked){ viBtn.disabled = true; viBtn.style.opacity = '0.55'; viBtn.dataset.timerBtn = 'Hiện nghĩa tiếng Việt'; viBtn.textContent = 'Hiện nghĩa tiếng Việt (' + timerLeft + 's)'; }
       if(vocabEnShownIdx !== vocabReviewIdx){
         viBtn.style.marginBottom = '10px';
         const enBtn = document.createElement('button');
@@ -13990,6 +14078,7 @@ function renderVocabReview(){
       revealBtn.className = 'reveal-btn';
       revealBtn.textContent = 'Hiện nghĩa';
       revealBtn.onclick = ()=>{ vocabFlipped = true; render(); };
+      if(timerLocked){ revealBtn.disabled = true; revealBtn.style.opacity = '0.55'; revealBtn.dataset.timerBtn = 'Hiện nghĩa'; revealBtn.textContent = 'Hiện nghĩa (' + timerLeft + 's)'; }
       wrap.appendChild(revealBtn);
     }
   } else {
